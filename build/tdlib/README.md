@@ -74,6 +74,15 @@ version. To rebuild from a clean pinned source checkout, delete the external
 `C:\tdlib-build` work root and rerun the script; never substitute files inside
 the output directory manually.
 
+When building from Visual Studio, no separate TDLib command is required. The
+project automatically invokes the pinned build as an incremental MSBuild target
+when its external output is missing or older than the checked-in TDLib build
+inputs. The default work root is
+`%LOCALAPPDATA%\UnigramTdlibExperiment`; it contains the upstream checkout,
+dependencies, intermediate builds, and final proof output, and is not committed
+to this repository. Once the verified manifest is current, ordinary solution
+builds reuse the output and only run the lightweight verifier.
+
 ## Application port status
 
 The native proof build completes and produces `Telegram.Td.dll` and

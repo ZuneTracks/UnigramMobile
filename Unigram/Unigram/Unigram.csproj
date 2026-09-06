@@ -36,9 +36,12 @@
     <GenerateTestArtifacts>False</GenerateTestArtifacts>
     <HoursBetweenUpdateChecks>0</HoursBetweenUpdateChecks>
     <AppxPackageSigningTimestampDigestAlgorithm>SHA256</AppxPackageSigningTimestampDigestAlgorithm>
-    <ModernTdlibRoot Condition="'$(ModernTdlibRoot)' == ''">$(UNIGRAM_MODERN_TDLIB_ROOT)</ModernTdlibRoot>
+    <ModernTdlibWorkRoot Condition="'$(ModernTdlibWorkRoot)' == ''">$(LOCALAPPDATA)\UnigramTdlibExperiment</ModernTdlibWorkRoot>
+    <ModernTdlibRoot Condition="'$(ModernTdlibRoot)' == '' and '$(UNIGRAM_MODERN_TDLIB_ROOT)' != ''">$(UNIGRAM_MODERN_TDLIB_ROOT)</ModernTdlibRoot>
+    <ModernTdlibRoot Condition="'$(ModernTdlibRoot)' == ''">$(ModernTdlibWorkRoot)\build-uwp-arm\RelWithDebInfo</ModernTdlibRoot>
     <ModernTdlibBuildManifest Condition="'$(ModernTdlibBuildManifest)' == ''">$(ModernTdlibRoot)\TdlibBuildManifest.txt</ModernTdlibBuildManifest>
     <ModernTdlibVerifierScript>$(MSBuildThisFileDirectory)..\..\build\tdlib\Verify-TdlibArm.ps1</ModernTdlibVerifierScript>
+    <ModernTdlibBuildScript>$(MSBuildThisFileDirectory)..\..\build\tdlib\Build-TdlibArm.ps1</ModernTdlibBuildScript>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x86'">
     <DebugSymbols>true</DebugSymbols>
@@ -2806,6 +2809,10 @@
     <VisualStudioVersion>14.0</VisualStudioVersion>
   </PropertyGroup>
   <Import Project="$(MSBuildExtensionsPath)\Microsoft\WindowsXaml\v$(VisualStudioVersion)\Microsoft.Windows.UI.Xaml.CSharp.targets" />
+  <Target Name="EnsureModernTdlib" BeforeTargets="ValidateModernTdlib" Inputs="$(ModernTdlibBuildScript);$(MSBuildThisFileDirectory)..\..\build\tdlib\vcpkg.json;@(ModernTdlibBuildInput)" Outputs="$(ModernTdlibBuildManifest)" Condition="'$(UseModernTdlib)' == 'true'">
+    <Message Importance="High" Text="Preparing pinned TDLib $(ModernTdlibVersion) in $(ModernTdlibWorkRoot)..." />
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ModernTdlibBuildScript)&quot; -WorkRoot &quot;$(ModernTdlibWorkRoot)&quot; -Stage All" />
+  </Target>
   <Target Name="ValidateModernTdlib" BeforeTargets="ResolveAssemblyReferences" Condition="'$(UseModernTdlib)' == 'true'">
     <Error Condition="'$(Platform)' != 'ARM'" Text="The experimental modern TDLib payload is ARM-only." />
     <Error Condition="'$(ModernTdlibRoot)' == ''" Text="Set ModernTdlibRoot or UNIGRAM_MODERN_TDLIB_ROOT to the modern TDLib ARM output directory." />
@@ -2887,13 +2894,18 @@
   <Target Name="RequireTdlibCredentialsForPackage" BeforeTargets="_GenerateAppxPackage;GenerateAppxPackage" Condition="'$(UseModernTdlib)' == 'true'">
     <Error Condition="!Exists('$(ProjectDir)Constants.Secret.cs')" Text="Packaging the experimental app requires the ignored Constants.Secret.cs. The compile-only placeholder must never be packaged." />
   </Target>
+  <!-- Package.appxmanifest is intentionally static in this experimental branch.
+       UpdateManifest.ps1 must not rewrite it during a VS build. -->
   <PropertyGroup>
-    <PreBuildEvent>powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -file "$(ProjectDir)\..\UpdateManifest.ps1" -path $(ProjectDir) -config $(ConfigurationName) -experimental:$(UseModernTdlib)</PreBuildEvent>
+    <PreBuildEvent />
   </PropertyGroup>
   <PropertyGroup>
     <PostBuildEvent>
     </PostBuildEvent>
   </PropertyGroup>
+  <ItemGroup>
+    <ModernTdlibBuildInput Include="$(MSBuildThisFileDirectory)..\..\build\tdlib\patches\*.patch" />
+  </ItemGroup>
   <!--<PropertyGroup>
     <PreBuildEvent>xcopy /y /s "$(SolutionDir)Unigram.DesktopService\bin\$(ConfigurationName)\Unigram.DesktopService.exe" "$(SolutionDir)\Unigram\bin\x64\$(ConfigurationName)\AppX\"
 xcopy /y /s "$(SolutionDir)Unigram.DesktopService\bin\$(ConfigurationName)\Unigram.DesktopService.exe" "$(SolutionDir)\Unigram\bin\x86\$(ConfigurationName)\AppX\"</PreBuildEvent>
