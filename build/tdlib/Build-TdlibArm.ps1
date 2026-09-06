@@ -9,6 +9,13 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# Visual Studio and the Copilot Git shim can export an incomplete
+# GIT_CONFIG_* override set. vcpkg invokes Git internally, so remove those
+# process-local overrides before using either Git or vcpkg.
+Get-ChildItem Env: |
+    Where-Object { $_.Name -eq "GIT_CONFIG_PARAMETERS" -or $_.Name -like "GIT_CONFIG_*" } |
+    ForEach-Object { Remove-Item "Env:$($_.Name)" -ErrorAction SilentlyContinue }
+
 $tdlibCommit = "022d60202e446ad1287b9fb68e687c8a0760788b"
 $tdlibVersion = "1.8.66"
 $vcpkgCommit = "45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4"
@@ -30,9 +37,17 @@ function Invoke-Checked {
         [string[]]$Arguments
     )
 
-    & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "$FilePath exited with code $LASTEXITCODE."
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $FilePath @Arguments
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($exitCode -ne 0) {
+        throw "$FilePath exited with code $exitCode."
     }
 }
 
@@ -52,13 +67,31 @@ function Initialize-PinnedCheckout {
         Invoke-Checked -FilePath git -Arguments @("-C", $Path, "remote", "add", "origin", $Remote)
     }
 
-    $head = & git -C $Path rev-parse HEAD 2>$null
-    if ($LASTEXITCODE -ne 0 -or $head -ne $Commit) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $headOutput = & git -C $Path rev-parse HEAD 2>&1
+        $headExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    $head = ($headOutput | Out-String).Trim()
+    if ($headExitCode -ne 0 -or $head -ne $Commit) {
         Invoke-Checked -FilePath git -Arguments @("-C", $Path, "fetch", "--depth", "1", "origin", $Commit)
         Invoke-Checked -FilePath git -Arguments @("-C", $Path, "checkout", "--detach", "FETCH_HEAD")
     }
 
-    $head = (& git -C $Path rev-parse HEAD).Trim()
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $head = (& git -C $Path rev-parse HEAD 2>&1 | Out-String).Trim()
+        $headExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($headExitCode -ne 0) {
+        throw "Pinned checkout could not be resolved at $Path."
+    }
     if ($head -ne $Commit) {
         throw "Pinned checkout mismatch at $Path. Expected $Commit, found $head."
     }
@@ -72,15 +105,96 @@ function Get-CMake {
     return $cmake
 }
 
-function Apply-PinnedPatches {
-    $stampPath = Join-Path $WorkRoot "tdlib-patches-applied.txt"
-    $applied = @()
-    if (Test-Path -LiteralPath $stampPath -PathType Leaf) {
-        $applied = @(Get-Content -LiteralPath $stampPath)
+function Get-Sha256 {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace("-", "")
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-TrackedSourceState {
+    $paths = @(& git -C $tdlibRoot diff --name-only $tdlibCommit)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not inspect the patched TDLib source state."
     }
 
-    foreach ($patch in Get-ChildItem $patchRoot -Filter "*.patch" | Sort-Object Name) {
-        if ($applied -contains $patch.Name) {
+    $state = @{}
+    foreach ($path in $paths) {
+        if (-not [string]::IsNullOrWhiteSpace($path)) {
+            $sourcePath = Join-Path $tdlibRoot $path
+            if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+                throw "Patched TDLib source file is missing: $path"
+            }
+            $state[$path] = Get-Sha256 $sourcePath
+        }
+    }
+    return $state
+}
+
+function Apply-PinnedPatches {
+    $stampPath = Join-Path $WorkRoot "tdlib-patches-applied.txt"
+    $applied = @{}
+    $stampedSource = @{}
+    if (Test-Path -LiteralPath $stampPath -PathType Leaf) {
+        foreach ($line in Get-Content -LiteralPath $stampPath) {
+            $parts = $line -split "\|", 2
+            if ($parts.Count -eq 2) {
+                if ($parts[0].StartsWith("__TREE__")) {
+                    $stampedSource[$parts[0].Substring(8)] = $parts[1]
+                } else {
+                    $applied[$parts[0]] = $parts[1]
+                }
+            }
+        }
+    }
+
+    $patches = @(Get-ChildItem $patchRoot -Filter "*.patch" | Sort-Object Name)
+    $patchNames = @($patches | ForEach-Object { $_.Name })
+    $requiresReset = $false
+    if (@($applied.Keys | Where-Object { $_ -notin $patchNames }).Count -gt 0) {
+        $requiresReset = $true
+    }
+    if ($stampedSource.Count -eq 0) {
+        $requiresReset = $true
+    } else {
+        $currentSource = Get-TrackedSourceState
+        if ($currentSource.Count -ne $stampedSource.Count) {
+            $requiresReset = $true
+        } else {
+            foreach ($path in $stampedSource.Keys) {
+                if (-not $currentSource.ContainsKey($path) -or $currentSource[$path] -ne $stampedSource[$path]) {
+                    $requiresReset = $true
+                    break
+                }
+            }
+        }
+    }
+    foreach ($patch in $patches) {
+        $hash = Get-Sha256 $patch.FullName
+        if (-not $applied.ContainsKey($patch.Name) -or $applied[$patch.Name] -ne $hash) {
+            $requiresReset = $true
+            break
+        }
+    }
+
+    if ($requiresReset) {
+        Invoke-Checked -FilePath git -Arguments @("-C", $tdlibRoot, "reset", "--hard", $tdlibCommit)
+        Invoke-Checked -FilePath git -Arguments @("-C", $tdlibRoot, "clean", "-fdx")
+        Remove-Item -LiteralPath $stampPath -Force -ErrorAction SilentlyContinue
+        $applied = @{}
+    }
+
+    foreach ($patch in $patches) {
+        $hash = Get-Sha256 $patch.FullName
+        if ($applied.ContainsKey($patch.Name) -and $applied[$patch.Name] -eq $hash) {
             continue
         }
 
@@ -93,9 +207,13 @@ function Apply-PinnedPatches {
                 throw "Pinned patch cannot be applied cleanly: $($patch.Name). Delete the external work root and rebuild from the pinned checkout."
             }
         }
-
-        Add-Content -LiteralPath $stampPath -Value $patch.Name -Encoding ASCII
+        $applied[$patch.Name] = $hash
     }
+
+    $sourceState = Get-TrackedSourceState
+    $stamp = @($patches | ForEach-Object { "$($_.Name)|$($applied[$_.Name])" })
+    $stamp += @($sourceState.Keys | ForEach-Object { "__TREE__$($_)|$($sourceState[$_])" })
+    Set-Content -LiteralPath $stampPath -Value $stamp -Encoding ASCII
 }
 
 function Import-VcVars {
@@ -134,6 +252,13 @@ if (Test-Path (Join-Path $visualStudioInstaller "vswhere.exe")) {
 Initialize-PinnedCheckout $tdlibRoot "https://github.com/tdlib/td.git" $tdlibCommit
 Initialize-PinnedCheckout $vcpkgRoot "https://github.com/microsoft/vcpkg.git" $vcpkgCommit
 Apply-PinnedPatches
+
+# A standalone Build stage cannot safely use generated sources after a
+# checkout reset. Run the complete pipeline so generation and configuration
+# always correspond to the pinned and patched source tree.
+if ($Stage -eq "Build") {
+    $Stage = "All"
+}
 
 $vcpkg = Join-Path $vcpkgRoot "vcpkg.exe"
 if (-not (Test-Path $vcpkg)) {
@@ -180,8 +305,15 @@ if ($Stage -in @("Generate", "All")) {
     Invoke-Checked -FilePath $cmake -Arguments @(
         "--build", $nativeBuild,
         "--config", "Release",
+        "--target", "td_generate_dotnet_api",
+        "--clean-first",
+        "--", "/m:1"
+    )
+    Invoke-Checked -FilePath $cmake -Arguments @(
+        "--build", $nativeBuild,
+        "--config", "Release",
         "--target", "prepare_cross_compiling",
-        "--", "/m"
+        "--", "/m:1"
     )
 }
 
@@ -204,7 +336,7 @@ if ($Stage -in @("Configure", "All")) {
         "-DVCPKG_OVERLAY_PORTS=$overlayRoot",
         "-DTD_ENABLE_DOTNET=CX",
         "-DTD_ENABLE_LTO=OFF",
-        "-DTD_ENABLE_MULTI_PROCESSOR_COMPILATION=ON"
+        "-DTD_ENABLE_MULTI_PROCESSOR_COMPILATION=OFF"
     )
 }
 
@@ -214,7 +346,7 @@ if ($Stage -in @("Build", "All")) {
         "--build", $uwpBuild,
         "--config", "RelWithDebInfo",
         "--target", "tddotnet",
-        "--", "/m"
+        "--", "/m:1"
     )
 
     $outputRoot = Join-Path $uwpBuild "RelWithDebInfo"
@@ -224,8 +356,8 @@ if ($Stage -in @("Build", "All")) {
         "VCPKG_COMMIT=$vcpkgCommit",
         "OPENSSL_VERSION=3.5.7",
         "ZLIB_VERSION=1.3.2",
-        "TELEGRAM_TD_DLL_SHA256=$((Get-FileHash (Join-Path $outputRoot 'Telegram.Td.dll') -Algorithm SHA256).Hash)",
-        "TELEGRAM_TD_WINMD_SHA256=$((Get-FileHash (Join-Path $outputRoot 'Telegram.Td.winmd') -Algorithm SHA256).Hash)"
+        "TELEGRAM_TD_DLL_SHA256=$(Get-Sha256 (Join-Path $outputRoot 'Telegram.Td.dll'))",
+        "TELEGRAM_TD_WINMD_SHA256=$(Get-Sha256 (Join-Path $outputRoot 'Telegram.Td.winmd'))"
     )
     Set-Content -LiteralPath (Join-Path $outputRoot "TdlibBuildManifest.txt") -Value $manifest -Encoding ASCII
 }
