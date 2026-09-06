@@ -20,7 +20,11 @@
     <AppxAutoIncrementPackageRevision>True</AppxAutoIncrementPackageRevision>
     <AppxSymbolPackageEnabled>True</AppxSymbolPackageEnabled>
     <AppxBundle>Always</AppxBundle>
-    <UseModernTdlib Condition="'$(UseModernTdlib)' == ''">false</UseModernTdlib>
+    <!-- This experimental branch is modern-TDLib-only. Do not allow an
+         unqualified VS/MSBuild invocation to silently select the legacy SDK. -->
+    <UseModernTdlib Condition="'$(UseModernTdlib)' == ''">true</UseModernTdlib>
+    <ModernTdlibVersion>1.8.66</ModernTdlibVersion>
+    <ModernTdlibCommit>022d60202e446ad1287b9fb68e687c8a0760788b</ModernTdlibCommit>
     <AppxBundlePlatforms Condition="'$(UseModernTdlib)' == 'true'">arm</AppxBundlePlatforms>
     <AppxBundlePlatforms Condition="'$(UseModernTdlib)' != 'true'">x64|arm</AppxBundlePlatforms>
     <PackageCertificateThumbprint>B5E7EBF1650558A9D670BD1C5B9F82E24A213434</PackageCertificateThumbprint>
@@ -33,6 +37,8 @@
     <HoursBetweenUpdateChecks>0</HoursBetweenUpdateChecks>
     <AppxPackageSigningTimestampDigestAlgorithm>SHA256</AppxPackageSigningTimestampDigestAlgorithm>
     <ModernTdlibRoot Condition="'$(ModernTdlibRoot)' == ''">$(UNIGRAM_MODERN_TDLIB_ROOT)</ModernTdlibRoot>
+    <ModernTdlibBuildManifest Condition="'$(ModernTdlibBuildManifest)' == ''">$(ModernTdlibRoot)\TdlibBuildManifest.txt</ModernTdlibBuildManifest>
+    <ModernTdlibVerifierScript>$(MSBuildThisFileDirectory)..\..\build\tdlib\Verify-TdlibArm.ps1</ModernTdlibVerifierScript>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x86'">
     <DebugSymbols>true</DebugSymbols>
@@ -2809,8 +2815,13 @@
     <Error Condition="!Exists('$(ModernTdlibRoot)\libcrypto-3-arm.dll')" Text="OpenSSL crypto runtime was not found in $(ModernTdlibRoot)." />
     <Error Condition="!Exists('$(ModernTdlibRoot)\libssl-3-arm.dll')" Text="OpenSSL TLS runtime was not found in $(ModernTdlibRoot)." />
     <Error Condition="!Exists('$(ModernTdlibRoot)\z.dll')" Text="zlib runtime was not found in $(ModernTdlibRoot)." />
+    <Error Condition="!Exists('$(ModernTdlibBuildManifest)')" Text="The modern TDLib build manifest was not found at $(ModernTdlibBuildManifest). Rebuild the pinned TDLib output with build\tdlib\Build-TdlibArm.ps1." />
     <Error Condition="!Exists('$(ModernUwpNumericsRuntimeRoot)\System.Numerics.Vectors.dll')" Text="The ARM UWP System.Numerics.Vectors runtime was not found at $(ModernUwpNumericsRuntimeRoot)." />
     <Error Condition="!Exists('$(ModernUwpNumericsRuntimeRoot)\System.Numerics.Vectors.WindowsRuntime.dll')" Text="The ARM UWP System.Numerics.Vectors.WindowsRuntime runtime was not found at $(ModernUwpNumericsRuntimeRoot)." />
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ModernTdlibVerifierScript)&quot; -OutputRoot &quot;$(ModernTdlibRoot)&quot; -ExpectedTdlibVersion &quot;1.8.66&quot; -ExpectedTdlibCommit &quot;022d60202e446ad1287b9fb68e687c8a0760788b&quot;" />
+  </Target>
+  <Target Name="RejectLegacyTdlibSelection" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(UseModernTdlib)' != 'true'" Text="This experimental branch requires TDLib $(ModernTdlibVersion) ($(ModernTdlibCommit)). UseModernTdlib must remain true; the legacy Telegram.Td.UWP SDK is not supported here." />
   </Target>
   <Target Name="OverrideModernUwpNumerics" AfterTargets="ResolveNuGetPackageAssets" BeforeTargets="ResolveAssemblyReferences" Condition="'$(UseModernTdlib)' == 'true' and Exists('$(UwpNumericsReferenceRoot)\System.Numerics.Vectors.dll')">
     <ItemGroup>

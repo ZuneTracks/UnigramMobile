@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $tdlibCommit = "022d60202e446ad1287b9fb68e687c8a0760788b"
+$tdlibVersion = "1.8.66"
 $vcpkgCommit = "45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4"
 $manifestRoot = $PSScriptRoot
 $tripletRoot = Join-Path $PSScriptRoot "triplets"
@@ -72,17 +73,28 @@ function Get-CMake {
 }
 
 function Apply-PinnedPatches {
+    $stampPath = Join-Path $WorkRoot "tdlib-patches-applied.txt"
+    $applied = @()
+    if (Test-Path -LiteralPath $stampPath -PathType Leaf) {
+        $applied = @(Get-Content -LiteralPath $stampPath)
+    }
+
     foreach ($patch in Get-ChildItem $patchRoot -Filter "*.patch" | Sort-Object Name) {
-        & git -C $tdlibRoot apply --check $patch.FullName 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            Invoke-Checked -FilePath git -Arguments @("-C", $tdlibRoot, "apply", $patch.FullName)
+        if ($applied -contains $patch.Name) {
             continue
         }
 
-        & git -C $tdlibRoot apply --reverse --check $patch.FullName 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Pinned patch cannot be applied cleanly: $($patch.Name)"
+        & git -C $tdlibRoot apply --check $patch.FullName 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Invoke-Checked -FilePath git -Arguments @("-C", $tdlibRoot, "apply", $patch.FullName)
+        } else {
+            & git -C $tdlibRoot apply --reverse --check $patch.FullName 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Pinned patch cannot be applied cleanly: $($patch.Name). Delete the external work root and rebuild from the pinned checkout."
+            }
         }
+
+        Add-Content -LiteralPath $stampPath -Value $patch.Name -Encoding ASCII
     }
 }
 
@@ -204,8 +216,21 @@ if ($Stage -in @("Build", "All")) {
         "--target", "tddotnet",
         "--", "/m"
     )
+
+    $outputRoot = Join-Path $uwpBuild "RelWithDebInfo"
+    $manifest = @(
+        "TDLIB_VERSION=$tdlibVersion",
+        "TDLIB_COMMIT=$tdlibCommit",
+        "VCPKG_COMMIT=$vcpkgCommit",
+        "OPENSSL_VERSION=3.5.7",
+        "ZLIB_VERSION=1.3.2",
+        "TELEGRAM_TD_DLL_SHA256=$((Get-FileHash (Join-Path $outputRoot 'Telegram.Td.dll') -Algorithm SHA256).Hash)",
+        "TELEGRAM_TD_WINMD_SHA256=$((Get-FileHash (Join-Path $outputRoot 'Telegram.Td.winmd') -Algorithm SHA256).Hash)"
+    )
+    Set-Content -LiteralPath (Join-Path $outputRoot "TdlibBuildManifest.txt") -Value $manifest -Encoding ASCII
 }
 
+Write-Output "TDLib version: $tdlibVersion"
 Write-Output "TDLib commit: $tdlibCommit"
 Write-Output "vcpkg commit: $vcpkgCommit"
 Write-Output "ARM UWP output: $(Join-Path $uwpBuild 'RelWithDebInfo')"

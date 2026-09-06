@@ -60,12 +60,27 @@ To verify an existing proof output and print stable SHA-256 values:
 .\build\tdlib\Verify-TdlibArm.ps1 -OutputRoot C:\tdlib-build\build-uwp-arm\RelWithDebInfo
 ```
 
+Build the app only with the verified output:
+
+```powershell
+msbuild .\Unigram\Unigram\Unigram.csproj /p:Configuration=Release /p:Platform=ARM `
+  /p:ModernTdlibRoot=C:\tdlib-build\build-uwp-arm\RelWithDebInfo
+```
+
+The project defaults to modern TDLib and rejects `UseModernTdlib=false`.
+The verifier is also invoked during MSBuild with the expected version and
+commit hard-coded, so changing build properties cannot select another TDLib
+version. To rebuild from a clean pinned source checkout, delete the external
+`C:\tdlib-build` work root and rerun the script; never substitute files inside
+the output directory manually.
+
 ## Application port status
 
 The native proof build completes and produces `Telegram.Td.dll` and
-`Telegram.Td.winmd`. The application project consumes those files only when
-`UseModernTdlib=true`; the stable Extension SDK remains the default unless the
-experimental property is explicitly enabled for an ARM build.
+`Telegram.Td.winmd`. The application project in this experimental branch is modern-TDLib-only:
+`UseModernTdlib` defaults to `true`, and a build fails if it is overridden to
+`false`. The legacy `Telegram.Td.UWP` Extension SDK is therefore not selectable
+from this branch.
 `UpdateManifest.ps1` selects the stable package identity/display name for the
 default configuration and the isolated experimental identity when that property
 is enabled. Modern bundles are ARM-only so they cannot accidentally include
@@ -93,6 +108,13 @@ public CER remain local-only; the current test certificate thumbprint is
 disabled until the server-driven `ReportChatResult` option flow is implemented.
 Device installation, fresh login, push, and Live Tile validation remain
 outstanding.
+
+`Build-TdlibArm.ps1` writes `TdlibBuildManifest.txt` beside the proof payload.
+It records the pinned TDLib version/commit and hashes the generated WinMD and
+implementation DLL. `Verify-TdlibArm.ps1` rejects missing or mismatched
+metadata, and the application build requires that verification manifest before
+it can resolve the TDLib reference. This prevents a stale, floating, or
+manually substituted TDLib payload from reaching the APPX.
 
 The experimental project explicitly excludes the portable
 `System.Numerics.Vectors` packages and selects the matching UWP reference
