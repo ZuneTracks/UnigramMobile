@@ -27,13 +27,25 @@
     <ModernTdlibCommit>022d60202e446ad1287b9fb68e687c8a0760788b</ModernTdlibCommit>
     <AppxBundlePlatforms Condition="'$(UseModernTdlib)' == 'true'">arm</AppxBundlePlatforms>
     <AppxBundlePlatforms Condition="'$(UseModernTdlib)' != 'true'">x64|arm</AppxBundlePlatforms>
+    <!-- This experimental branch is sideloaded onto a device, never submitted to
+         the Store. The default upload-only packaging mode emits the MSIL payload
+         under bin\$(Platform)\$(Configuration)\Upload, because that package is
+         meant to be compiled by the Store's cloud .NET Native compiler. Such a
+         package installs but cannot launch when sideloaded, as it contains no
+         native code. Force sideload packaging so BuildNativePackage's ILC output
+         is what actually gets packaged. -->
+    <UapAppxPackageBuildMode Condition="'$(UseModernTdlib)' == 'true'">SideloadOnly</UapAppxPackageBuildMode>
+    <AppxBundle Condition="'$(UseModernTdlib)' == 'true'">Never</AppxBundle>
     <PackageCertificateThumbprint>B5E7EBF1650558A9D670BD1C5B9F82E24A213434</PackageCertificateThumbprint>
-    <BuildAppxSideloadPackageForUap>False</BuildAppxSideloadPackageForUap>
+    <BuildAppxSideloadPackageForUap Condition="'$(UseModernTdlib)' == 'true'">True</BuildAppxSideloadPackageForUap>
+    <BuildAppxUploadPackageForUap Condition="'$(UseModernTdlib)' == 'true'">False</BuildAppxUploadPackageForUap>
+    <BuildAppxSideloadPackageForUap Condition="'$(UseModernTdlib)' != 'true'">False</BuildAppxSideloadPackageForUap>
     <GenerateAppInstallerFile>False</GenerateAppInstallerFile>
     <AppInstallerUpdateFrequency>0</AppInstallerUpdateFrequency>
     <AppInstallerCheckForUpdateFrequency>OnApplicationRun</AppInstallerCheckForUpdateFrequency>
     <LangVersion>7.3</LangVersion>
-    <GenerateTestArtifacts>False</GenerateTestArtifacts>
+    <GenerateTestArtifacts Condition="'$(UseModernTdlib)' == 'true'">True</GenerateTestArtifacts>
+    <GenerateTestArtifacts Condition="'$(UseModernTdlib)' != 'true'">False</GenerateTestArtifacts>
     <HoursBetweenUpdateChecks>0</HoursBetweenUpdateChecks>
     <AppxPackageSigningTimestampDigestAlgorithm>SHA256</AppxPackageSigningTimestampDigestAlgorithm>
     <ModernTdlibWorkRoot Condition="'$(ModernTdlibWorkRoot)' == ''">$(LOCALAPPDATA)\UnigramTdlibExperiment</ModernTdlibWorkRoot>
