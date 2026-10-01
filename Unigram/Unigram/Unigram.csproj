@@ -2806,7 +2806,12 @@
     </Reference>
     <ReferenceCopyLocalPaths Include="$(ProjectDir)\..\Libraries\rlottie\$(Platform)\RLottie.dll" />
     <ReferenceCopyLocalPaths Include="$(ProjectDir)\..\Libraries\rlottie\$(Platform)\RLottie.pri" />
-    <ReferenceCopyLocalPaths Condition=" '$(Configuration)' == 'Debug' " Include="$(ProjectDir)\..\Libraries\rlottie\$(Platform)\zlib1.dll" />
+    <!-- RLottie.dll imports inflate/inflateEnd/inflateInit2_ from zlib1.dll. Shipping it only in
+         Debug means a Release package cannot load RLottie at all: the first animated sticker
+         raises FileNotFoundException 0x8007007E, which crosses the WinRT boundary and fail-fasts
+         the process. The modern configuration satisfies the import with the pinned zlib staged as
+         zlib1.dll by StageModernZlib1 instead of the bundled 1.2.11 copy. -->
+    <ReferenceCopyLocalPaths Condition=" '$(Configuration)' == 'Debug' and '$(UseModernTdlib)' != 'true' " Include="$(ProjectDir)\..\Libraries\rlottie\$(Platform)\zlib1.dll" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="libtgvoip" Condition="'$(UseModernTdlib)' != 'true'">
@@ -2838,6 +2843,18 @@
     <Error Condition="!Exists('$(ModernUwpNumericsRuntimeRoot)\System.Numerics.Vectors.dll')" Text="The ARM UWP System.Numerics.Vectors runtime was not found at $(ModernUwpNumericsRuntimeRoot)." />
     <Error Condition="!Exists('$(ModernUwpNumericsRuntimeRoot)\System.Numerics.Vectors.WindowsRuntime.dll')" Text="The ARM UWP System.Numerics.Vectors.WindowsRuntime runtime was not found at $(ModernUwpNumericsRuntimeRoot)." />
     <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ModernTdlibVerifierScript)&quot; -OutputRoot &quot;$(ModernTdlibRoot)&quot; -ExpectedTdlibVersion &quot;1.8.66&quot; -ExpectedTdlibCommit &quot;022d60202e446ad1287b9fb68e687c8a0760788b&quot;" />
+  </Target>
+  <Target Name="StageModernZlib1" AfterTargets="ResolveAssemblyReferences" Condition="'$(UseModernTdlib)' == 'true'">
+    <!-- RLottie.dll was built against zlib1.dll and imports inflate/inflateEnd/inflateInit2_ from
+         it by that exact file name. The pinned modern zlib ships as z.dll for TDLib, so stage a
+         second copy under the name the import table expects. This keeps a single, current zlib in
+         the package instead of restoring the bundled 1.2.11 build. -->
+    <MakeDir Directories="$(IntermediateOutputPath)modern-tdlib" />
+    <Copy SourceFiles="$(ModernTdlibRoot)\z.dll" DestinationFiles="$(IntermediateOutputPath)modern-tdlib\zlib1.dll" SkipUnchangedFiles="true" />
+    <Error Condition="!Exists('$(IntermediateOutputPath)modern-tdlib\zlib1.dll')" Text="Failed to stage the pinned zlib as zlib1.dll for RLottie." />
+    <ItemGroup>
+      <ReferenceCopyLocalPaths Include="$(IntermediateOutputPath)modern-tdlib\zlib1.dll" />
+    </ItemGroup>
   </Target>
   <Target Name="RejectLegacyTdlibSelection" BeforeTargets="PrepareForBuild">
     <Error Condition="'$(UseModernTdlib)' != 'true'" Text="This experimental branch requires TDLib $(ModernTdlibVersion) ($(ModernTdlibCommit)). UseModernTdlib must remain true; the legacy Telegram.Td.UWP SDK is not supported here." />

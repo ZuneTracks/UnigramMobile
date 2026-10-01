@@ -99,9 +99,14 @@ namespace Unigram.Controls.Messages
             // static path returns before reaching it, so it needs an equivalent of its own.
             // Without it every scroll frame would rebuild the banner, which for a pinned photo
             // means decoding a fresh BitmapImage on the UI thread each time.
+            // UpdateHeaderDate passes ViewModel.Chat straight through and it can be null while a
+            // chat is being swapped, so chat must be tested before Id is read. The original code
+            // reached its first use of chat only after the "message == null && !known" early exit,
+            // so a null chat was previously harmless here.
             if (!ApiInfo.CanUseDirectComposition
                 && !_loading
                 && _messageId != 0
+                && chat != null
                 && _chatId == chat.Id
                 && _messageId == (message?.Id ?? 0)
                 && _staticValue == value

@@ -367,3 +367,168 @@ corresponding ARM AOT runtime pair (`4.1.4.0` and `4.0.4.0`) through explicit
 APPX payload items. This avoids both the portable `4.1.1.0`/`4.0.1.0` pair
 and an app/device split where the native image requests `4.1.4.0` but the
 device resolves another manifest (`0x80131040`).
+
+## Chat scroll crash: floating date header (26.9.6116.0)
+
+The third on-device chat crash reproduced when scrolling **up** through a
+supergroup. Instrumentation added in 26.9.6114.0 wrapped the four scroll-rate
+handlers in managed try/catch blocks and recorded 116 identical faults:
+
+    scroll.header|result=error;hresult=0x80004003;type=NullReferenceException;
+    stack= at Unigram.Views.ChatView.UpdateHeaderDateCore(Boolean intermediate)
+        << at Unigram.Views.ChatView.UpdateHeaderDate(Boolean intermediate)
+
+`_dateHeader`, `_dateHeaderPanel` and `_dateHeaderTimer` are assigned only
+inside `if (DateHeaderPanel != null)` in the `ChatView` constructor
+(`ChatView.xaml.cs`), and the first hypothesis was that one of them was null.
+A `scroll.header.state` probe added in 26.9.6116.0 reported every candidate as
+non-null on the device:
+
+    scroll.header.state|date_header=True;date_timer=True;date_panel_visual=True;
+    date_panel=True;date_relative=True;view_model=True;pinned_list=True
+
+**That hypothesis was wrong.** The guards listed below are inert hardening and
+are retained only because they are harmless; they are not the fix. A later
+review reached the same conclusion independently: the constructor dereferences
+sibling `x:Name` fields before the `DateHeaderPanel` test, so a constructed
+`ChatView` implies those fields are non-null, and `PinnedMessages` is a
+get-only auto-property with an initializer that can never be null.
+
+The real fault is in `MessagePinned.UpdateMessage`. The dedupe guard added in
+26.9.6113.0 to stop the banner rebuilding on every scroll frame evaluated
+`_chatId == chat.Id` **before** its own `step=enter` trace, so a null `chat`
+threw with no `pinned.ui` record emitted - exactly what the logs showed. The
+caller, `UpdateHeaderDateCore`, passes `ViewModel.Chat` straight through, and
+that is null while a chat is being swapped. .NET Native inlines the small
+callee, which is why the captured stack named only `UpdateHeaderDateCore` and
+showed no frame for the method that actually faulted.
+
+Before the dedupe guard existed, the method's first use of `chat` came after
+the `message == null && !known` early exit, so a null chat was harmless. The
+fix restores that by testing `chat != null` inside the dedupe condition
+(`MessagePinned.xaml.cs`, under `MODERN_TDLIB`).
+
+The crash is scroll-direction specific because the pinned-banner tail of
+`UpdateHeaderDateCore` runs only once history is scrolled far enough for the
+banner to need updating, which is why one group reproduced it and another did
+not.
+
+Inert guards retained under `MODERN_TDLIB` in `ChatView.Bubbles.xaml.cs`:
+
+* `_dateHeader.Offset` - the if/else became a guarded ternary.
+* `_dateHeaderTimer.Stop()/Start()`.
+* `ShowHideDateHeader` returns early when `DateHeaderPanel` or
+  `_dateHeaderPanel` is null, before any dereference.
+* The pinned-banner tail returns early when `ViewModel` is null, and
+  `ViewModel.PinnedMessages` is null-checked before `.Count`.
+
+The visible effect when the date header is absent is that the floating date
+pill does not appear; message history, the pinned banner and scrolling are
+unaffected.
+
+### Operator precedence defect in template selection
+
+`SelectTemplateCore` contained:
+
+    if (chat != null && chat.Type is ChatTypeSupergroup || chat.Type is ChatTypeBasicGroup)
+
+`&&` binds tighter than `||`, so this parsed as
+`(chat != null && ...Supergroup) || (chat.Type is ChatTypeBasicGroup)` and
+dereferenced `chat` in the second operand whenever `GetChat()` missed the
+cache. Parenthesised under `MODERN_TDLIB`; a null chat now falls through to
+`FriendMessageTemplate`. This site never appeared in the device logs, so it is
+a latent fix rather than the observed crash.
+
+### Scroll instrumentation and trace budgets
+
+The four scroll entry points (`ViewVisibleMessages`, `UpdateHeaderDate`,
+`OnChoosingItemContainer`, `OnContainerContentChanging`) delegate to `*Core`
+methods inside try/catch. Because `PushDiagnostics` enforces its 1 MB ceiling
+by **deleting** the file rather than rotating it, an unthrottled fault at
+scroll rate would evict the first and only useful occurrence. Each site
+therefore has its own budget of four records.
+
+`OnChoosingItemContainer` cannot simply swallow: the `Messages` list declares
+no `ItemTemplate`, so a container's template and type tag come only from
+`CreateSelectorItem`. Leaving `IsContainerPrepared` false would hand XAML an
+untagged, untemplated container that renders blank and can never be recycled.
+XAML's own suggestion cannot be reused either, because a fault before the
+container was taken out of the recycle pool would realize a container that is
+still pool-owned and could later be handed to a second item. The catch
+therefore removes the suggestion from every pool, supplies a fresh
+`EmptyMessageTemplate` container, and wraps that recovery in its own catch,
+since this handler is invoked from WinRT and an unwinding recovery would cause
+the fail-fast the outer catch exists to prevent.
+
+## Fatal crash: RLottie cannot load in Release (26.9.6117.0)
+
+Scrolling a supergroup killed the process outright even though the managed
+try/catch blocks above were demonstrably holding - 116 caught faults with the
+app still running. The log ended on `FileNotFoundException` HRESULT
+`0x8007007E` with no module name, and a crash dump supplied by the user
+resolved it.
+
+Method, for reuse:
+
+    cdb -z Unigram.exe.5904.dmp -c ".lastevent; .ecxr; k; lmo; q"
+
+`.lastevent` reported `c000027b` - `STATUS_STOWED_EXCEPTION`, the .NET
+Native/WinRT fail-fast wrapper, confirming a managed exception crossed a WinRT
+boundary. Managed frames are not resolvable without symbols, but `lmo` is: the
+loaded-module list contained `Telegram_Td`, `Unigram_Native`, `avcodec_58`,
+`libcrypto_3_arm`, `libssl_3_arm` and `Microsoft_Graphics_Canvas`, and did
+**not** contain `RLottie.dll`. **Absence of an expected module is the signal.**
+
+    dumpbin /dependents RLottie.dll   ->  zlib1.dll
+    dumpbin /imports    RLottie.dll   ->  inflate, inflateEnd, inflateInit2_
+
+The package shipped `z.dll` (the pinned modern zlib built for TDLib) but no
+`zlib1.dll`, because `Unigram.csproj` included that payload only when
+`'$(Configuration)' == 'Debug'`. Release packages therefore could not load the
+animated-sticker renderer at all; the first TGS stricker raised the
+`FileNotFoundException` above, which fail-fasted the process.
+
+This is a **pre-existing upstream packaging defect**, not something the TDLib
+port introduced. It had simply never been hit, because Release sideloads were
+not the normal test path.
+
+The fix stages the pinned modern zlib a second time under the name RLottie's
+import table expects, rather than restoring the bundled zlib 1.2.11 copy:
+
+* `StageModernZlib1` (`AfterTargets="ResolveAssemblyReferences"`, gated on
+  `UseModernTdlib`) copies `$(ModernTdlibRoot)\z.dll` to
+  `$(IntermediateOutputPath)modern-tdlib\zlib1.dll` and adds it to
+  `ReferenceCopyLocalPaths`. `ResolveAssemblyReferences` populates that item
+  and `_CopyFilesMarkedCopyLocal` consumes it afterwards, so the ordering is
+  required.
+* The legacy Debug-only item is scoped with `'$(UseModernTdlib)' != 'true'` so
+  the non-modern path is byte-identical.
+
+Loading the same zlib code under two file names is safe: they are separate
+module instances with independent state, consumed by different libraries.
+Verified in the 26.9.6117.0 package: `zlib1.dll` present at 69,632 bytes
+(identical to `z.dll`, i.e. the pinned 1.3.x build and not the 1.2.11 copy),
+exporting `inflate`, `inflateEnd` and `inflateInit2_`.
+
+### Missing native module diagnostics
+
+The same log ended with `FileNotFoundException` HRESULT `0x8007007E` ("The
+specified module could not be found") with no indication of which module.
+`PushDiagnostics.WriteException` now emits `missing_module=` from
+`FileNotFoundException.FileName` (and `unnamed` when the name is absent, as it
+was here because the failure was a WinRT activation rather than an assembly
+load). The field is gated on HRESULT `0x8007007E`, because `WriteException` is
+also wired to the app-wide unhandled handler: an ordinary file I/O failure
+carries a caller-supplied name that may describe user content, whereas a
+module name is a build artifact. The shared sanitizer still strips anything
+path-shaped. The only managed `DllImport` in the app
+(`ShortcutsService`, `user32.dll`) is commented out, so a "module could not be
+found" fault is always a WinRT activation or a native-to-native import
+failure, never a P/Invoke.
+
+### Latent: ColorSlider contract gate
+
+`ColorSlider.cs` gates `CreateSpringVector3Animation` (universal API contract
+7) on `IsUniversalApiContract5Present`. It is unreachable on this contract-4
+device and belongs to the out-of-scope photo editor, so it is recorded here
+rather than changed.

@@ -71,6 +71,41 @@ namespace Unigram.Views
 
         public void ViewVisibleMessages(bool intermediate)
         {
+#if MODERN_TDLIB
+            // OnViewChanged is invoked from WinRT, so a fault that escapes here unwinds through a
+            // native frame and .NET Native fail-fasts no matter what UnhandledException does.
+            // Catching at the managed source is the only way to record a stack for it.
+            try
+            {
+                ViewVisibleMessagesCore(intermediate);
+            }
+            catch (Exception ex)
+            {
+                TraceScroll(ref _viewBudget, "scroll.view", ex);
+            }
+        }
+
+        // These four handlers run at scroll rate, so an exception that reproduces on every call
+        // would otherwise write thousands of records. PushDiagnostics deletes the log at its size
+        // cap rather than rotating it, so that would evict the first occurrence - the only one
+        // worth having - and the file I/O alone would stall the UI thread.
+        private static int _viewBudget = 4;
+        private static int _headerBudget = 4;
+        private static int _containerBudget = 4;
+        private static int _choosingBudget = 4;
+
+        private static void TraceScroll(ref int budget, string eventName, Exception ex)
+        {
+            if (budget > 0)
+            {
+                budget--;
+                Logs.PushDiagnostics.WriteException(eventName, ex);
+            }
+        }
+
+        private void ViewVisibleMessagesCore(bool intermediate)
+        {
+#endif
             var chat = ViewModel.Chat;
             if (chat == null)
             {
@@ -190,6 +225,31 @@ namespace Unigram.Views
 
         private void UpdateHeaderDate(bool intermediate)
         {
+#if MODERN_TDLIB
+            try
+            {
+                UpdateHeaderDateCore(intermediate);
+            }
+            catch (Exception ex)
+            {
+                if (_headerBudget > 0)
+                {
+                    // Records which collaborator was missing. Booleans only - no identifiers,
+                    // content or paths.
+                    Logs.PushDiagnostics.Write("scroll.header.state",
+                        $"date_header={_dateHeader != null};date_timer={_dateHeaderTimer != null};" +
+                        $"date_panel_visual={_dateHeaderPanel != null};date_panel={DateHeaderPanel != null};" +
+                        $"date_relative={DateHeaderRelative != null};view_model={ViewModel != null};" +
+                        $"pinned_list={ViewModel?.PinnedMessages != null}");
+                }
+
+                TraceScroll(ref _headerBudget, "scroll.header", ex);
+            }
+        }
+
+        private void UpdateHeaderDateCore(bool intermediate)
+        {
+#endif
             var panel = Messages.ItemsPanelRoot as ItemsStackPanel;
             if (panel == null || panel.FirstVisibleIndex < 0)
             {
@@ -273,6 +333,17 @@ namespace Unigram.Views
                         minDateIndex = i;
                     }
 
+#if MODERN_TDLIB
+                    // _dateHeader/_dateHeaderPanel/_dateHeaderTimer are only created when
+                    // DateHeaderPanel resolved during construction, but every use below assumed
+                    // they exist. A date separator scrolling into view is what first reaches this.
+                    if (_dateHeader != null)
+                    {
+                        _dateHeader.Offset = offset >= height && offset < height * 2
+                            ? new Vector3(0, -height * 2 + offset, 0)
+                            : Vector3.Zero;
+                    }
+#else
                     if (offset >= height && offset < height * 2)
                     {
                         _dateHeader.Offset = new Vector3(0, -height * 2 + offset, 0);
@@ -281,6 +352,7 @@ namespace Unigram.Views
                     {
                         _dateHeader.Offset = Vector3.Zero;
                     }
+#endif
                 }
                 else
                 {
@@ -288,8 +360,16 @@ namespace Unigram.Views
                 }
             }
 
+#if MODERN_TDLIB
+            if (_dateHeaderTimer != null)
+            {
+                _dateHeaderTimer.Stop();
+                _dateHeaderTimer.Start();
+            }
+#else
             _dateHeaderTimer.Stop();
             _dateHeaderTimer.Start();
+#endif
             ShowHideDateHeader(minDateIndex > 0, minDateIndex > 0 && minDateIndex < int.MaxValue);
 
             // Read and play messages logic:
@@ -310,6 +390,13 @@ namespace Unigram.Views
                 return;
             }
 
+#if MODERN_TDLIB
+            if (ViewModel == null)
+            {
+                return;
+            }
+#endif
+
             if (ViewModel.LockedPinnedMessageId < firstVisibleId)
             {
                 ViewModel.LockedPinnedMessageId = 0;
@@ -328,7 +415,11 @@ namespace Unigram.Views
                     PinnedMessage.UpdateMessage(ViewModel.Chat, ViewModel.CreateMessage(message), false, 0, 1, false);
                 }
             }
+#if MODERN_TDLIB
+            else if (ViewModel.PinnedMessages != null && ViewModel.PinnedMessages.Count > 0)
+#else
             else if (ViewModel.PinnedMessages.Count > 0)
+#endif
             {
                 var currentPinned = ViewModel.LockedPinnedMessageId != 0
                     ? ViewModel.PinnedMessages.LastOrDefault(x => x.Id < firstVisibleId) ?? ViewModel.PinnedMessages.LastOrDefault()
@@ -350,6 +441,12 @@ namespace Unigram.Views
 
         private void ShowHideDateHeader(bool show, bool animate)
         {
+#if MODERN_TDLIB
+            if (DateHeaderPanel == null || _dateHeaderPanel == null)
+            {
+                return;
+            }
+#endif
             if ((show && DateHeaderPanel.Visibility == Visibility.Visible) || (!show && (DateHeaderPanel.Visibility == Visibility.Collapsed || _dateHeaderCollapsed)))
             {
                 return;
@@ -622,7 +719,13 @@ namespace Unigram.Views
 
                 var target = message.Content as object;
                 var media = root.FindName("Media") as Border;
+#if MODERN_TDLIB
+                // Every other Media/Child access in this method is null-conditional; this one was
+                // not, so a bubble template without a Media element faulted here during scrolling.
+                var panel = media?.Child as Panel;
+#else
                 var panel = media.Child as Panel;
+#endif
 
                 if (target is MessageText messageText && messageText.WebPage != null)
                 {
@@ -834,7 +937,12 @@ namespace Unigram.Views
 
                 var target = message.Content as object;
                 var media = root.FindName("Media") as Border;
+#if MODERN_TDLIB
+                // Same unguarded dereference as in Play; the two lines below it already use ?..
+                var panel = media?.Child as FrameworkElement;
+#else
                 var panel = media.Child as FrameworkElement;
+#endif
 
                 if (target is MessageText messageText && messageText.WebPage != null)
                 {
@@ -895,6 +1003,45 @@ namespace Unigram.Views
 
         private void OnChoosingItemContainer(ListViewBase sender, ChoosingItemContainerEventArgs args)
         {
+#if MODERN_TDLIB
+            try
+            {
+                OnChoosingItemContainerCore(sender, args);
+            }
+            catch (Exception ex)
+            {
+                TraceScroll(ref _choosingBudget, "scroll.choosing", ex);
+
+                // The Messages list has no ItemTemplate: the container's template and type tag come
+                // only from CreateSelectorItem. Leaving IsContainerPrepared false would hand XAML an
+                // untagged, untemplated container that renders blank and can never be recycled.
+                // XAML's own suggestion cannot be reused either - if the core faulted before it was
+                // taken out of the recycle pool, keeping it would realize a container that is still
+                // pool-owned and could later be handed to a second item.
+                try
+                {
+                    if (args.ItemContainer != null)
+                    {
+                        foreach (var pool in _typeToItemHashSetMapping.Values)
+                        {
+                            pool.Remove(args.ItemContainer);
+                        }
+                    }
+
+                    args.ItemContainer = CreateSelectorItem("EmptyMessageTemplate");
+                    args.IsContainerPrepared = true;
+                }
+                catch
+                {
+                    // This handler is invoked from WinRT. Letting the recovery itself unwind would
+                    // produce the exact fail-fast the outer catch exists to prevent.
+                }
+            }
+        }
+
+        private void OnChoosingItemContainerCore(ListViewBase sender, ChoosingItemContainerEventArgs args)
+        {
+#endif
             var typeName = SelectTemplateCore(args.Item);
             var relevantHashSet = _typeToItemHashSetMapping[typeName];
 
@@ -903,7 +1050,14 @@ namespace Unigram.Views
             // recycled ItemContainer available to be reused.
             if (args.ItemContainer != null)
             {
+#if MODERN_TDLIB
+                // Tag is null for a container the ListView created itself rather than one handed
+                // out by CreateSelectorItem, and calling Equals on it faulted during recycling.
+                // Treating it as a miss lets XAML re-suggest, which is what a mismatch already does.
+                if (typeName.Equals(args.ItemContainer.Tag))
+#else
                 if (args.ItemContainer.Tag.Equals(typeName))
+#endif
                 {
                     // Suggestion matches what we want, so remove it from the recycle queue
                     relevantHashSet.Remove(args.ItemContainer);
@@ -946,6 +1100,20 @@ namespace Unigram.Views
 
         private void OnContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
         {
+#if MODERN_TDLIB
+            try
+            {
+                OnContainerContentChangingCore(sender, args);
+            }
+            catch (Exception ex)
+            {
+                TraceScroll(ref _containerBudget, "scroll.container", ex);
+            }
+        }
+
+        private void OnContainerContentChangingCore(ListViewBase sender, ContainerContentChangingEventArgs args)
+        {
+#endif
             if (args.InRecycleQueue == true)
             {
                 var test = args.ItemContainer.ContentTemplateRoot as FrameworkElement;
@@ -961,7 +1129,18 @@ namespace Unigram.Views
 
                 // XAML has indicated that the item is no longer being shown, so add it to the recycle queue
                 var tag = args.ItemContainer.Tag as string;
+#if MODERN_TDLIB
+                // A container without a type tag, or with one no template was registered for,
+                // cannot go back into a recycle pool. Indexing the map with it would throw.
+                if (tag == null || !_typeToItemHashSetMapping.TryGetValue(tag, out var pool))
+                {
+                    return;
+                }
+
+                pool.Add(args.ItemContainer);
+#else
                 var added = _typeToItemHashSetMapping[tag].Add(args.ItemContainer);
+#endif
 
                 return;
             }
@@ -1175,7 +1354,14 @@ namespace Unigram.Views
             }
 
             var chat = message.GetChat();
+#if MODERN_TDLIB
+            // && binds tighter than ||, so the original parsed as
+            // (chat != null && chat.Type is ChatTypeSupergroup) || (chat.Type is ChatTypeBasicGroup)
+            // and dereferenced chat in the second operand whenever GetChat missed the cache.
+            if (chat != null && (chat.Type is ChatTypeSupergroup || chat.Type is ChatTypeBasicGroup))
+#else
             if (chat != null && chat.Type is ChatTypeSupergroup || chat.Type is ChatTypeBasicGroup)
+#endif
             {
                 return "ChatFriendMessageTemplate";
             }

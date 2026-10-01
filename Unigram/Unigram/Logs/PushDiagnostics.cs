@@ -94,6 +94,23 @@ namespace Unigram.Logs
                     details += $";param={argument.ParamName}";
                 }
 
+                // A missing native module surfaces as FileNotFoundException/DllNotFoundException
+                // with HRESULT 0x8007007E, and the module name is the only thing that identifies
+                // which payload failed to load. The HRESULT test keeps ordinary file I/O failures
+                // out of this field, since those carry a caller-supplied name that may describe
+                // user content; a module name is a build artifact.
+                if (root.HResult == unchecked((int)0x8007007E))
+                {
+                    if (root is FileNotFoundException notFound && !string.IsNullOrEmpty(notFound.FileName))
+                    {
+                        details += $";missing_module={SanitizeErrorMessage(notFound.FileName, 120)}";
+                    }
+                    else
+                    {
+                        details += ";missing_module=unnamed";
+                    }
+                }
+
                 details += $";message={SanitizeErrorMessage(root.Message)}";
 
                 // .NET Native reduces a NullReferenceException message to the resource key
