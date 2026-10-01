@@ -42,12 +42,21 @@ namespace Unigram.Controls.Drawers
 
 #if MODERN_TDLIB
         private static int _templateBudget = 2;
+        private static int _searchBudget = 2;
 
         private static void TraceTemplate(string site)
         {
             if (System.Threading.Interlocked.Decrement(ref _templateBudget) >= 0)
             {
                 Logs.PushDiagnostics.Write("drawer.template", $"result=unavailable;site={site}");
+            }
+        }
+
+        private static void TraceSearch(NullReferenceException exception, uint phase)
+        {
+            if (System.Threading.Interlocked.Decrement(ref _searchBudget) >= 0)
+            {
+                Logs.PushDiagnostics.WriteException("drawer.search", exception, $"phase={phase}");
             }
         }
 #endif
@@ -99,11 +108,32 @@ namespace Unigram.Controls.Drawers
                 var items = ViewModel.SearchStickers;
                 if (items != null && string.Equals(FieldStickers.Text, items.Query))
                 {
-                    await items.LoadMoreItemsAsync(1);
-                    await items.LoadMoreItemsAsync(2);
+                    await LoadSearchPhaseAsync(items, 1);
+                    await LoadSearchPhaseAsync(items, 2);
                 }
             });
         }
+
+#if MODERN_TDLIB
+        private static async Task LoadSearchPhaseAsync(SearchStickerSetsCollection items, uint phase)
+        {
+            try
+            {
+                await items.LoadMoreItemsAsync(phase);
+            }
+            catch (NullReferenceException ex)
+            {
+                // Emoji suggestions and sticker-set search are independent, so one failed
+                // phase must not prevent the other from returning results.
+                TraceSearch(ex, phase);
+            }
+        }
+#else
+        private static async Task LoadSearchPhaseAsync(SearchStickerSetsCollection items, uint phase)
+        {
+            await items.LoadMoreItemsAsync(phase);
+        }
+#endif
 
         public Services.Settings.StickersTab Tab => Services.Settings.StickersTab.Stickers;
 

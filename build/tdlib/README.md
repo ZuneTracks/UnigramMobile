@@ -614,10 +614,9 @@ excludes this path outright; the catch additionally prevents a drawer fault
 from unwinding into the dispatcher, which would turn a handled fault into a
 fatal one.
 
-The probe excluded that final collection-replacement path: the reported
-`app.unhandled` NRE occurred later, while the sticker drawer was realizing its
-visual containers. 26.9.6127.0 hardens the two remaining W10M-sensitive
-surfaces in the experimental configuration:
+The initial probe excluded that final collection-replacement path. 26.9.6127.0
+hardened two independent W10M-sensitive surfaces in the experimental
+configuration:
 
 * The complete decorative composition setup (`GetElementVisual`, clip creation,
   shadow attachment and relative-size setup) is now inside the existing
@@ -630,10 +629,20 @@ surfaces in the experimental configuration:
   bounded `drawer.template|result=unavailable;site=<site>` marker identifies
   that benign skip without logging sticker, chat, or user data.
 
-This is intentionally not claimed device-confirmed until a drawer-open test
-produces no `app.unhandled` record. The guards skip only a currently
-unrealized decorative thumbnail/container; the control will receive a later
-container-realization callback rather than allowing a dispatcher exception.
+The 6127 device run recorded one safe `drawer.template` recovery but still
+reported three `app.unhandled` NREs. Each occurred immediately before its
+paired `GetStickers` and `SearchStickers` results, not during the saved-set
+load or toolbar realization. The visual-container guards remain correct, but
+they are not the primary fault.
+
+26.9.6128.0 narrows recovery to the two optional, independent throttled search
+phases. It catches only `NullReferenceException` around each awaited
+`LoadMoreItemsAsync` operation, writes up to two
+`drawer.search|phase=<1-or-2>;...` records while the exception still retains
+its throw information, and continues from an emoji-suggestion failure to the
+independent sticker-set search phase. This is not a general dispatcher catch:
+other exception types still surface normally, and a phase failure remains
+explicitly diagnostic rather than being treated as success.
 
 ## Fatal crash: RLottie cannot load in Release (26.9.6117.0)
 
