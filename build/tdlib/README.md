@@ -177,7 +177,7 @@ size cap, and unbounded tracing would evict the startup records. All of this is
 gated behind `MODERN_TDLIB`; the non-modern configuration keeps the original
 unguarded statements.
 
-#### `Visual.RelativeSizeAdjustment` is not available on this device
+#### `Visual.RelativeSizeAdjustment` is reported present but is unusable
 
 Device tracing showed `DropShadowEx.Attach` completing successfully
 (`shadow.attach|step=done`) immediately before the `MainPage` fault, which
@@ -192,11 +192,16 @@ set `RelativeSizeAdjustment`, and the XAML parser wrapped the resulting
 `NullReferenceException` as a `XamlParseException` (`HRESULT 0x802B000A`), which
 aborted navigation to the chat page with no visible error.
 
-`DropShadowEx.SetRelativeSize` now replaces every live use of the property. It
-probes `ApiInformation.IsPropertyPresent` once per process and, when the
-property is absent, sizes the shadow visual from the host element and keeps it
-in sync through `SizeChanged`. This restores the shadows rather than dropping
-them, so the degradation is limited to older devices doing the sizing manually.
+**`ApiInformation.IsPropertyPresent` cannot be used to gate this property.** The
+first fix probed it per member, and the device capability line proved the probe
+is a false positive: `visual_relative_size=True` on a `universal_contract=4`
+device, while the setter still failed with `hresult=0x80004003` (`E_POINTER`) at
+all five converted call sites. `DropShadowEx.SetRelativeSize` therefore gates on
+`ApiInfo.IsUniversalApiContract5Present` instead, which is also the convention
+the rest of `ApiInfo` already follows for contract v5 members — the per-member
+probes there are deliberately commented out in favour of the contract check.
+When the contract is absent the shadow visual is sized from the host element and
+kept in sync through `SizeChanged`, so the shadows still render.
 The `#else` (non-`MODERN_TDLIB`) branches keep the original statements.
 
 The call sites converted are `MainPage..ctor`, `StickerPanel..ctor`,
@@ -211,6 +216,54 @@ failure, the decorative composition in `StickerPanel`, `EmojiDrawer`,
 `try`/`catch` (`drawer.construct|drawer=...`). These controls are instantiated
 eagerly by `ChatView.xaml`, so a single unavailable composition member in any of
 them would otherwise make chats impossible to open.
+
+#### Supergroup chats crashed on the pinned-message path
+
+Opening certain supergroups terminated the app. The diagnostics correlated the
+crash precisely: `SupergroupFullInfo` → `ChatAdministrators` →
+`GetChatMessageCount` → `app.unhandled` 16 ms later, then a fresh
+`startup.app|stage=configure`. Chats without a pinned message were unaffected,
+which is why one group crashed consistently and another never did.
+
+`DialogViewModel.LoadPinnedMessagesSliceAsync` is an `async void` method, so any
+fault inside it goes straight to `Application.UnhandledException` — which under
+.NET Native receives an exception whose stack has **already been discarded** —
+and takes the process down. That is why all four `app.unhandled` entries carried
+no `stack=` field and could not be localised from the log alone.
+
+The method is now a thin wrapper that awaits
+`LoadPinnedMessagesSliceCoreAsync` inside a reporting `try`/`catch`
+(`pinned.load`). A failure now records a usable stack and leaves the chat open
+without its pinned-message banner instead of terminating the app.
+
+`PushDiagnostics.WriteException` additionally falls back to a sanitised
+`Exception.ToString()` as `detail=` when `StackTrace` is empty, so a stripped
+unhandled exception still carries whatever locator information remains.
+
+#### Composition members verified as already gated
+
+A recursive sweep of every `CreateShapeVisual`, `CreateLinearGradientBrush` and
+`CreateSpringVector3Animation` call site confirmed that all of them except
+`StorageChart` are already behind `ApiInfo.CanUseDirectComposition`,
+`ApiInfo.IsFullExperience` or `IsUniversalApiContract7Present`, or are dead code
+(`FileButton.OnPauseToPlay` / `OnPlayToPause` are commented out at their call
+sites). `ChatActionIndicator` is gated inside `UpdateAction`, and
+`MessagePinnedLine`, `NumericTextBlock` and `ProgressBarRing` all null-check the
+fields their guarded constructors leave unset.
+
+`StorageChart` was the one genuinely unguarded user: its constructor called
+`CreateShapeVisual` unconditionally and `ArrangeOverride`, `SetItems` and
+`Update` dereferenced the result. It is now gated the same way, with null checks
+on each member, so the storage page renders without the ring chart rather than
+faulting.
+
+#### Calls are intentionally unavailable
+
+`voip.disabled|result=unsupported;feature=experimental_tdlib` in the diagnostics
+is expected, not a regression. VoIP is one of the features explicitly disabled
+for this experimental build (see the disabled-feature list above); the modern
+TDLib call API was out of the ported scope. Placing or receiving a call logs
+that line and does nothing else.
 
 #### Device capability reporting
 

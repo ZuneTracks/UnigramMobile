@@ -83,16 +83,18 @@ namespace Unigram.Common
 #if MODERN_TDLIB
         private static bool? _canUseRelativeSizeAdjustment;
 
-        // Visual.RelativeSizeAdjustment is UniversalApiContract v5. On an older device the
-        // interface query fails and the setter faults, so the shadow is sized by tracking
-        // the element instead. Attaching a shadow and then never sizing it would leave an
-        // invisible shadow, which is why this falls back rather than skipping.
+        // Visual.RelativeSizeAdjustment lives on IVisual2, which is UniversalApiContract v5.
+        // IsPropertyPresent cannot be used here: on Windows 10 Mobile (contract v4) it reports
+        // the property as present, but the IVisual2 query still fails and the setter faults
+        // with E_POINTER. The contract level is the only reliable signal, so gate on that.
+        // Attaching a shadow and then never sizing it would leave an invisible shadow, which
+        // is why this falls back to manual sizing rather than skipping.
         private static bool CanUseRelativeSizeAdjustment
         {
             get
             {
                 return (_canUseRelativeSizeAdjustment = _canUseRelativeSizeAdjustment
-                    ?? ApiInformation.IsPropertyPresent("Windows.UI.Composition.Visual", "RelativeSizeAdjustment")) ?? false;
+                    ?? ApiInfo.IsUniversalApiContract5Present) ?? false;
             }
         }
 

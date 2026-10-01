@@ -2,8 +2,10 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using Windows.Security.Cryptography;
 using Windows.Security.Cryptography.Core;
 using Windows.Storage;
@@ -105,6 +107,18 @@ namespace Unigram.Logs
                 {
                     var frames = stack.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", " << ");
                     details += $";stack={SanitizeErrorMessage(frames, 900)}";
+                }
+                else
+                {
+                    // An exception surfaced through Application.UnhandledException has already
+                    // had its stack discarded. ToString still carries the throw site often
+                    // enough to be worth recording, and it is the only remaining locator.
+                    var text = root.ToString();
+                    if (!string.IsNullOrEmpty(text))
+                    {
+                        var frames = text.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", " << ");
+                        details += $";detail={SanitizeErrorMessage(frames, 900)}";
+                    }
                 }
 #else
                 details = $"result=error;hresult=0x{exception.HResult:X8};type={exception.GetType().Name}";

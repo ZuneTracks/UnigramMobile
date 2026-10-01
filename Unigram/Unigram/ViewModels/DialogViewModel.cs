@@ -1101,6 +1101,24 @@ namespace Unigram.ViewModels
 
         private async void LoadPinnedMessagesSliceAsync(long maxId, VerticalAlignment direction = VerticalAlignment.Center)
         {
+#if MODERN_TDLIB
+            // This is an async void continuation, so anything thrown here reaches
+            // Application.UnhandledException with its stack already discarded and takes the
+            // process down. Reporting the fault here keeps a usable stack and leaves the chat
+            // open without its pinned message banner instead of terminating the app.
+            try
+            {
+                await LoadPinnedMessagesSliceCoreAsync(maxId, direction);
+            }
+            catch (Exception ex)
+            {
+                Logs.PushDiagnostics.WriteException("pinned.load", ex, "result=error");
+            }
+        }
+
+        private async Task LoadPinnedMessagesSliceCoreAsync(long maxId, VerticalAlignment direction)
+        {
+#endif
             await Task.Yield();
 
             var chat = _chat;
