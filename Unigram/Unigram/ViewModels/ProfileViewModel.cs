@@ -798,6 +798,10 @@ namespace Unigram.ViewModels
         public RelayCommand CallCommand { get; }
         private async void CallExecute()
         {
+#if MODERN_TDLIB
+            Unigram.Logs.PushDiagnostics.Write("voip.disabled", "result=unsupported;feature=experimental_tdlib");
+            return;
+#else
             var chat = _chat;
             if (chat == null)
             {
@@ -843,7 +847,7 @@ namespace Unigram.ViewModels
                 return;
             }
 
-            var response = await ProtoService.SendAsync(new CreateCall(user.Id, new CallProtocol(true, true, 65, 74, new string[0]), false));
+            var response = await ProtoService.SendAsync(new CreateCall(user.Id, new CallProtocol(true, true, 65, libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer(), new string[0]), false));
             if (response is Error error)
             {
                 if (error.Code == 400 && error.Message.Equals("PARTICIPANT_VERSION_OUTDATED"))
@@ -855,6 +859,7 @@ namespace Unigram.ViewModels
                     await MessagePopup.ShowAsync(string.Format(Strings.Resources.CallNotAvailable, user.GetFullName()), Strings.Resources.AppName, Strings.Resources.OK);
                 }
             }
+#endif
         }
 
         #endregion

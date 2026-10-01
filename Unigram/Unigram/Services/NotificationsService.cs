@@ -14,6 +14,7 @@ using Unigram.Controls.Messages;
 using Unigram.Converters;
 using Unigram.Navigation;
 using Unigram.Views;
+using Windows.ApplicationModel;
 using Windows.ApplicationModel.AppService;
 using Windows.Data.Xml.Dom;
 using Windows.Foundation.Collections;
@@ -743,6 +744,12 @@ namespace Unigram.Services
             {
                 var userId = _protoService.Options.MyId;
                 Logs.PushDiagnostics.Write("wns.registration.start", $"session={_sessionService.Id};user_ready={userId != 0};already_registered={_alreadyRegistered}");
+#if MODERN_TDLIB
+                // This side-by-side package does not share the stable application's WNS
+                // association. A successful TDLib registration only proves the channel was
+                // stored server-side; native-task records are still needed to prove delivery.
+                Logs.PushDiagnostics.Write("wns.identity", $"package={Package.Current.Id.Name};isolation=experimental;delivery=requires_experimental_wns_association");
+#endif
                 if (userId == 0)
                 {
                     Logs.Logger.Info(Logs.Target.Notifications, "Deferring push registration until the user ID is available");

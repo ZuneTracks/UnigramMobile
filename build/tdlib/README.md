@@ -151,8 +151,17 @@ additionally publish this experimental build's telemetry, including the
 signed-in user id, into the production App Center application. Unhandled and
 unobserved exceptions are written to the local privacy-filtered diagnostics log
 instead.
-Device installation, fresh login, push, and Live Tile validation remain
-outstanding.
+Device installation and fresh login are complete. Push delivery and Live Tile
+validation remain outstanding. The isolated experimental package registers its
+own WNS channel successfully, but it has a different package identity from the
+stable application and therefore cannot inherit that application's WNS
+association. `RegisterDevice` confirms only that TDLib accepted this channel;
+the log must subsequently contain `native.task.run` and
+`native.notification.displayed` to prove a WNS delivery reached the native
+background task and updated the tile. 26.9.6122.0 adds a privacy-safe
+`wns.identity` record to make that boundary explicit. Until an experimental
+WNS association is provisioned, a missing native-task record is an upstream
+delivery/configuration issue, not a Live Tile rendering failure.
 
 ### Composition degradations on device
 
@@ -335,6 +344,15 @@ is expected, not a regression. VoIP is one of the features explicitly disabled
 for this experimental build (see the disabled-feature list above); the modern
 TDLib call API was out of the ported scope. Placing or receiving a call logs
 that line and does nothing else.
+
+The experimental branch began at 26.8.6012.4, so it does **not** inherit the
+stable 26.8.6012.5 call-protocol commit. 26.9.6122.0 carries that small source
+fix forward for the eventual call port: profile call start, declined-call retry,
+and call acceptance now use
+`libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer()` rather than the
+obsolete hard-coded layer 74. This aligns every source call site (the dialog
+path already used the dynamic layer), but it deliberately does not remove the
+experimental VoIP gate or claim that calling now works.
 
 #### Device capability reporting
 
