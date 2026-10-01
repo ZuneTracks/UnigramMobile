@@ -614,6 +614,27 @@ excludes this path outright; the catch additionally prevents a drawer fault
 from unwinding into the dispatcher, which would turn a handled fault into a
 fatal one.
 
+The probe excluded that final collection-replacement path: the reported
+`app.unhandled` NRE occurred later, while the sticker drawer was realizing its
+visual containers. 26.9.6127.0 hardens the two remaining W10M-sensitive
+surfaces in the experimental configuration:
+
+* The complete decorative composition setup (`GetElementVisual`, clip creation,
+  shadow attachment and relative-size setup) is now inside the existing
+  `drawer.construct` recovery block. The sibling emoji and animation drawers
+  already did this; the sticker drawer had left its first two composition calls
+  outside the block.
+* Virtualized item and toolbar paths now verify their template root and first
+  image child before reading or writing them. A recycled container can be
+  offered before the XAML template is realized on Windows 10 Mobile. The
+  bounded `drawer.template|result=unavailable;site=<site>` marker identifies
+  that benign skip without logging sticker, chat, or user data.
+
+This is intentionally not claimed device-confirmed until a drawer-open test
+produces no `app.unhandled` record. The guards skip only a currently
+unrealized decorative thumbnail/container; the control will receive a later
+container-realization callback rather than allowing a dispatcher exception.
+
 ## Fatal crash: RLottie cannot load in Release (26.9.6117.0)
 
 Scrolling a supergroup killed the process outright even though the managed
