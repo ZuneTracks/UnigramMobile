@@ -405,18 +405,30 @@ namespace Unigram.Views
                     var transform = container.TransformToVisual(DateHeaderRelative);
                     var point = transform.TransformPoint(new Point());
 #endif
+#if MODERN_TDLIB
+                    _headerStep = 12;
+#endif
                     var height = (float)DateHeader.ActualHeight;
+#if MODERN_TDLIB
+                    _headerStep = 13;
+#endif
                     var offset = (float)point.Y + height;
 
                     minDate = false;
 
                     if (/*offset >= 0 &&*/ offset < height)
                     {
+#if MODERN_TDLIB
+                        _headerStep = 14;
+#endif
                         container.Opacity = 0;
                         minDateIndex = int.MaxValue; // Force show
                     }
                     else
                     {
+#if MODERN_TDLIB
+                        _headerStep = 15;
+#endif
                         container.Opacity = 1;
                         minDateIndex = i;
                     }
@@ -427,6 +439,9 @@ namespace Unigram.Views
                     // they exist. A date separator scrolling into view is what first reaches this.
                     if (_dateHeader != null)
                     {
+#if MODERN_TDLIB
+                        _headerStep = 16;
+#endif
                         _dateHeader.Offset = offset >= height && offset < height * 2
                             ? new Vector3(0, -height * 2 + offset, 0)
                             : Vector3.Zero;

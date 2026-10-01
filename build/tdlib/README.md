@@ -513,12 +513,17 @@ points through the method and reported as `step=` on the next failure:
 | 9 | thread branch |
 | 10 | pinned-list branch |
 | 11 | completed |
+| 12 | before `DateHeader.ActualHeight` |
+| 13 | before calculating the offset |
+| 14 | before hiding the inline separator |
+| 15 | before showing the inline separator |
+| 16 | before updating the date-header composition offset |
 
 The probe also now reports `DateHeader`, `DateHeaderLabel`, `PinnedMessage` and
 `ViewModel.Chat`, the four collaborators the original probe omitted. All are
 booleans and a step ordinal; no identifiers, content or paths.
 
-### Corrected in 26.9.6124.0: a detached container can throw during transform
+### Still narrowing in 26.9.6125.0: the remaining date-separator NRE
 
 The ordinal paid for itself immediately. The next device log reported
 `step=5` on **all four** occurrences, with every one of the eleven probed
@@ -543,20 +548,17 @@ failed both calls. The fault is specific to the container being transformed.
 
 26.9.6121.0 guarded only a null return. The 26.9.6122.0 device log still showed
 four `step=5` NREs and **no** `scroll.header.transform` record. 26.9.6123.0
-then caught the `TransformToVisual` call itself, but the next device run still
-reported the same NRE without a transform record. That proves the surviving
-dereference is `transform.TransformPoint(...)`: the WinRT call can return a
-non-null transform object whose point conversion faults after virtualization has
-detached the container.
+then caught the `TransformToVisual` call itself, and 26.9.6124.0 caught both
+that call and `TransformPoint`. The next device log still reported `step=5`
+without a recovery record. The transform hypothesis is therefore disproven:
+the remaining dereference is later in this branch, after point conversion.
 
-26.9.6124.0 treats `TransformToVisual` and `TransformPoint` as one atomic
-operation, catches the specific `NullReferenceException` around both, and
-retains the null guard for the alternate outcome. The recovery is `continue` rather than
-guard-and-proceed. That is deliberate: if the transform failed, the container's
-on-screen position is undefined, so it must not be treated as the first visible
-item or used to position the floating pill. `minItem` stays true, so the next
-container supplies the date instead, and `firstVisibleId`/`lastVisibleId` are
-assigned *before* the step-3 block, so skipping does not lose them.
+26.9.6125.0 subdivides the coarse ordinal around every remaining WinRT/object
+operation: `DateHeader.ActualHeight`, both `container.Opacity` assignments, and
+the `_dateHeader.Offset` composition write. It also records
+`startup.app|...;package_version=<version>` so a pulled log proves the precise
+APPX that produced it. Until the new ordinal identifies a single expression,
+this documentation intentionally does **not** claim the NRE is fixed.
 
 Both guards restore `container.Opacity` to 1 before skipping, and that detail is
 easy to get wrong. `Opacity` is set to 0 only when a separator is hidden
@@ -568,9 +570,9 @@ step 5 here, because it runs while `minItem` is still true, which is exactly the
 window in which the first date separator appears.
 
 A budgeted `scroll.header.transform|result=throw;step=<n>` or
-`result=null;step=<n>` record confirms the recovered outcome on the next device
-run: the log should show zero `scroll.header` NREs and up to two transform
-records.
+`result=null;step=<n>` remains useful if virtualization affects either
+transform call. The next device run should instead use the expanded
+`scroll.header.state|step=<n>` ordinal to identify the remaining failure.
 
 ### Locating a stackless NRE: why first-chance capture is not available
 
