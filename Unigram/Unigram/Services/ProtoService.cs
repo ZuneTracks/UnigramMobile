@@ -1574,9 +1574,34 @@ namespace Unigram.Services
 
         private void OnResultCore(BaseObject update)
         {
+#if MODERN_TDLIB
+            // Local cache maintenance must never stop an update from reaching the view
+            // models. A single unmapped field in the 1.8.66 surface would otherwise leave
+            // the UI frozen on whatever state it last rendered.
+            try
+            {
+                TrackUpdate(update);
+            }
+            finally
+            {
+                _aggregator.Publish(update);
+            }
+#else
+            TrackUpdate(update);
+            _aggregator.Publish(update);
+#endif
+        }
+
+        private void TrackUpdate(BaseObject update)
+        {
             if (update is UpdateAuthorizationState updateAuthorizationState)
             {
                 PushDiagnostics.Write("tdlib.authorization", $"state={updateAuthorizationState.AuthorizationState?.GetType().Name ?? "null"}");
+
+                // Assign before dispatching: CleanUp and InitializeReady can throw, and
+                // leaving _authorizationState stale strands the UI on the connecting screen.
+                _authorizationState = updateAuthorizationState.AuthorizationState;
+
                 switch (updateAuthorizationState.AuthorizationState)
                 {
                     case AuthorizationStateLoggingOut loggingOut:
@@ -1590,6 +1615,9 @@ namespace Unigram.Services
                         break;
                 }
 
+                // CleanUp resets _authorizationState to null, so restore it. A null state
+                // means "TDLib has not reported one yet" and routes activation to IntroPage,
+                // which is not the same thing as a closed session.
                 _authorizationState = updateAuthorizationState.AuthorizationState;
             }
             else if (update is UpdateAnimationSearchParameters updateAnimationSearchParameters)
@@ -1648,12 +1676,11 @@ namespace Unigram.Services
             {
                 if (_chats.TryGetValue(updateChatDraftMessage.ChatId, out Chat value))
                 {
-                    Monitor.Enter(value);
-
-                    value.DraftMessage = updateChatDraftMessage.DraftMessage;
-                    SetChatPositions(value, updateChatDraftMessage.Positions);
-                    
-                    Monitor.Exit(value);
+                    lock (value)
+                    {
+                        value.DraftMessage = updateChatDraftMessage.DraftMessage;
+                        SetChatPositions(value, updateChatDraftMessage.Positions);
+                    }
                 }
             }
 #if MODERN_TDLIB
@@ -1708,12 +1735,11 @@ namespace Unigram.Services
             {
                 if (_chats.TryGetValue(updateChatLastMessage.ChatId, out Chat value))
                 {
-                    Monitor.Enter(value);
-
-                    value.LastMessage = updateChatLastMessage.LastMessage;
-                    SetChatPositions(value, updateChatLastMessage.Positions);
-                    
-                    Monitor.Exit(value);
+                    lock (value)
+                    {
+                        value.LastMessage = updateChatLastMessage.LastMessage;
+                        SetChatPositions(value, updateChatLastMessage.Positions);
+                    }
                 }
             }
             else if (update is UpdateChatNotificationSettings updateNotificationSettings)
@@ -1747,34 +1773,33 @@ namespace Unigram.Services
             {
                 if (_chats.TryGetValue(updateChatPosition.ChatId, out Chat value))
                 {
-                    Monitor.Enter(value);
-
-                    int i;
-                    for (i = 0; i < value.Positions.Count; i++)
+                    lock (value)
                     {
-                        if (value.Positions[i].List.ToId()  == updateChatPosition.Position.List.ToId())
+                        int i;
+                        for (i = 0; i < value.Positions.Count; i++)
                         {
-                            break;
+                            if (value.Positions[i].List.ToId()  == updateChatPosition.Position.List.ToId())
+                            {
+                                break;
+                            }
                         }
-                    }
 
-                    var newPositions = new List<ChatPosition>(value.Positions.Count + (updateChatPosition.Position.Order == 0 ? 0 : 1) - (i < value.Positions.Count ? 1 : 0));
-                    if (updateChatPosition.Position.Order != 0)
-                    {
-                        newPositions.Add(updateChatPosition.Position);
-                    }
-
-                    for (int j = 0; j < value.Positions.Count; j++)
-                    {
-                        if (j != i)
+                        var newPositions = new List<ChatPosition>(value.Positions.Count + (updateChatPosition.Position.Order == 0 ? 0 : 1) - (i < value.Positions.Count ? 1 : 0));
+                        if (updateChatPosition.Position.Order != 0)
                         {
-                            newPositions.Add(value.Positions[j]);
+                            newPositions.Add(updateChatPosition.Position);
                         }
+
+                        for (int j = 0; j < value.Positions.Count; j++)
+                        {
+                            if (j != i)
+                            {
+                                newPositions.Add(value.Positions[j]);
+                            }
+                        }
+
+                        SetChatPositions(value, newPositions);
                     }
-
-                    SetChatPositions(value, newPositions);
-
-                    Monitor.Exit(value);
                 }
             }
             else if (update is UpdateChatReadInbox updateChatReadInbox)
@@ -1929,9 +1954,10 @@ namespace Unigram.Services
             {
                 _chats[updateNewChat.Chat.Id] = updateNewChat.Chat;
 
-                Monitor.Enter(updateNewChat.Chat);
-                SetChatPositions(updateNewChat.Chat, updateNewChat.Chat.Positions);
-                Monitor.Exit(updateNewChat.Chat);
+                lock (updateNewChat.Chat)
+                {
+                    SetChatPositions(updateNewChat.Chat, updateNewChat.Chat.Positions);
+                }
 
                 if (updateNewChat.Chat.Photo != null)
                 {
@@ -1958,7 +1984,7 @@ namespace Unigram.Services
                 {
                     _settings.UserId = (int)myId.Value;
 
-#if !DEBUG
+#if !DEBUG && !MODERN_TDLIB
                     Microsoft.AppCenter.AppCenter.SetUserId($"uid={myId.Value}");
 #endif
                 }
@@ -2073,8 +2099,6 @@ namespace Unigram.Services
                     value.Status = updateUserStatus.Status;
                 }
             }
-
-            _aggregator.Publish(update);
         }
     }
 

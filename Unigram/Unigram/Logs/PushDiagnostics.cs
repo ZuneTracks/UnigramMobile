@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using Windows.Security.Cryptography;
@@ -65,19 +66,44 @@ namespace Unigram.Logs
                 return;
             }
 
-            var details = $"result=error;hresult=0x{exception.HResult:X8};type={exception.GetType().Name}";
+            string details;
 
-#if MODERN_TDLIB
-            // The parameter name carried by an argument exception identifies which value an
-            // interop call rejected, which is what makes a marshalling failure actionable.
-            // It is a compile-time identifier from the API surface, never user data.
-            if (exception is ArgumentException argument && !string.IsNullOrEmpty(argument.ParamName))
+            try
             {
-                details += $";param={argument.ParamName}";
-            }
+#if MODERN_TDLIB
+                // EventAggregator dispatches updates through MethodInfo.Invoke, so the
+                // failure that matters is wrapped in a TargetInvocationException. Report the
+                // innermost cause and keep the wrapper chain, which is type names only.
+                var root = exception;
+                var chain = root.GetType().Name;
+                while (root is TargetInvocationException && root.InnerException != null)
+                {
+                    root = root.InnerException;
+                    chain += ">" + root.GetType().Name;
+                }
 
-            details += $";message={SanitizeErrorMessage(exception.Message)}";
+                details = $"result=error;hresult=0x{root.HResult:X8};type={root.GetType().Name};chain={chain}";
+
+                // The parameter name carried by an argument exception identifies which value an
+                // interop call rejected, which is what makes a marshalling failure actionable.
+                // It is a compile-time identifier from the API surface, never user data.
+                if (root is ArgumentException argument && !string.IsNullOrEmpty(argument.ParamName))
+                {
+                    details += $";param={argument.ParamName}";
+                }
+
+                details += $";message={SanitizeErrorMessage(root.Message)}";
+#else
+                details = $"result=error;hresult=0x{exception.HResult:X8};type={exception.GetType().Name}";
 #endif
+            }
+            catch
+            {
+                // This runs inside a catch handler on TDLib's receive thread. Letting a
+                // logging failure escape would reach the native caller and fail the process
+                // fast, replacing the original fault with a less useful one.
+                details = "result=error;type=unavailable";
+            }
 
             Write(eventName, details);
         }

@@ -3,7 +3,18 @@ param(
     [string]$WorkRoot = (Join-Path $env:LOCALAPPDATA "UnigramTdlibExperiment"),
     [string]$VisualStudioPath = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools",
     [ValidateSet("Dependencies", "Generate", "Configure", "Build", "All")]
-    [string]$Stage = "All"
+    [string]$Stage = "All",
+    # Toolset used for the ARM UWP C++/CX build of TDLib.
+    #
+    # v143 (MSVC 14.44) is the default. TDLib 1.8.66 is 2026-era C++ and v141
+    # (MSVC 14.16, 2017) miscompiled it: the resulting binary corrupted the
+    # process heap during concurrent TdDb SQLite initialization, surfacing as an
+    # LFH double free when .NET Native freed an HSTRING. v143 also matches the
+    # generation of vccorlib140_app.dll shipped by the Microsoft.VCLibs.140.00
+    # 14.0.33519.0 framework package that the app actually runs against, so the
+    # inline Platform::String code in the headers matches the runtime DLL.
+    [ValidateSet("v141", "v143")]
+    [string]$Toolset = "v143"
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,6 +40,7 @@ $installedRoot = Join-Path $WorkRoot "vcpkg_installed"
 $hostInstalledRoot = Join-Path $WorkRoot "vcpkg_host_installed"
 $nativeBuild = Join-Path $WorkRoot "build-native"
 $uwpBuild = Join-Path $WorkRoot "build-uwp-arm"
+$toolsetVcVarsVersion = @{ "v141" = "14.16"; "v143" = "14.44" }[$Toolset]
 
 function Invoke-Checked {
     param(
@@ -220,11 +232,15 @@ function Import-VcVars {
     param(
         [Parameter(Mandatory)]
         [ValidateSet("x64", "x64_arm")]
-        [string]$Architecture
+        [string]$Architecture,
+        # Compiler version to activate. Dependency and host-tool stages stay
+        # pinned to 14.16 for reproducibility; the ARM UWP stages follow the
+        # selected $Toolset.
+        [string]$VcVarsVersion = "14.16"
     )
 
     $vcvars = Join-Path $VisualStudioPath "VC\Auxiliary\Build\vcvarsall.bat"
-    $command = "call `"$vcvars`" $Architecture 10.0.18362.0 -vcvars_ver=14.16 >nul && set"
+    $command = "call `"$vcvars`" $Architecture 10.0.18362.0 -vcvars_ver=$VcVarsVersion >nul && set"
     $environment = & $env:ComSpec /d /c $command
     if ($LASTEXITCODE -ne 0) {
         throw "vcvarsall failed for $Architecture with code $LASTEXITCODE."
@@ -318,15 +334,37 @@ if ($Stage -in @("Generate", "All")) {
 }
 
 if ($Stage -in @("Configure", "All")) {
-    Import-VcVars "x64_arm"
+    Import-VcVars "x64_arm" -VcVarsVersion $toolsetVcVarsVersion
     New-Item -ItemType Directory -Force -Path $uwpBuild | Out-Null
+
+    # CMake refuses to reuse a cache that was generated with a different
+    # toolset. Drop the cache (but keep the directory) so switching between
+    # v141 and v143 reconfigures cleanly instead of failing.
+    $uwpCache = Join-Path $uwpBuild "CMakeCache.txt"
+    if (Test-Path $uwpCache) {
+        $toolsetMatch = Select-String -LiteralPath $uwpCache -Pattern '^CMAKE_GENERATOR_TOOLSET:INTERNAL=(.*)$' |
+            Select-Object -First 1
+        # A truncated or corrupt cache has no toolset line. Treat that as a mismatch so
+        # this recovery path clears it instead of failing on a null property access.
+        $cachedToolset = ""
+        if ($null -ne $toolsetMatch) {
+            $cachedToolset = $toolsetMatch.Matches.Groups[1].Value
+        }
+
+        if ($cachedToolset -ne $Toolset) {
+            Write-Output "Toolset changed ($cachedToolset -> $Toolset); clearing CMake cache."
+            Remove-Item -LiteralPath $uwpCache -Force
+            Remove-Item -LiteralPath (Join-Path $uwpBuild "CMakeFiles") -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     Invoke-Checked -FilePath $cmake -Arguments @(
         "-S", $tdlibRoot,
         "-B", $uwpBuild,
         "-G", "Visual Studio 17 2022",
         "-DCMAKE_GENERATOR_INSTANCE=$VisualStudioPath",
         "-A", "ARM",
-        "-T", "v141",
+        "-T", $Toolset,
         "-DCMAKE_SYSTEM_NAME=WindowsStore",
         "-DCMAKE_SYSTEM_VERSION=10.0.18362.0",
         "-DCMAKE_TOOLCHAIN_FILE=$(Join-Path $vcpkgRoot 'scripts\buildsystems\vcpkg.cmake')",
@@ -341,7 +379,7 @@ if ($Stage -in @("Configure", "All")) {
 }
 
 if ($Stage -in @("Build", "All")) {
-    Import-VcVars "x64_arm"
+    Import-VcVars "x64_arm" -VcVarsVersion $toolsetVcVarsVersion
     Invoke-Checked -FilePath $cmake -Arguments @(
         "--build", $uwpBuild,
         "--config", "RelWithDebInfo",
@@ -354,6 +392,7 @@ if ($Stage -in @("Build", "All")) {
         "TDLIB_VERSION=$tdlibVersion",
         "TDLIB_COMMIT=$tdlibCommit",
         "VCPKG_COMMIT=$vcpkgCommit",
+        "TOOLSET=$Toolset",
         "OPENSSL_VERSION=3.5.7",
         "ZLIB_VERSION=1.3.2",
         "TELEGRAM_TD_DLL_SHA256=$(Get-Sha256 (Join-Path $outputRoot 'Telegram.Td.dll'))",

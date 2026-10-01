@@ -11,9 +11,31 @@ repository.
 - OpenSSL: 3.5.7, from tag `openssl-3.5.7`
 - zlib: 1.3.2, vcpkg port revision 2
 - Generator host: Visual Studio 2022 Build Tools
-- Compiler/toolset: Visual Studio v141 ARM (`14.16.27023`)
+- Compiler/toolset: Visual Studio v143 ARM (`14.44.35207`) for the ARM UWP build;
+  v141 (`14.16.27023`) for vcpkg dependencies and the x64 host code generator
 - Windows SDK: 10.0.18362.0
 - UWP dependencies: dynamic CRT and dynamic libraries
+
+### Why v143 for the ARM UWP build
+
+TDLib 1.8.66 is 2026-era C++. Building it with v141 (MSVC 14.16, 2017) produced a
+binary that corrupted the process heap during `TdDb::init_sqlite` /
+`init_message_db`, which surfaced on device as an LFH double-free
+(`0xC0000374`) when .NET Native freed an `HSTRING` on the update callback. Every
+layer of the C++/CX string path was verified correct by disassembly, so the
+fault was in code generation rather than in source.
+
+v143 also matches the generation of `vccorlib140_app.dll` shipped by the
+`Microsoft.VCLibs.140.00` **14.0.33519.0** framework package the app actually
+runs against, so the inline `Platform::String` code compiled into
+`Telegram.Td.dll` matches the runtime DLL implementing it.
+
+v143 has full C++/CX ARM32 store support (`lib\arm\store\vccorlib.lib` and an
+ARM `cl.exe` are both present in 14.44.35207). The generated WinMD is
+byte-identical between the two toolsets, so the projected API surface is
+unchanged.
+
+Use `-Toolset v141` to reproduce the previous build for comparison.
 
 The OpenSSL overlay is based on the pinned vcpkg port recipe because the vcpkg
 registry at the pinned commit does not contain OpenSSL 3.5.7. Its source archive
@@ -46,9 +68,13 @@ API with a native v141 build, configures WindowsStore ARM against SDK 18362,
 and builds only `tddotnet`. Use `-VisualStudioPath` if the Build Tools instance
 is installed elsewhere.
 
-The script imports explicit v141 developer environments before invoking vcpkg.
-This avoids vcpkg selecting another same-version Visual Studio instance that
-does not have the ARM compiler installed.
+The script imports explicit developer environments before invoking vcpkg. This
+avoids vcpkg selecting another same-version Visual Studio instance that does not
+have the ARM compiler installed. Dependency and host-tool stages stay pinned to
+`-vcvars_ver=14.16`; the ARM UWP stages follow the selected `-Toolset`.
+
+Switching `-Toolset` clears the ARM UWP CMake cache automatically, because CMake
+refuses to reuse a cache generated with a different toolset.
 
 The existing machine-installed `Telegram.Td.UWP` Extension SDK is never changed.
 Integration must consume proof-build files from the external work root, leaving
@@ -115,6 +141,16 @@ public CER remain local-only; the current test certificate thumbprint is
 `.appxupload` files are under `Unigram\Unigram\bin\ARM\Release\Upload` and
 `Unigram\Unigram\AppPackages`. Modern chat/message reporting is compile-time
 disabled until the server-driven `ReportChatResult` option flow is implemented.
+Microsoft App Center (Analytics and Crashes) is also compile-time disabled on
+this branch. Its UWP session tracker reaches
+`Windows.System.Diagnostics.ProcessDiagnosticInfo` from a background thread, and
+that WinRT server faults on Windows 10 Mobile 15254. Because the fault surfaces
+inside a managed-to-COM call, .NET Native cannot marshal it and fail-fasts the
+process with code `0x1007` a few seconds after launch. Keeping it enabled would
+additionally publish this experimental build's telemetry, including the
+signed-in user id, into the production App Center application. Unhandled and
+unobserved exceptions are written to the local privacy-filtered diagnostics log
+instead.
 Device installation, fresh login, push, and Live Tile validation remain
 outstanding.
 

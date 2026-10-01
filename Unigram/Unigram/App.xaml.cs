@@ -99,7 +99,9 @@ namespace Unigram
                     Client.Execute(new AddLogMessage(1, "Unhandled exception:\n" + args.Exception.ToString()));
                 }
 
-#if !DEBUG
+#if MODERN_TDLIB
+                Logs.PushDiagnostics.WriteException("app.unhandled", args.Exception);
+#elif !DEBUG
                 Microsoft.AppCenter.Crashes.Crashes.TrackError(args.Exception);
 #endif
 
@@ -110,7 +112,17 @@ namespace Unigram
                 //catch { }
             };
 
-#if !DEBUG
+#if MODERN_TDLIB
+            // App Center is deliberately never started on the experimental TDLib branch.
+            // Its UWP session tracker queries Windows.System.Diagnostics.ProcessDiagnosticInfo
+            // on a background thread, and that WinRT server faults on Windows 10 Mobile 15254.
+            // The native fault crosses a managed P/Invoke boundary, so .NET Native fail-fasts
+            // the whole process (0x1007) a few seconds after launch. It would also publish this
+            // experimental build's telemetry, including the signed-in user id, into the
+            // production App Center app. Unhandled exceptions go to the local diagnostics log.
+            TaskScheduler.UnobservedTaskException += OnUnobservedException;
+            UnhandledException += OnUnhandledException;
+#elif !DEBUG
             Microsoft.AppCenter.AppCenter.Start(Constants.AppCenterId,
                 typeof(Microsoft.AppCenter.Analytics.Analytics),
                 typeof(Microsoft.AppCenter.Crashes.Crashes));
@@ -570,7 +582,19 @@ namespace Unigram
             return base.OnSuspendingAsync(s, e, prelaunchActivated);
         }
 
-#if !DEBUG
+#if MODERN_TDLIB
+        private void OnUnobservedException(object sender, UnobservedTaskExceptionEventArgs e)
+        {
+            Logs.PushDiagnostics.WriteException("app.unobserved", e.Exception);
+            e.SetObserved();
+        }
+
+        private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            Logs.PushDiagnostics.WriteException("app.unhandled.handler", e.Exception);
+            e.Handled = true;
+        }
+#elif !DEBUG
         private void OnUnobservedException(object sender, UnobservedTaskExceptionEventArgs e)
         {
             Microsoft.AppCenter.Crashes.Crashes.TrackError(e.Exception);
