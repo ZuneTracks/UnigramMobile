@@ -656,6 +656,13 @@ and clears the current search collection so stale results are not presented as
 the new query. It does not fabricate a fallback language or silently reuse an
 old request; any non-NRE still reaches the normal exception surface.
 
+**Device-confirmed:** the 6129 run exercised `SearchInstalledStickerSets`,
+`SearchEmojis`, `GetStickers`, and `SearchStickerSets` across repeated
+emoji/text search actions with no `app.unhandled`, `app.unobserved`, or
+`drawer.search` record. One `drawer.template|result=unavailable;site=toolbar_prepare`
+record confirmed that the template-recycling guard safely skipped an unrealized
+toolbar visual. The drawer remained usable throughout the test.
+
 ## Fatal crash: RLottie cannot load in Release (26.9.6117.0)
 
 Scrolling a supergroup killed the process outright even though the managed
