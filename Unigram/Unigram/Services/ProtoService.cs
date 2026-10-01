@@ -191,6 +191,85 @@ namespace Unigram.Services
 
         private static Task _longRunningTask;
 
+#if MODERN_TDLIB
+        private static int _receiveLoopStarted;
+        private static int _interopProbed;
+
+        // InitializeDiagnostics() must be fully finished, not merely entered, before any
+        // receive loop starts. A plain compare-exchange guard only makes the loser skip
+        // the work: it would return immediately, race ahead to EnsureReceiveLoop and
+        // start Client.Run while the winner was still inside Client.Execute(SetLogStream).
+        // Both steps therefore take this lock, so "diagnostics configured" strictly
+        // happens-before "receive loop started" for every thread, not just the winner.
+        private static readonly object _diagnosticsLock = new object();
+        private static bool _diagnosticsConfigured;
+
+        // Client.Run drives td::ClientManager::get_manager_singleton()->receive(), which
+        // upstream documents as "Must be called once on a separate dedicated thread on
+        // which all updates and query results from all Clients will be handled".
+        // "_longRunningTask = _longRunningTask ?? StartNew(...)" is a non-atomic
+        // read-modify-write that runs on thread pool threads, so two sessions
+        // initializing concurrently can both observe null and start a second receive
+        // loop. Two threads draining the same singleton queue hand the same response to
+        // two handlers and free it twice, which surfaces much later as process heap
+        // corruption inside an unrelated WinRT string release.
+        private static void EnsureReceiveLoop()
+        {
+            lock (_diagnosticsLock)
+            {
+                if (Interlocked.CompareExchange(ref _receiveLoopStarted, 1, 0) == 0)
+                {
+                    PushDiagnostics.Write("tdlib.receive", "stage=start");
+                    _longRunningTask = Task.Factory.StartNew(Client.Run, TaskCreationOptions.LongRunning);
+                }
+                else
+                {
+                    PushDiagnostics.Write("tdlib.receive", "stage=already-running");
+                }
+            }
+        }
+
+        // Isolates which native layer corrupts the process heap during startup.
+        // Both requests are documented as synchronously executable, so they run entirely
+        // inside Telegram.Td.dll on the calling thread: no client, no database, no
+        // OpenSSL, no actor threads and no receive loop exist yet. GetOption("version")
+        // additionally returns a WinRT string, which is the same .NET Native <-> C++/CX
+        // HSTRING marshalling path that faults later on updateOption.
+        // A crash here therefore proves the fault is pure interop against the pinned
+        // WinMD; reaching "stage=ok" proves marshalling is sound and moves the suspicion
+        // to the database/crypto layer that SetTdlibParameters brings up.
+        private static void ProbeNativeInterop()
+        {
+            if (Interlocked.CompareExchange(ref _interopProbed, 1, 0) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                PushDiagnostics.Write("tdlib.probe", "stage=begin");
+
+                var entities = Client.Execute(new GetTextEntities("@probe https://telegram.org")) as TextEntities;
+                PushDiagnostics.Write("tdlib.probe", entities == null
+                    ? "stage=entities;result=unexpected-type"
+                    : $"stage=entities;count={entities.Entities.Count}");
+
+                // Only the length is recorded: the value is a TDLib build identifier, but
+                // logging lengths keeps this sink free of any payload by construction.
+                var version = Client.Execute(new GetOption("version")) as OptionValueString;
+                PushDiagnostics.Write("tdlib.probe", version == null
+                    ? "stage=version;result=unexpected-type"
+                    : $"stage=version;length={version.Value.Length}");
+
+                PushDiagnostics.Write("tdlib.probe", "stage=ok");
+            }
+            catch (Exception ex)
+            {
+                PushDiagnostics.WriteException("tdlib.probe", ex);
+            }
+        }
+#endif
+
         public ProtoService(int session, bool online, IDeviceInfoService deviceInfoService, ISettingsService settings, ILocaleService locale, IEventAggregator aggregator)
         {
             _session = session;
@@ -216,6 +295,9 @@ namespace Unigram.Services
 
         private void Initialize(bool online = true)
         {
+#if MODERN_TDLIB
+            ProbeNativeInterop();
+#endif
             PushDiagnostics.Write("tdlib.client", "stage=create");
             try
             {
@@ -354,33 +436,56 @@ namespace Unigram.Services
             {
                 void InitializeClient()
                 {
-                    InitializeDiagnostics();
+#if MODERN_TDLIB
+                    // Everything before the parameters send is best-effort and must never
+                    // prevent it: without parameters TDLib stays in
+                    // authorizationStateWaitTdlibParameters forever and no update, QR token
+                    // or phone code can ever be produced.
+                    try
+                    {
+                        InitializeDiagnostics();
 
+                        _client.Send(new SetOption("language_pack_database_path", new OptionValueString(System.IO.Path.Combine(ApplicationData.Current.LocalFolder.Path, "langpack"))));
+                        _client.Send(new SetOption("localization_target", new OptionValueString("android")));
+                        _client.Send(new SetOption("language_pack_id", new OptionValueString(SettingsService.Current.LanguagePackId)));
+                        _client.Send(new SetOption("online", new OptionValueBoolean(false)));
+                        _client.Send(new SetOption("notification_group_count_max", new OptionValueInteger(25)));
+                    }
+                    catch (Exception ex)
+                    {
+                        PushDiagnostics.WriteException("tdlib.options", ex);
+                    }
+
+                    _client.Send(ModernTdlibCompatibility.CreateSetTdlibParameters(parameters), result =>
+                    {
+                        PushDiagnostics.Write("tdlib.parameters", result is Error error
+                            ? $"result=error;code={error.Code};message={PushDiagnostics.SanitizeErrorMessage(error.Message)}"
+                            : "result=ok");
+                    });
+#else
+                    InitializeDiagnostics();
                     _client.Send(new SetOption("language_pack_database_path", new OptionValueString(System.IO.Path.Combine(ApplicationData.Current.LocalFolder.Path, "langpack"))));
                     _client.Send(new SetOption("localization_target", new OptionValueString("android")));
                     _client.Send(new SetOption("language_pack_id", new OptionValueString(SettingsService.Current.LanguagePackId)));
                     //_client.Send(new SetOption("online", new OptionValueBoolean(online)));
                     _client.Send(new SetOption("online", new OptionValueBoolean(false)));
                     _client.Send(new SetOption("notification_group_count_max", new OptionValueInteger(25)));
-                    _client.Send(ModernTdlibCompatibility.CreateSetTdlibParameters(parameters), result =>
-                    {
-                        PushDiagnostics.Write("tdlib.parameters", result is Error error
-                            ? $"result=error;type={error.GetType().Name}"
-                            : "result=ok");
-                    });
-#if !MODERN_TDLIB
+                    _client.Send(ModernTdlibCompatibility.CreateSetTdlibParameters(parameters));
                     _client.Send(ModernTdlibCompatibility.CreateCheckDatabaseEncryptionKey(new byte[0]));
 #endif
                     _client.Send(new GetApplicationConfig(), result => UpdateConfig(result));
                 }
 
 #if MODERN_TDLIB
-                // The receive loop must be started before anything else can fail.
-                // Otherwise a throwing initialization step prevents every update,
-                // including the very first authorization state, from ever being
-                // delivered, which leaves the shell permanently without content.
-                _longRunningTask = _longRunningTask ?? Task.Factory.StartNew(Client.Run, TaskCreationOptions.LongRunning);
-
+                // TDLib's log stream is a raw global pointer that
+                // Client.Execute(SetLogStream) swaps while re-initializing the shared
+                // FileLog in place; upstream only guards it with a release fence it
+                // describes as "better than nothing". Reconfiguring logging after the
+                // receive loop exists therefore races with the thread that is logging,
+                // so every Execute-based configuration step has to finish before the
+                // loop starts, exactly as the stable build sequenced it.
+                // The finally still guarantees the loop starts even if initialization
+                // throws, so a failed step can never silently swallow every update.
                 try
                 {
                     InitializeClient();
@@ -388,6 +493,10 @@ namespace Unigram.Services
                 catch (Exception ex)
                 {
                     PushDiagnostics.WriteException("tdlib.initialize", ex);
+                }
+                finally
+                {
+                    EnsureReceiveLoop();
                 }
 #else
                 InitializeClient();
@@ -399,6 +508,30 @@ namespace Unigram.Services
 
         private void InitializeDiagnostics()
         {
+#if MODERN_TDLIB
+            // TDLib logging is process-global, not per client, and SetLogStream
+            // re-initializes the shared FileLog in place. Re-running this after a
+            // re-initialization (AuthorizationStateClosed -> TryInitialize) would swap
+            // the log stream underneath the live receive thread, so configure it exactly
+            // once per process, before any receive loop exists. The lock is shared with
+            // EnsureReceiveLoop so a thread that loses the race cannot start the loop
+            // while the winner is still executing the steps below.
+            lock (_diagnosticsLock)
+            {
+                if (_diagnosticsConfigured)
+                {
+                    return;
+                }
+
+                _diagnosticsConfigured = true;
+                InitializeDiagnosticsCore();
+            }
+        }
+
+        private void InitializeDiagnosticsCore()
+        {
+#endif
+
             Client.Execute(ModernTdlibCompatibility.CreateSetLogStream(System.IO.Path.Combine(ApplicationData.Current.LocalFolder.Path, "tdlib_log.txt"), 100 * 1024 * 1024, false));
             Client.Execute(new SetLogVerbosityLevel(SettingsService.Current.VerbosityLevel));
 
@@ -410,7 +543,14 @@ namespace Unigram.Services
 
             foreach (var tag in tags.Tags)
             {
+                // Execute returns an Error for tags the pinned build does not expose,
+                // so this must never be dereferenced blindly: throwing here would
+                // abort initialization before SetTdlibParameters is ever sent.
                 var level = Client.Execute(new GetLogTagVerbosityLevel(tag)) as LogVerbosityLevel;
+                if (level == null)
+                {
+                    continue;
+                }
 
                 var saved = _settings.Diagnostics.GetValueOrDefault(tag, -1);
                 if (saved != level.VerbosityLevel && saved > -1)

@@ -36,8 +36,12 @@ namespace Unigram.Common
                     // state to IntroPage. Under modern TDLib this update always arrives on a
                     // later dispatcher turn, so routing it anywhere else would overwrite that
                     // navigation and strand the user on phone login whenever SetTdlibParameters
-                    // fails to complete.
-                    Navigate(typeof(IntroPage));
+                    // fails to complete. It can also arrive after the user has already pressed
+                    // "Start Messaging", so never pull them back off a page they chose.
+                    if (Frame.Content == null)
+                    {
+                        Navigate(typeof(IntroPage));
+                    }
 #else
                     Navigate(typeof(SignInPage));
 #endif

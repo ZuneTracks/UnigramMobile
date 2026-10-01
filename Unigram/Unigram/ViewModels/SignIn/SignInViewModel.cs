@@ -6,6 +6,7 @@ using Telegram.Td.Api;
 using Unigram.Common;
 using Unigram.Controls;
 using Unigram.Entities;
+using Unigram.Logs;
 using Unigram.Services;
 using Unigram.ViewModels.Delegates;
 using Unigram.Views.Settings;
@@ -99,6 +100,21 @@ namespace Unigram.ViewModels.SignIn
                     Delegate?.UpdateQrCodeMode(QrCodeMode.Primary);
                 }
             }
+#if MODERN_TDLIB
+            else if (!waitState)
+            {
+                // PhonePanel and TokenPanel share one grid cell and neither declares an
+                // initial Visibility, so a single UpdateQrCodeMode call is the only thing
+                // that makes this page readable. Any authorization state left unhandled
+                // here renders both panels stacked on top of each other. A null state just
+                // means TDLib has not reported yet, and TLRootNavigationService refreshes
+                // this view model once authorizationStateWaitPhoneNumber arrives.
+                IsLoading = false;
+                Delegate?.UpdateQrCodeMode(authState == null ? QrCodeMode.Loading : QrCodeMode.Secondary);
+
+                PushDiagnostics.Write("signin.navigated", $"state={authState?.GetType().Name ?? "null"};mode=fallback");
+            }
+#endif
 
             return Task.CompletedTask;
         }

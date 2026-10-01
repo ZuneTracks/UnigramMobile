@@ -93,6 +93,11 @@ namespace Unigram.Logs
             {
                 var sanitized = message.Replace('\r', ' ').Replace('\n', ' ').Replace('|', '/');
                 sanitized = Regex.Replace(sanitized, @"https?://\S+", "[redacted_uri]", RegexOptions.IgnoreCase);
+                // Must run after the URI rule, otherwise it would consume "s://host" first.
+                // Segments deliberately allow spaces so that a profile name such as
+                // "C:\Users\John Smith\..." cannot survive redaction; over-redacting the
+                // tail of a sentence is an acceptable trade for never emitting a path.
+                sanitized = Regex.Replace(sanitized, @"[A-Za-z]:(?:[\\/][^\\/""\r\n]*)+", "[redacted_path]");
                 sanitized = Regex.Replace(sanitized, @"\b\d{6,}\b", "[redacted_number]");
                 sanitized = Regex.Replace(sanitized, @"\b[A-Za-z0-9_-]{24,}\b", "[redacted_token]");
                 return sanitized.Length <= 256 ? sanitized : sanitized.Substring(0, 256);

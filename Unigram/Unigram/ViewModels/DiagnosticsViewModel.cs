@@ -100,10 +100,14 @@ namespace Unigram.ViewModels
             var tags = Client.Execute(new GetLogTags()) as LogTags;
             if (tags != null)
             {
+                // Execute returns an Error for tags this build does not expose, so the
+                // result has to be probed instead of hard cast: throwing here would take
+                // down the diagnostics page, which is the only on-device way to read the
+                // TDLib upgrade breadcrumbs.
                 Tags.ReplaceWith(tags.Tags.Select(x => new DiagnosticsTag
                 {
                     Name = x,
-                    Default = ((LogVerbosityLevel)Client.Execute(new GetLogTagVerbosityLevel(x))).VerbosityLevel,
+                    Default = Client.Execute(new GetLogTagVerbosityLevel(x)) is LogVerbosityLevel level ? level.VerbosityLevel : 0,
                     Value = (VerbosityLevel)Settings.Diagnostics.GetValueOrDefault(x, -1)
                 }));
             }
