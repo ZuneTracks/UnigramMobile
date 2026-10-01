@@ -95,6 +95,7 @@ namespace Unigram.Views
         private static int _choosingBudget = 4;
 #if MODERN_TDLIB
         private static int _transformBudget = 2;
+        private static int _headerCompositionBudget = 2;
 #endif
 
         private static void TraceScroll(ref int budget, string eventName, Exception ex)
@@ -116,6 +117,15 @@ namespace Unigram.Views
             {
                 _transformBudget--;
                 Logs.PushDiagnostics.Write("scroll.header.transform", $"result={result};step={step}");
+            }
+        }
+
+        private static void TraceHeaderComposition()
+        {
+            if (_headerCompositionBudget > 0)
+            {
+                _headerCompositionBudget--;
+                Logs.PushDiagnostics.Write("scroll.header.composition", "result=throw;step=16");
             }
         }
 #endif
@@ -441,10 +451,23 @@ namespace Unigram.Views
                     {
 #if MODERN_TDLIB
                         _headerStep = 16;
-#endif
+                        try
+                        {
+                            _dateHeader.Offset = offset >= height && offset < height * 2
+                                ? new Vector3(0, -height * 2 + offset, 0)
+                                : Vector3.Zero;
+                        }
+                        catch (NullReferenceException)
+                        {
+                            // The compositor visual can be invalidated while its element is
+                            // recycled. The inline date separator remains the safe fallback.
+                            TraceHeaderComposition();
+                        }
+#else
                         _dateHeader.Offset = offset >= height && offset < height * 2
                             ? new Vector3(0, -height * 2 + offset, 0)
                             : Vector3.Zero;
+#endif
                     }
 #else
                     if (offset >= height && offset < height * 2)

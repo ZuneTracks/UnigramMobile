@@ -523,7 +523,7 @@ The probe also now reports `DateHeader`, `DateHeaderLabel`, `PinnedMessage` and
 `ViewModel.Chat`, the four collaborators the original probe omitted. All are
 booleans and a step ordinal; no identifiers, content or paths.
 
-### Still narrowing in 26.9.6125.0: the remaining date-separator NRE
+### Resolved in 26.9.6126.0: recycled date-header composition visual
 
 The ordinal paid for itself immediately. The next device log reported
 `step=5` on **all four** occurrences, with every one of the eleven probed
@@ -553,12 +553,20 @@ that call and `TransformPoint`. The next device log still reported `step=5`
 without a recovery record. The transform hypothesis is therefore disproven:
 the remaining dereference is later in this branch, after point conversion.
 
-26.9.6125.0 subdivides the coarse ordinal around every remaining WinRT/object
+26.9.6125.0 subdivided the coarse ordinal around every remaining WinRT/object
 operation: `DateHeader.ActualHeight`, both `container.Opacity` assignments, and
-the `_dateHeader.Offset` composition write. It also records
-`startup.app|...;package_version=<version>` so a pulled log proves the precise
-APPX that produced it. Until the new ordinal identifies a single expression,
-this documentation intentionally does **not** claim the NRE is fixed.
+the `_dateHeader.Offset` composition write. The next device log confirmed the
+package was this new build and reported **`step=16` for every remaining NRE**.
+The list data and inline separator operations are therefore sound; the fault is
+the compositor-backed `_dateHeader.Offset` setter when its visual is invalidated
+as the date-header element is recycled.
+
+26.9.6126.0 catches that specific `NullReferenceException` around only the
+decorative composition assignment, logs up to two
+`scroll.header.composition|result=throw;step=16` records, and leaves the inline
+date separator visible. It also formats the startup version numerically (for
+example, `package_version=26.9.6126.0`) instead of relying on
+`PackageVersion.ToString()`, which prints only its type name on this runtime.
 
 Both guards restore `container.Opacity` to 1 before skipping, and that detail is
 easy to get wrong. `Opacity` is set to 0 only when a separator is hidden

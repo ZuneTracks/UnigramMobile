@@ -54,7 +54,8 @@ namespace Unigram
         /// </summary>
         public App()
         {
-            Logs.PushDiagnostics.Write("startup.app", $"stage=configure;package_version={Package.Current.Id.Version}");
+            var packageVersion = Package.Current.Id.Version;
+            Logs.PushDiagnostics.Write("startup.app", $"stage=configure;package_version={packageVersion.Major}.{packageVersion.Minor}.{packageVersion.Build}.{packageVersion.Revision}");
 #if MODERN_TDLIB
             Common.ApiInfo.WriteCapabilities();
 #endif
