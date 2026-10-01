@@ -1,4 +1,5 @@
-﻿using Telegram.Td.Api;
+﻿using System;
+using Telegram.Td.Api;
 using Unigram.Controls;
 using Unigram.Logs;
 using Unigram.Navigation.Services;
@@ -47,12 +48,23 @@ namespace Unigram.Common
 #endif
                     break;
                 case AuthorizationStateReady ready:
-                    Navigate(typeof(MainPage));
 #if MODERN_TDLIB
-                    // Absence of this record next to a state=AuthorizationStateReady line
-                    // means the navigation itself threw, which ProtoService.OnResult swallows
-                    // to keep TDLib's native callback alive.
-                    PushDiagnostics.Write("startup.navigation", "target=MainPage;result=ok");
+                    // Navigate builds MainPage synchronously, so a failure in that page would
+                    // otherwise surface far from its cause - either swallowed by
+                    // ProtoService.OnResult or reported as a bare app-level unhandled
+                    // exception with no indication that navigation was the trigger.
+                    try
+                    {
+                        Navigate(typeof(MainPage));
+                        PushDiagnostics.Write("startup.navigation", "target=MainPage;result=ok");
+                    }
+                    catch (Exception ex)
+                    {
+                        PushDiagnostics.WriteException("startup.navigation.MainPage", ex);
+                        throw;
+                    }
+#else
+                    Navigate(typeof(MainPage));
 #endif
                     break;
                 case AuthorizationStateWaitPhoneNumber waitPhoneNumber:

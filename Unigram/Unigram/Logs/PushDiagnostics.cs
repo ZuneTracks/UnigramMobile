@@ -93,6 +93,17 @@ namespace Unigram.Logs
                 }
 
                 details += $";message={SanitizeErrorMessage(root.Message)}";
+
+                // .NET Native reduces a NullReferenceException message to the resource key
+                // "Arg_NullReferenceException", so the frame list is the only thing that
+                // identifies where the fault happened. Frames are method names from this
+                // app's own surface, and the shared sanitizer still strips any path.
+                var stack = root.StackTrace;
+                if (!string.IsNullOrEmpty(stack))
+                {
+                    var frames = stack.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", " << ");
+                    details += $";stack={SanitizeErrorMessage(frames, 900)}";
+                }
 #else
                 details = $"result=error;hresult=0x{exception.HResult:X8};type={exception.GetType().Name}";
 #endif
@@ -130,6 +141,11 @@ namespace Unigram.Logs
 
         public static string SanitizeErrorMessage(string message)
         {
+            return SanitizeErrorMessage(message, 256);
+        }
+
+        public static string SanitizeErrorMessage(string message, int maxLength)
+        {
             if (string.IsNullOrWhiteSpace(message))
             {
                 return "none";
@@ -146,7 +162,7 @@ namespace Unigram.Logs
                 sanitized = Regex.Replace(sanitized, @"[A-Za-z]:(?:[\\/][^\\/""\r\n]*)+", "[redacted_path]");
                 sanitized = Regex.Replace(sanitized, @"\b\d{6,}\b", "[redacted_number]");
                 sanitized = Regex.Replace(sanitized, @"\b[A-Za-z0-9_-]{24,}\b", "[redacted_token]");
-                return sanitized.Length <= 256 ? sanitized : sanitized.Substring(0, 256);
+                return sanitized.Length <= maxLength ? sanitized : sanitized.Substring(0, maxLength);
             }
             catch
             {
