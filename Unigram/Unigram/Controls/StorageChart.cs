@@ -33,9 +33,10 @@ namespace Unigram.Controls
             DefaultStyleKey = typeof(StorageChart);
 
 #if MODERN_TDLIB
-            // ShapeVisual requires UniversalApiContract v5. On Windows 10 Mobile the chart is
-            // skipped entirely; every member below null-checks _visual so the storage page
-            // still renders its textual breakdown.
+            // ShapeVisual and its geometries are unavailable on this device. The chart is
+            // skipped entirely and every member below null-checks _visual, so the storage
+            // page still renders its textual breakdown. This reuses the same
+            // CanUseDirectComposition gate as the other ShapeVisual users in the project.
             if (!ApiInfo.CanUseDirectComposition)
             {
                 return;

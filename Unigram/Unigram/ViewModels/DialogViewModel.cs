@@ -1113,6 +1113,25 @@ namespace Unigram.ViewModels
             catch (Exception ex)
             {
                 Logs.PushDiagnostics.WriteException("pinned.load", ex, "result=error");
+
+                // The delegate was already told a pinned message was on its way, and the
+                // "loaded" latch is set before the awaits, so without this the banner would
+                // stay in its loading state for the lifetime of the view model. Clear it and
+                // release the latch so a later update can retry.
+                _hasLoadedLastPinnedMessage = false;
+
+                try
+                {
+                    var chat = _chat;
+                    if (chat != null)
+                    {
+                        Delegate?.UpdatePinnedMessage(chat, false);
+                    }
+                }
+                catch (Exception nested)
+                {
+                    Logs.PushDiagnostics.WriteException("pinned.reset", nested, "result=error");
+                }
             }
         }
 
