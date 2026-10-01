@@ -58,11 +58,13 @@ namespace Unigram.Logs
             }
         }
 
-        public static void WriteException(string eventName, Exception exception)
+        public static void WriteException(string eventName, Exception exception, string context = null)
         {
+            var prefix = string.IsNullOrEmpty(context) ? string.Empty : context + ";";
+
             if (exception == null)
             {
-                Write(eventName, "result=error;type=none");
+                Write(eventName, prefix + "result=error;type=none");
                 return;
             }
 
@@ -116,7 +118,7 @@ namespace Unigram.Logs
                 details = "result=error;type=unavailable";
             }
 
-            Write(eventName, details);
+            Write(eventName, prefix + details);
         }
 
         public static string HashIdentifier(string value)

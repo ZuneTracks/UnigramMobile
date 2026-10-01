@@ -43,7 +43,11 @@ namespace Unigram.Controls
             DataContext = new object();
 
             var shadow = DropShadowEx.Attach(HeaderSeparator, 20, 0.25f);
+#if MODERN_TDLIB
+            DropShadowEx.SetRelativeSize(shadow, HeaderSeparator);
+#else
             shadow.RelativeSizeAdjustment = Vector2.One;
+#endif
 
             var protoService = TLContainer.Current.Resolve<IProtoService>();
 

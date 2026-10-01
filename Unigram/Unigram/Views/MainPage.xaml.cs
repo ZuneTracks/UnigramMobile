@@ -180,7 +180,7 @@ namespace Unigram.Views
             try
             {
                 var folderShadow = DropShadowEx.Attach(FolderShadow, 20, 0.25f);
-                folderShadow.RelativeSizeAdjustment = Vector2.One;
+                DropShadowEx.SetRelativeSize(folderShadow, FolderShadow);
             }
             catch (Exception ex)
             {

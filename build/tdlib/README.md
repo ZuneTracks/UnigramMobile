@@ -177,6 +177,35 @@ size cap, and unbounded tracing would evict the startup records. All of this is
 gated behind `MODERN_TDLIB`; the non-modern configuration keeps the original
 unguarded statements.
 
+#### `Visual.RelativeSizeAdjustment` is not available on this device
+
+Device tracing showed `DropShadowEx.Attach` completing successfully
+(`shadow.attach|step=done`) immediately before the `MainPage` fault, which
+isolated the throw to the statement after it: `RelativeSizeAdjustment`.
+That property lives on `IVisual2`, introduced in UniversalApiContract v5
+(Windows 10 1709), so on this Windows 10 Mobile build the interface query fails
+and the setter faults with a bare `NullReferenceException` under .NET Native.
+
+The same property was also the reason **tapping a chat did nothing**:
+`ChatView.xaml` instantiates `controls:StickerPanel` eagerly, that constructor
+set `RelativeSizeAdjustment`, and the XAML parser wrapped the resulting
+`NullReferenceException` as a `XamlParseException` (`HRESULT 0x802B000A`), which
+aborted navigation to the chat page with no visible error.
+
+`DropShadowEx.SetRelativeSize` now replaces every live use of the property. It
+probes `ApiInformation.IsPropertyPresent` once per process and, when the
+property is absent, sizes the shadow visual from the host element and keeps it
+in sync through `SizeChanged`. This restores the shadows rather than dropping
+them, so the degradation is limited to older devices doing the sizing manually.
+The `#else` (non-`MODERN_TDLIB`) branches keep the original statements.
+
+#### Navigation failure reporting
+
+`FrameFacade.Navigate` records the target page name and the full exception
+(`navigate.page|page=...`) before rethrowing. A page whose XAML fails to load is
+otherwise only visible as an unhandled HRESULT with no stack and no indication
+of which page was involved.
+
 `Build-TdlibArm.ps1` writes `TdlibBuildManifest.txt` beside the proof payload.
 It records the pinned TDLib version/commit and hashes the generated WinMD and
 implementation DLL. `Verify-TdlibArm.ps1` rejects missing or mismatched

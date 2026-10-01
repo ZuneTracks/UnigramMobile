@@ -1,4 +1,5 @@
 ﻿using System.Numerics;
+using Windows.Foundation.Metadata;
 using Windows.UI;
 using Windows.UI.Composition;
 using Windows.UI.Xaml;
@@ -78,5 +79,46 @@ namespace Unigram.Common
 #endif
             return visual;
         }
+
+#if MODERN_TDLIB
+        private static bool? _canUseRelativeSizeAdjustment;
+
+        // Visual.RelativeSizeAdjustment is UniversalApiContract v5. On an older device the
+        // interface query fails and the setter faults, so the shadow is sized by tracking
+        // the element instead. Attaching a shadow and then never sizing it would leave an
+        // invisible shadow, which is why this falls back rather than skipping.
+        private static bool CanUseRelativeSizeAdjustment
+        {
+            get
+            {
+                return (_canUseRelativeSizeAdjustment = _canUseRelativeSizeAdjustment
+                    ?? ApiInformation.IsPropertyPresent("Windows.UI.Composition.Visual", "RelativeSizeAdjustment")) ?? false;
+            }
+        }
+
+        /// <summary>
+        /// Sizes <paramref name="visual"/> to match <paramref name="element"/> for as long as
+        /// the element lives, using relative sizing when the device supports it.
+        /// </summary>
+        public static void SetRelativeSize(Visual visual, FrameworkElement element)
+        {
+            if (visual == null || element == null)
+            {
+                return;
+            }
+
+            if (CanUseRelativeSizeAdjustment)
+            {
+                visual.RelativeSizeAdjustment = Vector2.One;
+                return;
+            }
+
+            visual.Size = new Vector2((float)element.ActualWidth, (float)element.ActualHeight);
+            element.SizeChanged += (s, args) =>
+            {
+                visual.Size = new Vector2((float)args.NewSize.Width, (float)args.NewSize.Height);
+            };
+        }
+#endif
     }
 }
