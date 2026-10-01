@@ -2857,6 +2857,25 @@ namespace Unigram.Views
 
             var element = VisualTreeHelper.GetChild(ChatsList, 0) as UIElement;
 
+#if MODERN_TDLIB
+            if (element == null)
+            {
+                // The chat list template is not realized yet, so there is nothing to
+                // animate. Apply the end state directly instead of dereferencing a null
+                // visual, which on this async void path would terminate the process.
+                Logs.PushDiagnostics.Write("main.archive", $"step=show_hide;result=skipped;reason=visual_tree_not_realized;show={show}");
+
+                ChatsList.Margin = new Thickness();
+
+                if (!show)
+                {
+                    ArchivedChatsPresenter.Visibility = Visibility.Collapsed;
+                }
+
+                return;
+            }
+#endif
+
             var parent = ElementCompositionPreview.GetElementVisual(ChatsList);
 
             var chats = ElementCompositionPreview.GetElementVisual(element);
