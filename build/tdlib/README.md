@@ -199,8 +199,30 @@ in sync through `SizeChanged`. This restores the shadows rather than dropping
 them, so the degradation is limited to older devices doing the sizing manually.
 The `#else` (non-`MODERN_TDLIB`) branches keep the original statements.
 
-#### Navigation failure reporting
+The call sites converted are `MainPage..ctor`, `StickerPanel..ctor`,
+`EmojiDrawer..ctor`, `AnimationDrawer..ctor`, `StickerDrawer..ctor` and
+`ChatBackgroundPresenter.UpdateBlurred`. The first sweep missed the three
+drawers because the search glob did not recurse past one directory level; the
+`EmojiDrawer` constructor was what actually aborted chat navigation.
 
+Because the XAML parser turns any throwing constructor into a navigation
+failure, the decorative composition in `StickerPanel`, `EmojiDrawer`,
+`AnimationDrawer` and `StickerDrawer` is additionally wrapped in a reporting
+`try`/`catch` (`drawer.construct|drawer=...`). These controls are instantiated
+eagerly by `ChatView.xaml`, so a single unavailable composition member in any of
+them would otherwise make chats impossible to open.
+
+#### Device capability reporting
+
+`ApiInfo.WriteCapabilities` runs once per process from the `App` constructor and
+records `device.capabilities|universal_contract=...` along with the presence of
+the individual composition members this port depends on. Moving to a newer TDLib
+did not change the OS, but it did exercise code paths whose availability had not
+been tested on this hardware, and .NET Native reports an unavailable WinRT member
+as a bare `NullReferenceException` rather than a typed error. The line contains
+API surface metadata only - no user data, identifiers, or paths.
+
+#### Navigation failure reporting
 `FrameFacade.Navigate` records the target page name and the full exception
 (`navigate.page|page=...`) before rethrowing. A page whose XAML fails to load is
 otherwise only visible as an unhandled HRESULT with no stack and no indication

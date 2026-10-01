@@ -244,7 +244,11 @@ namespace Unigram.Controls.Chats
 
                 _blurBrush = effectBrush;
                 _blurVisual = _compositor.CreateSpriteVisual();
+#if MODERN_TDLIB
+                DropShadowEx.SetRelativeSize(_blurVisual, _imageBackground);
+#else
                 _blurVisual.RelativeSizeAdjustment = Vector2.One;
+#endif
                 _blurVisual.Brush = _blurBrush;
 
                 ElementCompositionPreview.SetElementChildVisual(_imageBackground, _blurVisual);

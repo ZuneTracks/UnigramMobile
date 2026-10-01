@@ -55,6 +55,9 @@ namespace Unigram
         public App()
         {
             Logs.PushDiagnostics.Write("startup.app", "stage=configure");
+#if MODERN_TDLIB
+            Common.ApiInfo.WriteCapabilities();
+#endif
             try
             {
                 Locator.Configure(/*session*/);

@@ -44,7 +44,16 @@ namespace Unigram.Controls
 
             var shadow = DropShadowEx.Attach(HeaderSeparator, 20, 0.25f);
 #if MODERN_TDLIB
-            DropShadowEx.SetRelativeSize(shadow, HeaderSeparator);
+            // See EmojiDrawer: a throwing constructor surfaces as a XamlParseException and
+            // aborts navigation, so decorative composition is reported and skipped.
+            try
+            {
+                DropShadowEx.SetRelativeSize(shadow, HeaderSeparator);
+            }
+            catch (Exception ex)
+            {
+                Logs.PushDiagnostics.WriteException("drawer.construct", ex, "drawer=panel");
+            }
 #else
             shadow.RelativeSizeAdjustment = Vector2.One;
 #endif
