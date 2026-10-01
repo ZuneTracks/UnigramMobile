@@ -83,24 +83,55 @@ namespace Unigram.Views
 
         public MainPage()
         {
+#if MODERN_TDLIB
+            // .NET Native inlines aggressively, so the captured stack names only this
+            // constructor. Step through it so the failing statement is identified, and
+            // report which x:Name fields are null, since an element that is not realized
+            // by InitializeComponent leaves its generated field null.
+            Logs.PushDiagnostics.Write("main.construct", "step=initialize_component");
+#endif
             InitializeComponent();
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=elements"
+                + $";settingsView={Null(SettingsView)}"
+                + $";chatsList={Null(ChatsList)}"
+                + $";pageHeader={Null(PageHeader)}"
+                + $";folderShadow={Null(FolderShadow)}"
+                + $";archivedPanel={Null(ArchivedChatsPanel)}"
+                + $";archivedCompact={Null(ArchivedChatsCompactPanel)}"
+                + $";archivedChats={Null(ArchivedChats)}"
+                + $";masterDetail={Null(MasterDetail)}"
+                + $";settingsFlyout={Null(SettingsFlyout)}"
+                + $";titleBar={Null(TitleBarrr)}"
+                + $";stateLabel={Null(StateLabel)}");
+
+            Logs.PushDiagnostics.Write("main.construct", "step=resolve_viewmodel");
+#endif
             DataContext = TLContainer.Current.Resolve<MainViewModel>();
 
 #if MODERN_TDLIB
             // TLContainer.Resolve returns default(T) rather than throwing when no container
             // is registered for the active session, so every member access below would fail
             // as a bare NullReferenceException with no indication of the cause.
-            if (DataContext == null)
+            if (ViewModel == null)
             {
-                Logs.PushDiagnostics.Write("main.construct", "result=error;reason=viewmodel_unresolved");
+                Logs.PushDiagnostics.Write("main.construct", $"result=error;reason=viewmodel_unresolved;dataContext={Null(DataContext)}");
                 throw new InvalidOperationException("MainViewModel could not be resolved for the active session.");
             }
+
+            Logs.PushDiagnostics.Write("main.construct", "step=cache_service");
 #endif
 
             _cacheService = ViewModel.CacheService;
 
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=settings_view");
+#endif
             SettingsView.DataContext = ViewModel.Settings;
             ViewModel.Settings.Delegate = SettingsView;
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=chats_delegate");
+#endif
             ViewModel.Chats.Delegate = this;
             ViewModel.Chats.SelectedItems.CollectionChanged += SelectedItems_CollectionChanged;
             ViewModel.ArchivedChats.Delegate = this;
@@ -108,11 +139,26 @@ namespace Unigram.Views
 
             NavigationCacheMode = NavigationCacheMode.Enabled;
 
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=title_bar");
+#endif
             InitializeTitleBar();
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=localization");
+#endif
             InitializeLocalization();
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=search");
+#endif
             InitializeSearch();
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=lock");
+#endif
             InitializeLock();
 
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=connection_state");
+#endif
             var update = new UpdateConnectionState(ViewModel.CacheService.GetConnectionState());
             if (update.State != null)
             {
@@ -125,19 +171,34 @@ namespace Unigram.Views
             var updateShadow = DropShadowEx.Attach(UpdateShadow, 20, 0.25f);
             updateShadow.RelativeSizeAdjustment = Vector2.One;
 #endif
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=folder_shadow");
+#endif
             var folderShadow = DropShadowEx.Attach(FolderShadow, 20, 0.25f);
             folderShadow.RelativeSizeAdjustment = Vector2.One;
 
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=flyout_placement");
+#endif
             if (ApiInfo.CanUseNewFlyoutPlacementMode)
             {
                 SettingsFlyout.Placement = FlyoutPlacementMode.BottomEdgeAlignedRight;
             }
 
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=chats_list_callback");
+#endif
             ChatsList.RegisterPropertyChangedCallback(ChatsListView.SelectionMode2Property, List_SelectionModeChanged);
 
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=page_header_visual");
+#endif
             var header = ElementCompositionPreview.GetElementVisual(PageHeader);
             header.Clip = header.Compositor.CreateInsetClip();
 
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "step=archived_panels");
+#endif
             var show = !((TLViewModelBase)ViewModel).Settings.CollapseArchivedChats;
 
             ArchivedChatsPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
@@ -146,6 +207,13 @@ namespace Unigram.Views
             Logs.PushDiagnostics.Write("main.construct", "result=ok");
 #endif
         }
+
+#if MODERN_TDLIB
+        private static string Null(object value)
+        {
+            return value == null ? "null" : "ok";
+        }
+#endif
 
         public void Dispose()
         {
