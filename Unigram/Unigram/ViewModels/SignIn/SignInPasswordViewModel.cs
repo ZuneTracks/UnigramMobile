@@ -82,9 +82,13 @@ namespace Unigram.ViewModels.SignIn
                 return;
             }
 
+            IsLoading = true;
+
             var response = await ProtoService.SendAsync(new CheckAuthenticationPassword(_password));
             if (response is Error error)
             {
+                IsLoading = false;
+
                 if (error.TypeEquals(ErrorType.PASSWORD_HASH_INVALID))
                 {
                     Password = string.Empty;
@@ -93,6 +97,12 @@ namespace Unigram.ViewModels.SignIn
                 else if (error.CodeEquals(ErrorCode.FLOOD))
                 {
                     AlertsService.ShowFloodWaitAlert(error.Message);
+                }
+                else
+                {
+                    // Every other failure used to be swallowed, which left the page looking
+                    // inert after the user pressed the button. Surface it instead.
+                    await MessagePopup.ShowAsync(error.Message, Strings.Resources.AppName, Strings.Resources.OK);
                 }
 
                 Logs.Logger.Error(Logs.Target.API, "account.checkPassword error " + error);

@@ -48,6 +48,12 @@ namespace Unigram.Common
                     break;
                 case AuthorizationStateReady ready:
                     Navigate(typeof(MainPage));
+#if MODERN_TDLIB
+                    // Absence of this record next to a state=AuthorizationStateReady line
+                    // means the navigation itself threw, which ProtoService.OnResult swallows
+                    // to keep TDLib's native callback alive.
+                    PushDiagnostics.Write("startup.navigation", "target=MainPage;result=ok");
+#endif
                     break;
                 case AuthorizationStateWaitPhoneNumber waitPhoneNumber:
                 case AuthorizationStateWaitOtherDeviceConfirmation waitOtherDeviceConfirmation:

@@ -713,11 +713,11 @@ namespace Unigram.Services
             var result = await _client.SendAsync(function);
             if (result is Error error)
             {
-                PushDiagnostics.Write("tdlib.result", $"type=error;code={error.Code}");
+                PushDiagnostics.Write("tdlib.result", $"request={function?.GetType().Name ?? "null"};type=error;code={error.Code};message={PushDiagnostics.SanitizeErrorMessage(error.Message)}");
             }
             else
             {
-                PushDiagnostics.Write("tdlib.result", $"type={result?.GetType().Name ?? "null"}");
+                PushDiagnostics.Write("tdlib.result", $"request={function?.GetType().Name ?? "null"};type={result?.GetType().Name ?? "null"}");
             }
 
             return result;
@@ -1988,6 +1988,16 @@ namespace Unigram.Services
                     Microsoft.AppCenter.AppCenter.SetUserId($"uid={myId.Value}");
 #endif
                 }
+
+#if MODERN_TDLIB
+                // TDLib guarantees the version option arrives before every other update, so
+                // this records which library the process actually loaded. The value is a
+                // library version, not user data.
+                if (updateOption.Name == "version" && updateOption.Value is OptionValueString versionOption)
+                {
+                    PushDiagnostics.Write("tdlib.version", $"value={versionOption.Value}");
+                }
+#endif
             }
             else if (update is UpdateRecentStickers updateRecentStickers)
             {
