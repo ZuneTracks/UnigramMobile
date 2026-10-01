@@ -305,8 +305,21 @@ namespace Unigram.ViewModels.Drawers
             }
             else
             {
+#if MODERN_TDLIB
+                try
+                {
+                    var items = SearchStickers = new SearchStickerSetsCollection(ProtoService, Aggregator, false, query, CoreTextServicesManager.GetForCurrentView().InputLanguage.LanguageTag);
+                    await items.LoadMoreItemsAsync(0);
+                }
+                catch (NullReferenceException ex)
+                {
+                    TraceSearchInitialization(ex);
+                    SearchStickers = null;
+                }
+#else
                 var items = SearchStickers = new SearchStickerSetsCollection(ProtoService, Aggregator, false, query, CoreTextServicesManager.GetForCurrentView().InputLanguage.LanguageTag);
                 await items.LoadMoreItemsAsync(0);
+#endif
             }
         }
 
@@ -364,6 +377,15 @@ namespace Unigram.ViewModels.Drawers
 
 #if MODERN_TDLIB
         private static int _syncBudget = 2;
+        private static int _searchInitializationBudget = 2;
+
+        private static void TraceSearchInitialization(NullReferenceException exception)
+        {
+            if (System.Threading.Interlocked.Decrement(ref _searchInitializationBudget) >= 0)
+            {
+                Logs.PushDiagnostics.WriteException("drawer.search", exception, "phase=0;step=initialize");
+            }
+        }
 
         // The drawer-open NullReferenceException reaches Application.UnhandledException with no
         // stack at all, because .NET Native discards it for this exception type. Rather than

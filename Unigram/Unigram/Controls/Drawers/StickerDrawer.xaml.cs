@@ -52,11 +52,11 @@ namespace Unigram.Controls.Drawers
             }
         }
 
-        private static void TraceSearch(NullReferenceException exception, uint phase)
+        private static void TraceSearch(NullReferenceException exception, string context)
         {
             if (System.Threading.Interlocked.Decrement(ref _searchBudget) >= 0)
             {
-                Logs.PushDiagnostics.WriteException("drawer.search", exception, $"phase={phase}");
+                Logs.PushDiagnostics.WriteException("drawer.search", exception, context);
             }
         }
 #endif
@@ -125,7 +125,7 @@ namespace Unigram.Controls.Drawers
             {
                 // Emoji suggestions and sticker-set search are independent, so one failed
                 // phase must not prevent the other from returning results.
-                TraceSearch(ex, phase);
+                TraceSearch(ex, $"phase={phase}");
             }
         }
 #else

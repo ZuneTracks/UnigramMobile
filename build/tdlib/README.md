@@ -644,6 +644,18 @@ independent sticker-set search phase. This is not a general dispatcher catch:
 other exception types still surface normally, and a phase failure remains
 explicitly diagnostic rather than being treated as success.
 
+The 6128 device run still recorded three `app.unhandled` NREs and **no**
+`drawer.search` record, proving the throw occurs before the throttled
+phase-one/two awaits. The remaining uncaught `async void` boundary is the
+initial `FindStickers` path: current input-language lookup, collection
+assignment, or its phase-zero installed-set load.
+
+26.9.6129.0 catches only `NullReferenceException` across that initialization
+boundary, writes up to two `drawer.search|phase=0;step=initialize;...` records,
+and clears the current search collection so stale results are not presented as
+the new query. It does not fabricate a fallback language or silently reuse an
+old request; any non-NRE still reaches the normal exception surface.
+
 ## Fatal crash: RLottie cannot load in Release (26.9.6117.0)
 
 Scrolling a supergroup killed the process outright even though the managed
