@@ -1,5 +1,6 @@
 ﻿using Telegram.Td.Api;
 using Unigram.Controls;
+using Unigram.Logs;
 using Unigram.Navigation.Services;
 using Unigram.Services;
 using Unigram.ViewModels.SignIn;
@@ -24,10 +25,22 @@ namespace Unigram.Common
 
         public async void Handle(UpdateAuthorizationState update)
         {
+#if MODERN_TDLIB
+            PushDiagnostics.Write("startup.authorization", $"state={update.AuthorizationState?.GetType().Name ?? "null"}");
+#endif
             switch (update.AuthorizationState)
             {
                 case AuthorizationStateWaitTdlibParameters waitTdlibParameters:
+#if MODERN_TDLIB
+                    // Must match WindowContext.UseActivatedArgs, which already routed this
+                    // state to IntroPage. Under modern TDLib this update always arrives on a
+                    // later dispatcher turn, so routing it anywhere else would overwrite that
+                    // navigation and strand the user on phone login whenever SetTdlibParameters
+                    // fails to complete.
+                    Navigate(typeof(IntroPage));
+#else
                     Navigate(typeof(SignInPage));
+#endif
                     break;
                 case AuthorizationStateReady ready:
                     Navigate(typeof(MainPage));
@@ -74,6 +87,14 @@ namespace Unigram.Common
 
                     Navigate(string.IsNullOrEmpty(waitPassword.RecoveryEmailAddressPattern) ? typeof(SignInPasswordPage) : typeof(SignInRecoveryPage));
                     break;
+#if MODERN_TDLIB
+                default:
+                    // Deliberately does not navigate: an unmapped modern state must not
+                    // misroute the user into phone login. Content is already on screen by
+                    // this point, so recording the state is enough to diagnose it.
+                    PushDiagnostics.Write("startup.authorization", $"state={update.AuthorizationState?.GetType().Name ?? "null"};result=unmapped");
+                    break;
+#endif
             }
         }
     }

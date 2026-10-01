@@ -430,10 +430,20 @@ namespace Unigram
             }
 
             var state = service.GetAuthorizationState();
+#if MODERN_TDLIB
+            // Modern TDLib initializes on a background task, so a fresh start reaches
+            // this point before the first UpdateAuthorizationState has been delivered
+            // and the state is still null. Returning here would skip SetActivatedArgs
+            // and leave the content frame empty, rendering only the shell, and would
+            // also skip background task registration. Continue instead and let the
+            // null state navigate to a placeholder until the real state arrives.
+            Logs.PushDiagnostics.Write("startup.start", $"state={state?.GetType().Name ?? "null"}");
+#else
             if (state == null)
             {
                 return;
             }
+#endif
 
             TLWindowContext.GetForCurrentView().SetActivatedArgs(args, navService);
             TLWindowContext.GetForCurrentView().UpdateTitleBar();

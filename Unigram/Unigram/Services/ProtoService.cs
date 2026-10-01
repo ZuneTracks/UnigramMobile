@@ -352,26 +352,48 @@ namespace Unigram.Services
 
             Task.Run(() =>
             {
-                InitializeDiagnostics();
-
-                _client.Send(new SetOption("language_pack_database_path", new OptionValueString(System.IO.Path.Combine(ApplicationData.Current.LocalFolder.Path, "langpack"))));
-                _client.Send(new SetOption("localization_target", new OptionValueString("android")));
-                _client.Send(new SetOption("language_pack_id", new OptionValueString(SettingsService.Current.LanguagePackId)));
-                //_client.Send(new SetOption("online", new OptionValueBoolean(online)));
-                _client.Send(new SetOption("online", new OptionValueBoolean(false)));
-                _client.Send(new SetOption("notification_group_count_max", new OptionValueInteger(25)));
-                _client.Send(ModernTdlibCompatibility.CreateSetTdlibParameters(parameters), result =>
+                void InitializeClient()
                 {
-                    PushDiagnostics.Write("tdlib.parameters", result is Error error
-                        ? $"result=error;type={error.GetType().Name}"
-                        : "result=ok");
-                });
+                    InitializeDiagnostics();
+
+                    _client.Send(new SetOption("language_pack_database_path", new OptionValueString(System.IO.Path.Combine(ApplicationData.Current.LocalFolder.Path, "langpack"))));
+                    _client.Send(new SetOption("localization_target", new OptionValueString("android")));
+                    _client.Send(new SetOption("language_pack_id", new OptionValueString(SettingsService.Current.LanguagePackId)));
+                    //_client.Send(new SetOption("online", new OptionValueBoolean(online)));
+                    _client.Send(new SetOption("online", new OptionValueBoolean(false)));
+                    _client.Send(new SetOption("notification_group_count_max", new OptionValueInteger(25)));
+                    _client.Send(ModernTdlibCompatibility.CreateSetTdlibParameters(parameters), result =>
+                    {
+                        PushDiagnostics.Write("tdlib.parameters", result is Error error
+                            ? $"result=error;type={error.GetType().Name}"
+                            : "result=ok");
+                    });
 #if !MODERN_TDLIB
-                _client.Send(ModernTdlibCompatibility.CreateCheckDatabaseEncryptionKey(new byte[0]));
+                    _client.Send(ModernTdlibCompatibility.CreateCheckDatabaseEncryptionKey(new byte[0]));
 #endif
-                _client.Send(new GetApplicationConfig(), result => UpdateConfig(result));
+                    _client.Send(new GetApplicationConfig(), result => UpdateConfig(result));
+                }
+
+#if MODERN_TDLIB
+                // The receive loop must be started before anything else can fail.
+                // Otherwise a throwing initialization step prevents every update,
+                // including the very first authorization state, from ever being
+                // delivered, which leaves the shell permanently without content.
+                _longRunningTask = _longRunningTask ?? Task.Factory.StartNew(Client.Run, TaskCreationOptions.LongRunning);
+
+                try
+                {
+                    InitializeClient();
+                }
+                catch (Exception ex)
+                {
+                    PushDiagnostics.WriteException("tdlib.initialize", ex);
+                }
+#else
+                InitializeClient();
 
                 _longRunningTask = _longRunningTask ?? Task.Factory.StartNew(Client.Run, TaskCreationOptions.LongRunning);
+#endif
             });
         }
 

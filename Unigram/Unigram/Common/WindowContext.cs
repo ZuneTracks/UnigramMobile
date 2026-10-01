@@ -2,6 +2,7 @@
 using System.Linq;
 using Telegram.Td.Api;
 using Unigram.Controls;
+using Unigram.Logs;
 using Unigram.Navigation;
 using Unigram.Navigation.Services;
 using Unigram.Services;
@@ -213,8 +214,22 @@ namespace Unigram.Common
             {
                 switch (state)
                 {
+#if MODERN_TDLIB
+                    case null:
+                        // Modern TDLib reports the first authorization state asynchronously,
+                        // so a fresh start observes no state at all here. Without this case
+                        // the content frame is never navigated and only the shell renders.
+                        PushDiagnostics.Write("startup.navigate", "state=null;target=IntroPage");
+                        service.Navigate(typeof(IntroPage));
+                        break;
+#endif
                     case AuthorizationStateWaitTdlibParameters waitTdlibParameters:
+#if MODERN_TDLIB
+                        PushDiagnostics.Write("startup.navigate", "state=WaitTdlibParameters;target=IntroPage");
+                        service.Navigate(typeof(IntroPage));
+#else
                         service.Navigate(typeof(SignInPage));
+#endif
                         break;
                     case AuthorizationStateReady ready:
                         //App.Current.NavigationService.Navigate(typeof(Views.MainPage));
@@ -238,9 +253,24 @@ namespace Unigram.Common
 
                         service.Navigate(typeof(SignInPasswordPage));
                         break;
+#if MODERN_TDLIB
+                    default:
+                        // An unmapped modern authorization state must not leave the frame
+                        // empty. Surface it instead of silently rendering nothing.
+                        PushDiagnostics.Write("startup.navigate", $"state={state.GetType().Name};target=IntroPage;reason=unmapped");
+                        service.Navigate(typeof(IntroPage));
+                        break;
+#endif
                 }
             }
+#if MODERN_TDLIB
+            catch (Exception ex)
+            {
+                PushDiagnostics.WriteException("startup.navigate", ex);
+            }
+#else
             catch { }
+#endif
         }
 
         private async void UseActivatedArgs(IActivatedEventArgs args, INavigationService service)
