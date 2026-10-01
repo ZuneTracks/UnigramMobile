@@ -154,6 +154,29 @@ instead.
 Device installation, fresh login, push, and Live Tile validation remain
 outstanding.
 
+### Composition degradations on device
+
+`MainPage` could not be constructed on Windows 10 Mobile: the constructor threw
+a `NullReferenceException` inside `DropShadowEx.Attach(FolderShadow, ...)`, which
+left the app showing only the flyout menu. Three purely decorative composition
+sites now report the failure and continue instead of taking the page down. Each
+one logs to the diagnostics file so the degradation is visible rather than
+silent, and none of them affect chat list, messaging, or notification behaviour:
+
+- `MainPage..ctor` folder drop shadow - `main.construct.folder_shadow`.
+- `MainPage..ctor` page header inset clip - `main.construct.page_header_visual`.
+- `MainPage.ShowHideArchive` show/hide animation, skipped when the chat list
+  template is not realized yet so `VisualTreeHelper.GetChild` returns null -
+  `main.archive|result=skipped`. The end state is applied directly, so archive
+  visibility stays correct; only the transition is dropped.
+
+`DropShadowEx.Attach` additionally traces its first four calls per process
+(`shadow.attach|step=...`) to identify which WinRT composition call returns null.
+The budget exists because the diagnostics file is deleted once it reaches its
+size cap, and unbounded tracing would evict the startup records. All of this is
+gated behind `MODERN_TDLIB`; the non-modern configuration keeps the original
+unguarded statements.
+
 `Build-TdlibArm.ps1` writes `TdlibBuildManifest.txt` beside the proof payload.
 It records the pinned TDLib version/commit and hashes the generated WinMD and
 implementation DLL. `Verify-TdlibArm.ps1` rejects missing or mismatched
