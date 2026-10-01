@@ -173,9 +173,23 @@ namespace Unigram.Views
 #endif
 #if MODERN_TDLIB
             Logs.PushDiagnostics.Write("main.construct", "step=folder_shadow");
-#endif
+
+            // Composition interop is the only part of this constructor that is purely
+            // decorative, so a device-side failure here is reported and the page is still
+            // allowed to load. Everything else below is required for a usable chat list.
+            try
+            {
+                var folderShadow = DropShadowEx.Attach(FolderShadow, 20, 0.25f);
+                folderShadow.RelativeSizeAdjustment = Vector2.One;
+            }
+            catch (Exception ex)
+            {
+                Logs.PushDiagnostics.WriteException("main.construct.folder_shadow", ex);
+            }
+#else
             var folderShadow = DropShadowEx.Attach(FolderShadow, 20, 0.25f);
             folderShadow.RelativeSizeAdjustment = Vector2.One;
+#endif
 
 #if MODERN_TDLIB
             Logs.PushDiagnostics.Write("main.construct", "step=flyout_placement");
@@ -192,9 +206,21 @@ namespace Unigram.Views
 
 #if MODERN_TDLIB
             Logs.PushDiagnostics.Write("main.construct", "step=page_header_visual");
-#endif
+
+            // Same rationale as the folder shadow: the header inset clip is cosmetic.
+            try
+            {
+                var header = ElementCompositionPreview.GetElementVisual(PageHeader);
+                header.Clip = header.Compositor.CreateInsetClip();
+            }
+            catch (Exception ex)
+            {
+                Logs.PushDiagnostics.WriteException("main.construct.page_header_visual", ex);
+            }
+#else
             var header = ElementCompositionPreview.GetElementVisual(PageHeader);
             header.Clip = header.Compositor.CreateInsetClip();
+#endif
 
 #if MODERN_TDLIB
             Logs.PushDiagnostics.Write("main.construct", "step=archived_panels");
