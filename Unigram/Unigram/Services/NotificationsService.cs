@@ -69,6 +69,7 @@ namespace Unigram.Services
         private CancellationTokenSource _registrationRetryCancellation;
 
         private static readonly TimeSpan RegistrationRetryDelay = TimeSpan.FromMinutes(5);
+        private static int _foregroundTileDiagnosticBudget = 48;
 
         private bool _suppress;
 
@@ -132,13 +133,13 @@ namespace Unigram.Services
                 var updater = TileUpdateManager.CreateTileUpdaterForApplication("App");
                 updater.EnableNotificationQueue(false);
                 updater.Update(new TileNotification(document));
-                Logs.PushDiagnostics.Write("managed.tile.update", $"session={_sessionService.Id};result=success");
+                WriteForegroundTileDiagnostic("managed.tile.update", $"session={_sessionService.Id};result=success");
                 return true;
             }
             catch (Exception ex)
             {
                 Logs.Logger.Error(Logs.Target.Notifications, $"Unable to update Live Tile: {ex.Message}");
-                Logs.PushDiagnostics.WriteException("managed.tile.update.failed", ex);
+                WriteForegroundTileDiagnosticException("managed.tile.update.failed", ex);
                 return false;
             }
         }
@@ -149,12 +150,33 @@ namespace Unigram.Services
             var pictureAvailable = !string.IsNullOrEmpty(picture);
             if (!active)
             {
-                Logs.PushDiagnostics.Write("managed.tile.decision", $"session={_sessionService.Id};active=false;picture_available={pictureAvailable.ToString().ToLowerInvariant()};result=skipped");
+                WriteForegroundTileDiagnostic("managed.tile.decision", $"session={_sessionService.Id};active=false;picture_available={pictureAvailable.ToString().ToLowerInvariant()};result=skipped");
                 return;
             }
 
             var applied = UpdateTile(caption, message, launch, picture);
-            Logs.PushDiagnostics.Write("managed.tile.decision", $"session={_sessionService.Id};active=true;picture_available={pictureAvailable.ToString().ToLowerInvariant()};result={(applied ? "applied" : "failed")}");
+            WriteForegroundTileDiagnostic("managed.tile.decision", $"session={_sessionService.Id};active=true;picture_available={pictureAvailable.ToString().ToLowerInvariant()};result={(applied ? "applied" : "failed")}");
+        }
+
+        private static bool CanWriteForegroundTileDiagnostic()
+        {
+            return Interlocked.Decrement(ref _foregroundTileDiagnosticBudget) >= 0;
+        }
+
+        private static void WriteForegroundTileDiagnostic(string eventName, string details)
+        {
+            if (CanWriteForegroundTileDiagnostic())
+            {
+                Logs.PushDiagnostics.Write(eventName, details);
+            }
+        }
+
+        private static void WriteForegroundTileDiagnosticException(string eventName, Exception exception)
+        {
+            if (CanWriteForegroundTileDiagnostic())
+            {
+                Logs.PushDiagnostics.WriteException(eventName, exception);
+            }
         }
 
         private static string EscapeXml(string value)
@@ -423,6 +445,7 @@ namespace Unigram.Services
             if (_suppress)
             {
                 // This is an unsynced message, we don't want to show a notification for it as it has been probably pushed already by WNS
+                WriteForegroundTileDiagnostic("managed.tile.group", "result=skipped;reason=suppressed");
                 return;
             }
 
@@ -430,13 +453,17 @@ namespace Unigram.Services
             if (connectionState is ConnectionStateUpdating)
             {
                 // This is an unsynced message, we don't want to show a notification for it as it has been probably pushed already by WNS
+                WriteForegroundTileDiagnostic("managed.tile.group", "result=skipped;reason=connection_updating");
                 return;
             }
 
             if (!_sessionService.IsActive && !SettingsService.Current.IsAllAccountsNotifications)
             {
+                WriteForegroundTileDiagnostic("managed.tile.group", "result=skipped;reason=inactive_session");
                 return;
             }
+
+            WriteForegroundTileDiagnostic("managed.tile.group", $"result=received;added={update.AddedNotifications?.Count ?? 0};removed={update.RemovedNotificationIds?.Count ?? 0};session_active={_sessionService.IsActive.ToString().ToLowerInvariant()}");
 
             try
             {
@@ -461,8 +488,11 @@ namespace Unigram.Services
             if (connectionState is ConnectionStateUpdating)
             {
                 // This is an unsynced message, we don't want to show a notification for it as it has been probably pushed already by WNS
+                WriteForegroundTileDiagnostic("managed.tile.notification", "result=skipped;reason=connection_updating");
                 return;
             }
+
+            WriteForegroundTileDiagnostic("managed.tile.notification", $"result=received;type={update.Notification?.Type?.GetType().Name ?? "null"};dispatch=not_required");
 
             //ProcessNotification(update.NotificationGroupId, 0, update.Notification);
         }
@@ -472,14 +502,21 @@ namespace Unigram.Services
             switch (notification.Type)
             {
                 case NotificationTypeNewCall newCall:
+                    WriteForegroundTileDiagnostic("managed.tile.notification", "result=ignored;type=new_call");
                     break;
                 case NotificationTypeNewMessage newMessage:
+                    WriteForegroundTileDiagnostic("managed.tile.notification", "result=dispatch;type=new_message");
                     ProcessNewMessage(group, notification.Id, newMessage.Message, notification.Date, notification.IsSilent);
                     break;
                 case NotificationTypeNewPushMessage newPushMessage:
+                    WriteForegroundTileDiagnostic("managed.tile.notification", "result=dispatch;type=new_push_message");
                     ProcessNewPushMessage(group, notification.Id, chatId, newPushMessage, notification.Date, notification.IsSilent);
                     break;
                 case NotificationTypeNewSecretChat newSecretChat:
+                    WriteForegroundTileDiagnostic("managed.tile.notification", "result=ignored;type=new_secret_chat");
+                    break;
+                default:
+                    WriteForegroundTileDiagnostic("managed.tile.notification", $"result=ignored;type={notification.Type?.GetType().Name ?? "null"}");
                     break;
             }
         }
@@ -489,8 +526,11 @@ namespace Unigram.Services
             var chat = _protoService.GetChat(chatId);
             if (chat == null)
             {
+                WriteForegroundTileDiagnostic("managed.tile.message", "result=skipped;type=new_push_message;reason=chat_unavailable");
                 return;
             }
+
+            WriteForegroundTileDiagnostic("managed.tile.message", $"result=received;type=new_push_message;silent={silent.ToString().ToLowerInvariant()}");
 
             var caption = GetCaption(chat);
             var content = GetContent(chat, message);
@@ -524,8 +564,11 @@ namespace Unigram.Services
             var chat = _protoService.GetChat(message.ChatId);
             if (chat == null)
             {
+                WriteForegroundTileDiagnostic("managed.tile.message", "result=skipped;type=new_message;reason=chat_unavailable");
                 return;
             }
+
+            WriteForegroundTileDiagnostic("managed.tile.message", $"result=received;type=new_message;silent={silent.ToString().ToLowerInvariant()}");
 
             var caption = GetCaption(chat);
             var content = GetContent(chat, message);
@@ -564,10 +607,13 @@ namespace Unigram.Services
             var open = WindowContext.ActiveWrappers.Cast<TLWindowContext>().Any(x => x.IsChatOpen(_protoService.SessionId, chat.Id));
             if (open)
             {
+                WriteForegroundTileDiagnostic("managed.tile.gate", "result=skipped;reason=chat_open");
                 return;
             }
 
+            WriteForegroundTileDiagnostic("managed.tile.gate", "result=invoke;reason=chat_not_open");
             await action();
+            WriteForegroundTileDiagnostic("managed.tile.gate", "result=complete");
         }
 
         private async Task UpdateToast(string caption, string message, string account, string sound, string launch, string tag, string group, string picture, string date, bool canReply)

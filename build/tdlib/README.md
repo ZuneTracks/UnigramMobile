@@ -192,6 +192,32 @@ After installing that identity, verify `wns.channel.created`,
 `native.task.run`, `native.raw.received`, and
 `native.notification.displayed`.
 
+#### Foreground Live Tile tracing
+
+The Store and experimental sources use the same foreground tile renderer and
+the experimental diagnostics have recorded successful `managed.tile.update`
+and `managed.tile.decision|...;result=applied` calls. Those records prove that
+the Windows tile API accepted an update; they do not prove which tile is pinned
+or visible in the shell. This is independent of remote WNS delivery.
+
+26.9.6130.0 adds a bounded, privacy-safe trace of the foreground path:
+`managed.tile.group`, `managed.tile.notification`, `managed.tile.message`, and
+`managed.tile.gate`. It records notification kinds, counts, session state, and
+the reason for a skip, but never chat IDs, message content, tokens, account
+identifiers, or paths. The trace distinguishes no incoming TDLib notification,
+an inactive account, an unavailable chat, the intentionally suppressed
+currently-open chat, and a completed tile write.
+
+For a conclusive test, pin the separate **Unigram Mobile TDLib Experimental**
+primary tile, foreground the app on the chat list or a different chat, then
+receive a message in a non-open chat. A currently open target chat is
+intentionally excluded from toast and tile updates by `UpdateAsync`. If the
+same test reports `managed.tile.update|...result=success` and
+`managed.tile.decision|...result=applied` but the pinned experimental tile
+does not redraw, the remaining defect is the Windows Mobile shell's tile
+presentation/cache for that isolated package, rather than TDLib, WNS, or the
+tile XML renderer.
+
 ### Composition degradations on device
 
 `MainPage` could not be constructed on Windows 10 Mobile: the constructor threw
