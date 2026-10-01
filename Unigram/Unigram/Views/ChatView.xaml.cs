@@ -552,11 +552,41 @@ namespace Unigram.Views
 
         private async void OnCollectionChanged(object sender, NotifyCollectionChangedEventArgs args)
         {
+#if MODERN_TDLIB
+            // This is an async void event handler, so an exception escaping it reaches
+            // Application.UnhandledException with its stack already discarded. Worse, it unwinds
+            // through the WinRT collection-changed callback, and .NET Native tears the process
+            // down across that native frame even though the handler sets Handled. Reporting here
+            // keeps a usable stack and costs only the insert/remove animation.
+            try
+            {
+                await OnCollectionChangedCoreAsync(args);
+            }
+            catch (Exception ex)
+            {
+                Logs.PushDiagnostics.WriteException("messages.collection", ex, "result=error");
+            }
+        }
+
+        private async Task OnCollectionChangedCoreAsync(NotifyCollectionChangedEventArgs args)
+        {
+#endif
             var panel = Messages.ItemsStack;
             if (panel == null)
             {
                 return;
             }
+
+#if MODERN_TDLIB
+            // FirstCacheIndex is -1 until the panel has been measured, and both loops below use it
+            // as their start index. Passing a negative index to ContainerFromIndex crosses the WinRT
+            // boundary, which is the same hazard the container null checks exist to avoid. The rest
+            // of the project guards FirstCacheIndex/FirstVisibleIndex the same way.
+            if (panel.FirstCacheIndex < 0)
+            {
+                return;
+            }
+#endif
 
             if (args.Action == NotifyCollectionChangedAction.Remove && panel.FirstCacheIndex < args.OldStartingIndex && panel.LastCacheIndex >= args.OldStartingIndex)
             {
@@ -583,8 +613,27 @@ namespace Unigram.Views
 
                 for (int i = panel.FirstCacheIndex; i < args.OldStartingIndex; i++)
                 {
+#if MODERN_TDLIB
+                    // FirstCacheIndex is -1 until the panel has been measured, and
+                    // ContainerFromIndex returns null for any index the panel has not realised.
+                    // VisualTreeHelper.GetChild is a WinRT call, so a null container throws across
+                    // a native frame and fail-fasts the process instead of raising a catchable
+                    // managed exception.
+                    var container = Messages.ContainerFromIndex(i) as SelectorItem;
+                    if (container == null || VisualTreeHelper.GetChildrenCount(container) < 1)
+                    {
+                        continue;
+                    }
+
+                    var child = VisualTreeHelper.GetChild(container, 0) as UIElement;
+                    if (child == null)
+                    {
+                        continue;
+                    }
+#else
                     var container = Messages.ContainerFromIndex(i) as SelectorItem;
                     var child = VisualTreeHelper.GetChild(container, 0) as UIElement;
+#endif
 
                     var visual = ElementCompositionPreview.GetElementVisual(child);
                     visual.StartAnimation("Offset", anim);
@@ -613,8 +662,25 @@ namespace Unigram.Views
 
                 for (int i = panel.FirstCacheIndex; i <= args.NewStartingIndex; i++)
                 {
+#if MODERN_TDLIB
+                    // Same unrealised-container hazard as the remove branch above. This is the
+                    // branch that runs while a chat's history streams in, so it is the one that
+                    // took the process down when opening a chat.
+                    var container = Messages.ContainerFromIndex(i) as SelectorItem;
+                    if (container == null || VisualTreeHelper.GetChildrenCount(container) < 1)
+                    {
+                        continue;
+                    }
+
+                    var child = VisualTreeHelper.GetChild(container, 0) as UIElement;
+                    if (child == null)
+                    {
+                        continue;
+                    }
+#else
                     var container = Messages.ContainerFromIndex(i) as SelectorItem;
                     var child = VisualTreeHelper.GetChild(container, 0) as UIElement;
+#endif
 
                     var visual = ElementCompositionPreview.GetElementVisual(child);
                     visual.StartAnimation("Offset", anim);
@@ -4624,6 +4690,14 @@ namespace Unigram.Views
         {
             if (e.NewSize.Height > e.PreviousSize.Height)
             {
+#if MODERN_TDLIB
+                // CreateSpringVector3Animation is UniversalApiContract v7. Windows 10 Mobile tops
+                // out at v4, so this would throw while the autocomplete list grows.
+                if (!ApiInfo.CanUseDirectComposition)
+                {
+                    return;
+                }
+#endif
                 var diff = (float)e.NewSize.Height - (float)e.PreviousSize.Height;
                 var visual = ElementCompositionPreview.GetElementVisual(ListAutocomplete);
 

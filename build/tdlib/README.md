@@ -240,6 +240,63 @@ without its pinned-message banner instead of terminating the app.
 `Exception.ToString()` as `detail=` when `StackTrace` is empty, so a stripped
 unhandled exception still carries whatever locator information remains.
 
+On device that guard worked as intended and produced the stack the unhandled
+handler could not: the fault is in `MessagePinned.UpdateMessage`, reached from
+`ChatView.UpdatePinnedMessage`. It is raised when `GetChatMessageCount` reports
+a non-zero count, so only chats that actually have a pinned message enter the
+banner's cross-fade — confirming the one-group-crashes-and-one-does-not split.
+
+`MessagePinned.UpdateMessage` now takes a non-animated path when
+`ApiInfo.CanUseDirectComposition` is false. On those devices `MessagePinnedLine`
+and `NumericTextBlock` both disable themselves in their constructors, so the
+cross-fade animates nothing and only risks the scoped batch and visual
+animations it has to set up first. The method already branched on the same
+capability to decide the title text, so this extends an existing distinction
+rather than introducing one. `ShowHide` additionally falls back to toggling
+`Visibility` when `InitializeParent` has not run, because
+`ElementCompositionPreview.GetElementVisual(null)` throws out through WinRT.
+
+Because the exception unwinds through a WinRT frame no managed stack survives to
+name the exact statement, so `UpdateMessage` and `ShowHide` emit budgeted
+`pinned.ui|step=` traces. The budget (60 entries per process) exists for the
+same reason as the `shadow.attach` one: the diagnostics file is deleted at its
+size cap, and unbounded tracing would evict the records that matter.
+
+#### Opening a chat crashed while its history streamed in
+
+With the pinned-message fault contained, the same chat still terminated the app
+a few seconds later, after a long run of `tdlib.result|type=Message` entries —
+message rendering rather than the banner.
+
+`ChatView.OnCollectionChanged` animates the messages around an insert or a
+removal, and both of its loops start at `panel.FirstCacheIndex`:
+
+```csharp
+for (int i = panel.FirstCacheIndex; i <= args.NewStartingIndex; i++)
+{
+    var container = Messages.ContainerFromIndex(i) as SelectorItem;
+    var child = VisualTreeHelper.GetChild(container, 0) as UIElement;
+```
+
+`FirstCacheIndex` is `-1` until the panel has been measured, and
+`ContainerFromIndex` returns null for any index the panel has not realised.
+`VisualTreeHelper.GetChild` is a WinRT call, so a null container does not raise
+a catchable managed exception — it throws across a native frame, and .NET Native
+tears the process down there.
+
+That is also why `App.OnUnhandledException` could not save it. The handler
+already sets `e.Handled = true`, but `Handled` only suppresses termination for
+exceptions the XAML framework can unwind; once the throw has crossed a native
+callback frame the process is going down regardless. This is the reason faults
+have to be caught at their managed source rather than centrally, and it is worth
+remembering before trusting the global handler again.
+
+Both loops now skip unrealised containers and containers with no visual child,
+and `OnCollectionChanged` — another `async void` — delegates to
+`OnCollectionChangedCoreAsync` inside a reporting `try`/`catch`
+(`messages.collection`). The cost of a skipped entry is one missing slide
+animation.
+
 #### Composition members verified as already gated
 
 A recursive sweep of every `CreateShapeVisual`, `CreateLinearGradientBrush` and
@@ -256,6 +313,20 @@ fields their guarded constructors leave unset.
 `Update` dereferenced the result. It is now gated the same way, with null checks
 on each member, so the storage page renders without the ring chart rather than
 faulting.
+
+A later re-sweep found one more: `ChatView.Autocomplete_SizeChanged` called
+`CreateSpringVector3Animation` unconditionally. Spring animations are
+UniversalApiContract v7, and the device reports `create_spring_vector3=False`,
+so the autocomplete list would have faulted as it grew while typing. It is now
+gated on `ApiInfo.CanUseDirectComposition`.
+
+Two related sites are deliberately left alone. `ColorSlider` has one
+`CreateSpringVector3Animation` block behind `if (false)` (dead) and another
+gated on `IsUniversalApiContract5Present`. That second guard is the wrong
+contract — the API is v7, so it would still fault on a contract v5 or v6 device
+— but it is correctly skipped on this contract v4 device, sits in the photo
+editor rather than on any in-scope path, and is pre-existing. It is recorded
+here rather than changed.
 
 #### Calls are intentionally unavailable
 
