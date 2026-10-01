@@ -110,12 +110,12 @@ namespace Unigram.Views
         // Confirms on device that a detached container really is the cause. Budgeted, because
         // this fires at scroll rate and PushDiagnostics enforces its ceiling by deleting the
         // file. A step ordinal only - no identifiers, content or paths.
-        private static void TraceTransform(int step)
+        private static void TraceTransform(int step, string result = "null")
         {
             if (_transformBudget > 0)
             {
                 _transformBudget--;
-                Logs.PushDiagnostics.Write("scroll.header.transform", $"result=null;step={step}");
+                Logs.PushDiagnostics.Write("scroll.header.transform", $"result={result};step={step}");
             }
         }
 #endif
@@ -322,21 +322,32 @@ namespace Unigram.Views
 #if MODERN_TDLIB
                     _headerStep = 3;
 #endif
-                    var transform = container.TransformToVisual(DateHeaderRelative);
 #if MODERN_TDLIB
-                    // TransformToVisual yields null for a container virtualization has detached
-                    // from the live tree, which scrolling fast through weeks of history produces
-                    // routinely. Its on-screen position is undefined, so skip it entirely rather
-                    // than treat it as the first visible item; the next container, or the next
-                    // scroll pass, supplies the date. Restore Opacity first: this container may
-                    // be a date separator that an earlier pass hid under the floating pill, and
-                    // skipping bypasses every path that would otherwise show it again.
+                    GeneralTransform transform;
+                    try
+                    {
+                        transform = container.TransformToVisual(DateHeaderRelative);
+                    }
+                    catch (NullReferenceException)
+                    {
+                        // WinRT can throw instead of returning null when virtualization detaches
+                        // the container during the call. Its on-screen position is undefined.
+                        TraceTransform(3, "throw");
+                        container.Opacity = 1;
+                        continue;
+                    }
+
+                    // Other detached containers return null instead. Restore Opacity first: this
+                    // may be a date separator that an earlier pass hid under the floating pill,
+                    // and skipping bypasses every path that would otherwise show it again.
                     if (transform == null)
                     {
                         TraceTransform(3);
                         container.Opacity = 1;
                         continue;
                     }
+#else
+                    var transform = container.TransformToVisual(DateHeaderRelative);
 #endif
                     var point = transform.TransformPoint(new Point());
 
@@ -369,19 +380,30 @@ namespace Unigram.Views
 #if MODERN_TDLIB
                     _headerStep = 5;
 #endif
-                    var transform = container.TransformToVisual(DateHeaderRelative);
 #if MODERN_TDLIB
-                    // Same hazard as above, and this is the site the device logs identified
-                    // (step=5 on every recorded failure, with every other collaborator non-null).
-                    // Leave the inline separator visible and leave minDate set, so the next
-                    // MessageHeaderDate container in this pass - or the next pass - can still
-                    // position the floating pill.
+                    GeneralTransform transform;
+                    try
+                    {
+                        transform = container.TransformToVisual(DateHeaderRelative);
+                    }
+                    catch (NullReferenceException)
+                    {
+                        // The device log established this step as the reproducible failure site.
+                        TraceTransform(5, "throw");
+                        container.Opacity = 1;
+                        continue;
+                    }
+
+                    // A detached container can also return null. Leave the inline separator
+                    // visible and leave minDate set, so the next separator can position the pill.
                     if (transform == null)
                     {
                         TraceTransform(5);
                         container.Opacity = 1;
                         continue;
                     }
+#else
+                    var transform = container.TransformToVisual(DateHeaderRelative);
 #endif
                     var point = transform.TransformPoint(new Point());
                     var height = (float)DateHeader.ActualHeight;

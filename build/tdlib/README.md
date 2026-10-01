@@ -518,7 +518,7 @@ The probe also now reports `DateHeader`, `DateHeaderLabel`, `PinnedMessage` and
 `ViewModel.Chat`, the four collaborators the original probe omitted. All are
 booleans and a step ordinal; no identifiers, content or paths.
 
-### Resolved in 26.9.6121.0: a detached container has no transform
+### Corrected in 26.9.6123.0: a detached container can throw during transform
 
 The ordinal paid for itself immediately. The next device log reported
 `step=5` on **all four** occurrences, with every one of the eleven probed
@@ -529,18 +529,23 @@ cover: `transform`, the result of
     container.TransformToVisual(DateHeaderRelative)
 
 `TransformToVisual` is declared to return a `GeneralTransform`, so nothing in
-the signature suggests it can yield null - but it does, for a container that is
-no longer part of the live visual tree. During a fast scroll through weeks of
-history the list virtualizes containers out from under the loop, and the
-date-separator container is the one most likely to be recycled, because it is
-not a message and is created and discarded as day boundaries pass.
+the signature suggests it can yield null or throw. On a container that is no
+longer part of the live visual tree, it can do either. During a fast scroll
+through weeks of history the list virtualizes containers out from under the
+loop, and the date-separator container is the one most likely to be recycled,
+because it is not a message and is created and discarded as day boundaries
+pass.
 
 The decisive detail is that **step 3 runs the identical call earlier in the same
 pass and succeeds** - otherwise the ordinal would have read 3, not 5. That rules
 out `DateHeaderRelative` itself being detached or unloaded, which would have
 failed both calls. The fault is specific to the container being transformed.
 
-Both call sites are now guarded, and the recovery is `continue` rather than
+26.9.6121.0 guarded only a null return. The 26.9.6122.0 device log still showed
+four `step=5` NREs and **no** `scroll.header.transform` record, proving the
+exception escaped from `TransformToVisual` before the null check. 26.9.6123.0
+catches that specific `NullReferenceException` around each call and retains the
+null guard for the alternate outcome. The recovery is `continue` rather than
 guard-and-proceed. That is deliberate: if the transform failed, the container's
 on-screen position is undefined, so it must not be treated as the first visible
 item or used to position the floating pill. `minItem` stays true, so the next
@@ -556,9 +561,10 @@ separator would simply stay blank in the list. The step-3 site is as exposed as
 step 5 here, because it runs while `minItem` is still true, which is exactly the
 window in which the first date separator appears.
 
-A budgeted `scroll.header.transform|result=null;step=<n>` record confirms the
-diagnosis on the next device run: the log should show zero `scroll.header`
-NREs and up to two transform records.
+A budgeted `scroll.header.transform|result=throw;step=<n>` or
+`result=null;step=<n>` record confirms the recovered outcome on the next device
+run: the log should show zero `scroll.header` NREs and up to two transform
+records.
 
 ### Locating a stackless NRE: why first-chance capture is not available
 
