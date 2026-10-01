@@ -86,6 +86,17 @@ namespace Unigram.Views
             InitializeComponent();
             DataContext = TLContainer.Current.Resolve<MainViewModel>();
 
+#if MODERN_TDLIB
+            // TLContainer.Resolve returns default(T) rather than throwing when no container
+            // is registered for the active session, so every member access below would fail
+            // as a bare NullReferenceException with no indication of the cause.
+            if (DataContext == null)
+            {
+                Logs.PushDiagnostics.Write("main.construct", "result=error;reason=viewmodel_unresolved");
+                throw new InvalidOperationException("MainViewModel could not be resolved for the active session.");
+            }
+#endif
+
             _cacheService = ViewModel.CacheService;
 
             SettingsView.DataContext = ViewModel.Settings;
@@ -131,6 +142,9 @@ namespace Unigram.Views
 
             ArchivedChatsPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
             ArchivedChatsCompactPanel.Visibility = show ? Visibility.Collapsed : Visibility.Visible;
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.construct", "result=ok");
+#endif
         }
 
         public void Dispose()
@@ -1189,27 +1203,65 @@ namespace Unigram.Views
 
         public void Initialize()
         {
+#if MODERN_TDLIB
+            // Reached from OnNavigatedTo, so this runs on both routes to MainPage (launch
+            // and post-login) while still inside Frame.Navigate. Every dereference below is
+            // a crash candidate and none of them are otherwise visible, so step through it.
+            Logs.PushDiagnostics.Write("main.initialize", "step=begin");
+
+            if (ViewModel == null)
+            {
+                Logs.PushDiagnostics.Write("main.initialize", "result=error;reason=viewmodel_null");
+                throw new InvalidOperationException("MainPage.Initialize ran without a MainViewModel.");
+            }
+
+            Logs.PushDiagnostics.Write("main.initialize", $"step=backstack;frame={(Frame == null ? "null" : "ok")}");
+#endif
             Frame.BackStack.Clear();
 
             if (MasterDetail.NavigationService == null)
             {
+#if MODERN_TDLIB
+                Logs.PushDiagnostics.Write("main.initialize", "step=master_detail_initialize");
+#endif
                 MasterDetail.Initialize("Main", Frame, ViewModel.ProtoService.SessionId);
                 MasterDetail.NavigationService.FrameFacade.Navigating += OnNavigating;
                 MasterDetail.NavigationService.FrameFacade.Navigated += OnNavigated;
             }
 
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.initialize", "step=navigation_services");
+#endif
             ViewModel.NavigationService = MasterDetail.NavigationService;
             ViewModel.Chats.NavigationService = MasterDetail.NavigationService;
             ViewModel.Contacts.NavigationService = MasterDetail.NavigationService;
             ViewModel.Calls.NavigationService = MasterDetail.NavigationService;
             ViewModel.Settings.NavigationService = MasterDetail.NavigationService;
 
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.initialize", "step=archived_chats");
+#endif
             ArchivedChats.UpdateChatList(ViewModel.ProtoService, ViewModel.Chats, new ChatListArchive());
+#if MODERN_TDLIB
+            Logs.PushDiagnostics.Write("main.initialize", "step=done;result=ok");
+#endif
         }
 
         protected override void OnNavigatedTo(NavigationEventArgs e)
         {
+#if MODERN_TDLIB
+            try
+            {
+                Initialize();
+            }
+            catch (Exception ex)
+            {
+                Logs.PushDiagnostics.WriteException("main.navigated_to", ex);
+                throw;
+            }
+#else
             Initialize();
+#endif
         }
 
         public async void Activate(string parameter)

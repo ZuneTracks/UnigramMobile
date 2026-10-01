@@ -407,8 +407,20 @@ namespace Unigram.ViewModels
 #if CLOUDUPDATES
             UpdateAppVersion(_cloudUpdateService.NextUpdate);
 #endif
+#if MODERN_TDLIB
+            // This prologue runs synchronously inside Frame.Navigate, so a failure here
+            // aborts the whole navigation to MainPage. TLRootNavigationService.Handle is
+            // async void, which means the exception is posted to the dispatcher instead of
+            // propagating, and .NET Native reduces a NullReferenceException message to a
+            // resource key. These markers name the step that failed even when the frame
+            // list is unavailable.
+            PushDiagnostics.Write("main.navigated", "step=chat_filters");
+#endif
             UpdateChatFilters(CacheService.ChatFilters);
 
+#if MODERN_TDLIB
+            PushDiagnostics.Write("main.navigated", "step=unread_count");
+#endif
             var unreadCount = CacheService.GetUnreadCount(new ChatListMain());
             UnreadCount = unreadCount.UnreadMessageCount.UnreadCount;
             UnreadMutedCount = unreadCount.UnreadMessageCount.UnreadCount - unreadCount.UnreadMessageCount.UnreadUnmutedCount;
@@ -423,6 +435,9 @@ namespace Unigram.ViewModels
 #endif
             }
 
+#if MODERN_TDLIB
+            PushDiagnostics.Write("main.navigated", "step=children");
+#endif
             return base.OnNavigatedToAsync(parameter, mode, state);
         }
 

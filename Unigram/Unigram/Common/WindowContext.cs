@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using System.Threading.Tasks;
 using Telegram.Td.Api;
 using Unigram.Controls;
 using Unigram.Logs;
@@ -275,6 +276,24 @@ namespace Unigram.Common
 
         private async void UseActivatedArgs(IActivatedEventArgs args, INavigationService service)
         {
+#if MODERN_TDLIB
+            // This overload is async void and previously had no handler at all, so any
+            // failure on the launch path surfaced only as an unhandled app crash with no
+            // indication of its origin. Record it before letting it propagate.
+            try
+            {
+                await UseActivatedArgsCore(args, service);
+            }
+            catch (Exception ex)
+            {
+                PushDiagnostics.WriteException("startup.activate", ex);
+                throw;
+            }
+        }
+
+        private async Task UseActivatedArgsCore(IActivatedEventArgs args, INavigationService service)
+        {
+#endif
             if (service == null)
             {
                 service = WindowContext.GetForCurrentView().NavigationServices.FirstOrDefault();
