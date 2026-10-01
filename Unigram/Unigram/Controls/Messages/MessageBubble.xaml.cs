@@ -1053,6 +1053,16 @@ namespace Unigram.Controls.Messages
                 Span.Inlines.Add(new Run { Text = bigEmoji.Text.Text, FontSize = 32 });
                 result = true;
             }
+#if MODERN_TDLIB
+            else if (content is MessageAnimatedEmoji animatedEmoji)
+            {
+                // Safety net for the TDLib 1.8.66 content type: if ProcessEmojiAsync has not
+                // already replaced this with a sticker or a MessageBigEmoji, draw the emoji
+                // itself so the bubble is never rendered empty.
+                Span.Inlines.Add(new Run { Text = animatedEmoji.Emoji ?? string.Empty, FontSize = 32 });
+                result = true;
+            }
+#endif
 
             Message.Visibility = result ? Visibility.Visible : Visibility.Collapsed;
             //Footer.HorizontalAlignment = adjust ? HorizontalAlignment.Left : HorizontalAlignment.Right;

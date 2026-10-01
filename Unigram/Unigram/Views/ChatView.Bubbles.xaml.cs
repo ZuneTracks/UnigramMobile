@@ -226,6 +226,8 @@ namespace Unigram.Views
         private void UpdateHeaderDate(bool intermediate)
         {
 #if MODERN_TDLIB
+            _headerStep = 0;
+
             try
             {
                 UpdateHeaderDateCore(intermediate);
@@ -234,21 +236,30 @@ namespace Unigram.Views
             {
                 if (_headerBudget > 0)
                 {
-                    // Records which collaborator was missing. Booleans only - no identifiers,
-                    // content or paths.
+                    // Records which collaborator was missing and how far the method got.
+                    // Booleans, counts and a step ordinal only - no identifiers, content or paths.
                     Logs.PushDiagnostics.Write("scroll.header.state",
+                        $"step={_headerStep};" +
                         $"date_header={_dateHeader != null};date_timer={_dateHeaderTimer != null};" +
                         $"date_panel_visual={_dateHeaderPanel != null};date_panel={DateHeaderPanel != null};" +
                         $"date_relative={DateHeaderRelative != null};view_model={ViewModel != null};" +
-                        $"pinned_list={ViewModel?.PinnedMessages != null}");
+                        $"pinned_list={ViewModel?.PinnedMessages != null};" +
+                        $"date_header_ctl={DateHeader != null};date_label={DateHeaderLabel != null};" +
+                        $"pinned_ctl={PinnedMessage != null};chat={ViewModel?.Chat != null}");
                 }
 
                 TraceScroll(ref _headerBudget, "scroll.header", ex);
             }
         }
 
+        // Last stage reached inside UpdateHeaderDateCore, reported when it throws. .NET Native
+        // inlines small callees, so the captured stack routinely omits the frame that actually
+        // threw; this ordinal identifies the statement range instead.
+        private int _headerStep;
+
         private void UpdateHeaderDateCore(bool intermediate)
         {
+            _headerStep = 1;
 #endif
             var panel = Messages.ItemsPanelRoot as ItemsStackPanel;
             if (panel == null || panel.FirstVisibleIndex < 0)
@@ -262,6 +273,9 @@ namespace Unigram.Views
             var minItem = true;
             var minDate = true;
             var minDateIndex = panel.FirstVisibleIndex;
+#if MODERN_TDLIB
+            _headerStep = 2;
+#endif
 
             for (int i = panel.FirstVisibleIndex; i <= panel.LastVisibleIndex; i++)
             {
@@ -288,13 +302,18 @@ namespace Unigram.Views
 
                 if (minItem && i >= panel.FirstVisibleIndex)
                 {
+#if MODERN_TDLIB
+                    _headerStep = 3;
+#endif
                     var transform = container.TransformToVisual(DateHeaderRelative);
                     var point = transform.TransformPoint(new Point());
 
                     if (point.Y + container.ActualHeight >= 0)
                     {
                         minItem = false;
-
+#if MODERN_TDLIB
+                        _headerStep = 4;
+#endif
                         if (message.SchedulingState is MessageSchedulingStateSendAtDate sendAtDate)
                         {
                             DateHeader.CommandParameter = null;
@@ -315,6 +334,9 @@ namespace Unigram.Views
 
                 if (message.Content is MessageHeaderDate && minDate && i >= panel.FirstVisibleIndex)
                 {
+#if MODERN_TDLIB
+                    _headerStep = 5;
+#endif
                     var transform = container.TransformToVisual(DateHeaderRelative);
                     var point = transform.TransformPoint(new Point());
                     var height = (float)DateHeader.ActualHeight;
@@ -361,6 +383,8 @@ namespace Unigram.Views
             }
 
 #if MODERN_TDLIB
+            _headerStep = 6;
+
             if (_dateHeaderTimer != null)
             {
                 _dateHeaderTimer.Stop();
@@ -369,6 +393,9 @@ namespace Unigram.Views
 #else
             _dateHeaderTimer.Stop();
             _dateHeaderTimer.Start();
+#endif
+#if MODERN_TDLIB
+            _headerStep = 7;
 #endif
             ShowHideDateHeader(minDateIndex > 0, minDateIndex > 0 && minDateIndex < int.MaxValue);
 
@@ -395,6 +422,8 @@ namespace Unigram.Views
             {
                 return;
             }
+
+            _headerStep = 8;
 #endif
 
             if (ViewModel.LockedPinnedMessageId < firstVisibleId)
@@ -405,6 +434,9 @@ namespace Unigram.Views
             var thread = ViewModel.Thread;
             if (thread != null)
             {
+#if MODERN_TDLIB
+                _headerStep = 9;
+#endif
                 var message = thread.Messages.LastOrDefault();
                 if (message == null || (firstVisibleId <= message.Id && lastVisibleId >= message.Id))
                 {
@@ -421,6 +453,9 @@ namespace Unigram.Views
             else if (ViewModel.PinnedMessages.Count > 0)
 #endif
             {
+#if MODERN_TDLIB
+                _headerStep = 10;
+#endif
                 var currentPinned = ViewModel.LockedPinnedMessageId != 0
                     ? ViewModel.PinnedMessages.LastOrDefault(x => x.Id < firstVisibleId) ?? ViewModel.PinnedMessages.LastOrDefault()
                     : ViewModel.PinnedMessages.LastOrDefault(x => x.Id <= lastVisibleId) ?? ViewModel.PinnedMessages.FirstOrDefault();
@@ -435,6 +470,9 @@ namespace Unigram.Views
                     PinnedMessage.UpdateMessage(ViewModel.Chat, null, false, 0, 1, false);
                 }
             }
+#if MODERN_TDLIB
+            _headerStep = 11;
+#endif
         }
 
         private bool _dateHeaderCollapsed = true;

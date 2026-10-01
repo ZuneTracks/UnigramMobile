@@ -460,6 +460,46 @@ therefore removes the suggestion from every pool, supplies a fresh
 since this handler is invoked from WinRT and an unwinding recovery would cause
 the fail-fast the outer catch exists to prevent.
 
+### Still unresolved after 26.9.6118.0: a second header NRE
+
+The `MessagePinned.UpdateMessage` null-chat fix landed and demonstrably worked -
+`pinned.ui|step=enter` now appears in the device log, which it never did before.
+But `scroll.header` still records four NREs per session, and the state probe
+reports every collaborator present:
+
+    scroll.header.state|date_header=True;date_timer=True;date_panel_visual=True;
+                        date_panel=True;date_relative=True;view_model=True;
+                        pinned_list=True
+
+so a null collaborator is not the cause and adding further guards is pointless.
+The failure is also intermittent rather than systematic: a `pinned.ui` record
+appears 65 ms *after* a failed invocation, proving the same path completes
+successfully on other passes, which points at a per-container or per-message
+condition inside the loop.
+
+The captured stack names `UpdateHeaderDateCore`, but .NET Native inlines small
+callees, so the frame that actually threw is routinely absent. 26.9.6119.0
+therefore replaces guesswork with a `_headerStep` ordinal, assigned at eleven
+points through the method and reported as `step=` on the next failure:
+
+| step | reached |
+| --- | --- |
+| 1 | method entry |
+| 2 | panel resolved, before the loop |
+| 3 | first-visible `TransformToVisual` |
+| 4 | `DateHeader`/`DateHeaderLabel` assignment |
+| 5 | `MessageHeaderDate` transform |
+| 6 | timer restart |
+| 7 | `ShowHideDateHeader` |
+| 8 | pinned-banner tail entered |
+| 9 | thread branch |
+| 10 | pinned-list branch |
+| 11 | completed |
+
+The probe also now reports `DateHeader`, `DateHeaderLabel`, `PinnedMessage` and
+`ViewModel.Chat`, the four collaborators the original probe omitted. All are
+booleans and a step ordinal; no identifiers, content or paths.
+
 ## Fatal crash: RLottie cannot load in Release (26.9.6117.0)
 
 Scrolling a supergroup killed the process outright even though the managed
@@ -533,17 +573,16 @@ failure, never a P/Invoke.
 device and belongs to the out-of-scope photo editor, so it is recorded here
 rather than changed.
 
-## Emoji render blank in chat bubbles (26.9.6118.0)
+## Emoji render blank in chat bubbles (26.9.6118.0, fixed in 26.9.6119.0)
 
 ### Symptom
 
-Emoji-only messages produced bubbles of the correct size containing nothing at
-all: no glyph, and crucially no `.notdef` tofu box either. Text messages in the
-same chat rendered normally, emoji could be typed and sent, and recipients on
-Android/iOS saw them correctly. Only inbound/outbound *display* on device was
+Emoji-only messages produced bubbles containing nothing but the timestamp. Text
+messages in the same chat rendered normally, emoji could be typed and sent, and
+recipients on Android/iOS saw them correctly. Only *display* on device was
 affected.
 
-### Why it is not a port regression
+### Why the rendering code itself was exonerated
 
 Every inline-emoji code path is byte-identical to the stable base `7abe5bdd3`:
 
@@ -551,50 +590,83 @@ Every inline-emoji code path is byte-identical to the stable base `7abe5bdd3`:
         '*Common/Theme.cs' '*App.xaml' '*TextStyleRun*'
 
 returns empty. The only emoji-related port change is `SearchEmojis` in
-`Common/Emoji.cs`, which serves the drawer's search box and cannot affect
-bubble rendering. This is a pre-existing Windows 10 Mobile limitation that the
-stable branch shares; it had simply never been compared against Android/iOS.
+`Common/Emoji.cs`, which serves the drawer's search box and cannot affect bubble
+rendering. That correctly ruled out a rendering regression - but it also pointed
+away from the actual cause, which was never in the rendering code at all: it was
+an unhandled *content type* arriving from the newer TDLib.
+
+### First diagnosis (26.9.6118.0) - wrong, recorded deliberately
+
+`Assets\Emoji\apple.ttf` was measured and found to be 99.1 % CBDT colour-bitmap
+data (`glyf` 89,192 B of outlines against `CBDT` 13,786,695 B of bitmaps), and
+the blank bubbles were attributed to Windows 10 Mobile's DirectWrite honouring
+`hmtx` advance widths without compositing those bitmaps. 26.9.6118.0 therefore
+switched `EmojiThemeFontFamily` to `XamlAutoFontFamily`.
+
+**The device disproved this.** The 26.9.6118.0 log records
+
+    theme.emoji|set=microsoft;font=system;reason=cbdt_bitmap_not_composited
+
+confirming the system font was in effect, and emoji were *still* blank. The
+font-table measurement is factually correct but was never the cause.
+
+The error was an over-read of the first screenshot. The bubbles were not
+"correctly sized but empty" - they were **timestamp-width, with no gap reserved
+for a glyph at all**. Zero advance width means the inline content is empty, not
+that a glyph painted invisibly. Measuring a suspect bubble against a
+timestamp-only baseline would have ruled the font out immediately.
 
 ### Root cause
 
-`Assets\Emoji\apple.ttf` is a CBDT/CBLC colour-**bitmap** font. Measuring the
-sfnt table directory of the shipped asset:
+TDLib 1.8.0 delivered a lone emoji as `messageText`, and
+`DialogViewModel.ProcessEmojiAsync` converted it into a sticker. **TDLib 1.8.66
+delivers `messageAnimatedEmoji` instead:**
 
-| table | bytes |
-| --- | --- |
-| `glyf` (outlines) | 89,192 |
-| `loca` | 7,122 |
-| `CBLC` | 28,264 |
-| `CBDT` (colour bitmaps) | 13,786,695 |
+    messageAnimatedEmoji animated_emoji:animatedEmoji emoji:string = MessageContent;
+    animatedEmoji sticker:sticker sticker_width:int32 sticker_height:int32
+                  fitzpatrick_type:int32 sound:file = AnimatedEmoji;
 
-99.1 % of the font is CBDT bitmap data. Emoji codepoints therefore carry **no
-outlines whatsoever** - the entire visual payload is bitmap. Windows 10 Mobile's
-DirectWrite loads the font and honours `hmtx` advance widths, which is why the
-bubbles were sized correctly, but does not composite the CBDT bitmaps, so each
-emoji painted as blank space.
+That content type matched **no branch** in `MessageBubble.UpdateMessageText`, so
+`Span.Inlines` stayed empty and `Message` was collapsed, and none in
+`UpdateMessageContent`, so `Media.Child` stayed null. The bubble drew its footer
+and nothing else.
 
-The absent tofu box is what makes this diagnosis certain. Had the font failed to
-*load*, DirectWrite would have fallen back to another family and drawn either
-system emoji or a visible `.notdef` box. Correct metrics with zero pixels can
-only mean the font loaded and its glyphs have empty outlines.
+Upstream does contain a `MessageAnimatedEmoji` handler, but it is **unreachable
+dead code**: it sits in an `else if` nested inside `if (message.Content is
+MessageText text)`, and a message cannot be both types. `git diff` against
+`7abe5bdd3` confirms this nesting is upstream's, not a port artefact - the port
+only swapped the constructor for `ModernTdlibCompatibility.CreateMessageSticker`.
+The defect was simply unreachable under 1.8.0, which never sent the type.
 
-### Fix
+### Fix (26.9.6119.0)
 
-`Theme.cs` now registers `EmojiThemeFontFamily` as `XamlAutoFontFamily` under
-`MODERN_TDLIB`, letting DirectWrite fall back to the platform's own Segoe UI
-Emoji, which Windows 10 Mobile renders natively. This is the same code path the
-pre-existing `microsoft` emoji set already used, so no new rendering behaviour
-is introduced. `AppearanceSettings.GetDefaultEmojiSet` and the `EmojiSet` getter
-default to `microsoft`/`Microsoft` under `MODERN_TDLIB` so the Settings page and
-`EmojiDrawer.SetView` agree with what is actually drawn; because this build has
-an isolated package identity, `LocalSettings` starts empty and the new default
-always applies. The `EmojiSet` setter's hard-coded `"apple"` null-fallback now
-defers to `GetDefaultEmojiSet()` so it cannot contradict the default. The
-non-`MODERN_TDLIB` path is behaviourally unchanged.
+`ProcessEmojiAsync` handles `MessageAnimatedEmoji` at the **outer** level under
+`MODERN_TDLIB`, as a sibling of the `MessageText` test rather than nested inside
+it. When `animatedEmoji.sticker` is present the message is given a generated
+`MessageSticker`, which renders through the animated-sticker path already proven
+on device. The schema marks `sticker` optional, so a null sticker falls back to
+a `MessageBigEmoji` carrying the plain `emoji` string; the upstream dead line
+dereferenced it unguarded.
 
-The bundled emoji sets remain disabled on this build: `apple.ttf` and any
-downloadable set are the same colour-bitmap format and would render blank.
-`apple.ttf` is still shipped rather than removed, to keep rollback trivial.
+`MessageBubble.UpdateMessageText` also gains a `MessageAnimatedEmoji` branch
+that draws the emoji string at `FontSize = 32`. This is a safety net: it
+guarantees the bubble can never be empty even for a message that reaches the
+bubble without `ProcessEmojiAsync` having run, such as one arriving through an
+update handler. Both changes are `MODERN_TDLIB`-only; the legacy path is
+untouched, and the unreachable upstream branch is left exactly as it is.
+
+### Status of the 26.9.6118.0 font change
+
+`XamlAutoFontFamily` is **retained but is not the fix**. With single emoji now
+rendering as stickers, the font only governs inline emoji inside ordinary text
+and multi-emoji `MessageBigEmoji` runs, and there is still no device evidence
+either way for those - every blank bubble observed so far was a single emoji,
+so the font was never actually exercised. It is kept because it is independently
+defensible (the platform family is guaranteed to have emoji coverage) and
+because it closed a real silent-`catch` hole. If inline emoji in mixed text turn
+out to render worse than the bundled set, reverting `Theme.cs` to the `apple`
+family is a one-line change and `apple.ttf` is still shipped for exactly that
+reason.
 
 ### Diagnostics
 
@@ -602,6 +674,16 @@ The emoji font is resolved in its own scope with its own `catch`, because the
 `Theme` constructor is wrapped in a silent `catch { }` and the emoji block was
 its last statement - any earlier failure would have left `EmojiThemeFontFamily`
 unregistered, leaving every emoji-bearing control with no font at all. A
-`theme.emoji` record now reports `set=<id>;font=system;reason=...`, and a failed
+`theme.emoji` record reports `set=<id>;font=system;reason=...`, and a failed
 settings read reports `set=error_<ExceptionType>` rather than being swallowed.
 The set id is a preference identifier, not user data; no paths are emitted.
+
+A new `emoji.animated` record is written once per batch, not once per message:
+
+    emoji.animated|count=<n>;with_sticker=<n>
+
+`count` is how many `MessageAnimatedEmoji` messages were seen and
+`with_sticker` how many carried a sticker. Counts only - no emoji, no message
+text, no identifiers. This confirms on the next device log both that single
+emoji really do arrive as this content type and how often the null-sticker
+fallback is taken.

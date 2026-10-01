@@ -1603,6 +1603,10 @@ namespace Unigram.ViewModels
         private async Task ProcessEmojiAsync(Chat chat, IList<MessageViewModel> messages)
         {
             StickerSet set = null;
+#if MODERN_TDLIB
+            var animatedTotal = 0;
+            var animatedWithSticker = 0;
+#endif
             foreach (var message in messages)
             {
                 if (message.Content is MessageText text)
@@ -1646,7 +1650,39 @@ namespace Unigram.ViewModels
                         message.GeneratedContent = ModernTdlibCompatibility.CreateMessageSticker(animatedEmoji.AnimatedEmoji.Sticker);
                     }
                 }
+#if MODERN_TDLIB
+                // TDLib 1.8.66 delivers a lone emoji as MessageAnimatedEmoji, where 1.8.0 sent
+                // the MessageText that the branch above converts. The upstream
+                // MessageAnimatedEmoji handler is nested inside the MessageText test and is
+                // therefore unreachable - a message cannot be both - which never mattered until
+                // this content type began arriving. Left unhandled it matches no branch in
+                // MessageBubble.UpdateMessageText or UpdateMessageContent, so the bubble draws
+                // completely empty apart from its footer.
+                else if (message.Content is MessageAnimatedEmoji animated)
+                {
+                    animatedTotal++;
+
+                    var animatedSticker = animated.AnimatedEmoji?.Sticker;
+                    if (animatedSticker != null)
+                    {
+                        animatedWithSticker++;
+                        message.GeneratedContent = ModernTdlibCompatibility.CreateMessageSticker(animatedSticker);
+                    }
+                    else
+                    {
+                        // animatedEmoji.sticker is optional in the schema, so fall back to
+                        // drawing the emoji itself rather than leaving the bubble blank.
+                        message.GeneratedContent = new MessageBigEmoji(new FormattedText(animated.Emoji ?? string.Empty, new TextEntity[0]), 1);
+                    }
+                }
+#endif
             }
+#if MODERN_TDLIB
+            if (animatedTotal > 0)
+            {
+                Logs.PushDiagnostics.Write("emoji.animated", $"count={animatedTotal};with_sticker={animatedWithSticker}");
+            }
+#endif
         }
 
         private void ProcessFiles(Chat chat, IList<MessageViewModel> messages, MessageViewModel parent = null)
