@@ -532,3 +532,76 @@ failure, never a P/Invoke.
 7) on `IsUniversalApiContract5Present`. It is unreachable on this contract-4
 device and belongs to the out-of-scope photo editor, so it is recorded here
 rather than changed.
+
+## Emoji render blank in chat bubbles (26.9.6118.0)
+
+### Symptom
+
+Emoji-only messages produced bubbles of the correct size containing nothing at
+all: no glyph, and crucially no `.notdef` tofu box either. Text messages in the
+same chat rendered normally, emoji could be typed and sent, and recipients on
+Android/iOS saw them correctly. Only inbound/outbound *display* on device was
+affected.
+
+### Why it is not a port regression
+
+Every inline-emoji code path is byte-identical to the stable base `7abe5bdd3`:
+
+    git diff --stat 7abe5bdd3 HEAD -- '*MessageBubble.xaml' '*Themes/*' \
+        '*Common/Theme.cs' '*App.xaml' '*TextStyleRun*'
+
+returns empty. The only emoji-related port change is `SearchEmojis` in
+`Common/Emoji.cs`, which serves the drawer's search box and cannot affect
+bubble rendering. This is a pre-existing Windows 10 Mobile limitation that the
+stable branch shares; it had simply never been compared against Android/iOS.
+
+### Root cause
+
+`Assets\Emoji\apple.ttf` is a CBDT/CBLC colour-**bitmap** font. Measuring the
+sfnt table directory of the shipped asset:
+
+| table | bytes |
+| --- | --- |
+| `glyf` (outlines) | 89,192 |
+| `loca` | 7,122 |
+| `CBLC` | 28,264 |
+| `CBDT` (colour bitmaps) | 13,786,695 |
+
+99.1 % of the font is CBDT bitmap data. Emoji codepoints therefore carry **no
+outlines whatsoever** - the entire visual payload is bitmap. Windows 10 Mobile's
+DirectWrite loads the font and honours `hmtx` advance widths, which is why the
+bubbles were sized correctly, but does not composite the CBDT bitmaps, so each
+emoji painted as blank space.
+
+The absent tofu box is what makes this diagnosis certain. Had the font failed to
+*load*, DirectWrite would have fallen back to another family and drawn either
+system emoji or a visible `.notdef` box. Correct metrics with zero pixels can
+only mean the font loaded and its glyphs have empty outlines.
+
+### Fix
+
+`Theme.cs` now registers `EmojiThemeFontFamily` as `XamlAutoFontFamily` under
+`MODERN_TDLIB`, letting DirectWrite fall back to the platform's own Segoe UI
+Emoji, which Windows 10 Mobile renders natively. This is the same code path the
+pre-existing `microsoft` emoji set already used, so no new rendering behaviour
+is introduced. `AppearanceSettings.GetDefaultEmojiSet` and the `EmojiSet` getter
+default to `microsoft`/`Microsoft` under `MODERN_TDLIB` so the Settings page and
+`EmojiDrawer.SetView` agree with what is actually drawn; because this build has
+an isolated package identity, `LocalSettings` starts empty and the new default
+always applies. The `EmojiSet` setter's hard-coded `"apple"` null-fallback now
+defers to `GetDefaultEmojiSet()` so it cannot contradict the default. The
+non-`MODERN_TDLIB` path is behaviourally unchanged.
+
+The bundled emoji sets remain disabled on this build: `apple.ttf` and any
+downloadable set are the same colour-bitmap format and would render blank.
+`apple.ttf` is still shipped rather than removed, to keep rollback trivial.
+
+### Diagnostics
+
+The emoji font is resolved in its own scope with its own `catch`, because the
+`Theme` constructor is wrapped in a silent `catch { }` and the emoji block was
+its last statement - any earlier failure would have left `EmojiThemeFontFamily`
+unregistered, leaving every emoji-bearing control with no font at all. A
+`theme.emoji` record now reports `set=<id>;font=system;reason=...`, and a failed
+settings read reports `set=error_<ExceptionType>` rather than being swallowed.
+The set id is a preference identifier, not user data; no paths are emitted.
