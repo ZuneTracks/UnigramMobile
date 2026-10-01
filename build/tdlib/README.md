@@ -500,6 +500,80 @@ The probe also now reports `DateHeader`, `DateHeaderLabel`, `PinnedMessage` and
 `ViewModel.Chat`, the four collaborators the original probe omitted. All are
 booleans and a step ordinal; no identifiers, content or paths.
 
+### Resolved in 26.9.6121.0: a detached container has no transform
+
+The ordinal paid for itself immediately. The next device log reported
+`step=5` on **all four** occurrences, with every one of the eleven probed
+collaborators `True`. Step 5 is the `MessageHeaderDate` branch, and after the
+expanded probe that block contains exactly one dereference the probe does not
+cover: `transform`, the result of
+
+    container.TransformToVisual(DateHeaderRelative)
+
+`TransformToVisual` is declared to return a `GeneralTransform`, so nothing in
+the signature suggests it can yield null - but it does, for a container that is
+no longer part of the live visual tree. During a fast scroll through weeks of
+history the list virtualizes containers out from under the loop, and the
+date-separator container is the one most likely to be recycled, because it is
+not a message and is created and discarded as day boundaries pass.
+
+The decisive detail is that **step 3 runs the identical call earlier in the same
+pass and succeeds** - otherwise the ordinal would have read 3, not 5. That rules
+out `DateHeaderRelative` itself being detached or unloaded, which would have
+failed both calls. The fault is specific to the container being transformed.
+
+Both call sites are now guarded, and the recovery is `continue` rather than
+guard-and-proceed. That is deliberate: if the transform failed, the container's
+on-screen position is undefined, so it must not be treated as the first visible
+item or used to position the floating pill. `minItem` stays true, so the next
+container supplies the date instead, and `firstVisibleId`/`lastVisibleId` are
+assigned *before* the step-3 block, so skipping does not lose them.
+
+Both guards restore `container.Opacity` to 1 before skipping, and that detail is
+easy to get wrong. `Opacity` is set to 0 only when a separator is hidden
+underneath the floating pill, and every path that sets it back to 1 lives
+*below* the guards. A container skipped without the restore therefore keeps a
+stale 0 - and nothing in the container-recycling path clears it either, so the
+separator would simply stay blank in the list. The step-3 site is as exposed as
+step 5 here, because it runs while `minItem` is still true, which is exactly the
+window in which the first date separator appears.
+
+A budgeted `scroll.header.transform|result=null;step=<n>` record confirms the
+diagnosis on the next device run: the log should show zero `scroll.header`
+NREs and up to two transform records.
+
+### Locating a stackless NRE: why first-chance capture is not available
+
+One `app.unhandled` NRE remains, non-fatal and handled, surfacing when the
+emoji/sticker drawer opens. It cannot be located the usual way: under .NET
+Native a `NullReferenceException` reaching `Application.UnhandledException` has
+`StackTrace == null`, and `ToString()` returns only the resource key, which is
+why the log shows `detail=System.NullReferenceException: [redacted_token]` with
+no frames at all.
+
+The obvious answer is `AppDomain.CurrentDomain.FirstChanceException`, which runs
+*while the throw is in flight* and can therefore read `Environment.StackTrace`
+before the runtime discards it. **That does not compile for this target:**
+
+    App.xaml.cs(621,93): error CS0234: The type or namespace name
+    'FirstChanceExceptionEventArgs' does not exist in the namespace
+    'System.Runtime.ExceptionServices'
+
+The type is absent from the UAP surface, so the event cannot be bound at all.
+Recorded here so the approach is not attempted a third time.
+
+The fallback is ordinary instrumentation, chosen by matching the log timeline
+against the code. The records before the fault -
+`GetFavoriteStickers`, `GetRecentStickers`, `StickerSets`, `StickerSet` - are
+exactly the nested send chain in `StickerDrawerViewModel.SyncStickers`, whose
+three terminal continuations all marshal to the UI thread and call
+`SavedStickers.ReplaceWith`. Those three are now routed through a single
+`ReplaceSavedStickers(site, ...)` helper that catches and reports a site
+ordinal under `drawer.stickers`. The next device log either names the site or
+excludes this path outright; the catch additionally prevents a drawer fault
+from unwinding into the dispatcher, which would turn a handled fault into a
+fatal one.
+
 ## Fatal crash: RLottie cannot load in Release (26.9.6117.0)
 
 Scrolling a supergroup killed the process outright even though the managed

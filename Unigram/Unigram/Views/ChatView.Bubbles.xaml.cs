@@ -93,6 +93,9 @@ namespace Unigram.Views
         private static int _headerBudget = 4;
         private static int _containerBudget = 4;
         private static int _choosingBudget = 4;
+#if MODERN_TDLIB
+        private static int _transformBudget = 2;
+#endif
 
         private static void TraceScroll(ref int budget, string eventName, Exception ex)
         {
@@ -102,6 +105,20 @@ namespace Unigram.Views
                 Logs.PushDiagnostics.WriteException(eventName, ex);
             }
         }
+
+#if MODERN_TDLIB
+        // Confirms on device that a detached container really is the cause. Budgeted, because
+        // this fires at scroll rate and PushDiagnostics enforces its ceiling by deleting the
+        // file. A step ordinal only - no identifiers, content or paths.
+        private static void TraceTransform(int step)
+        {
+            if (_transformBudget > 0)
+            {
+                _transformBudget--;
+                Logs.PushDiagnostics.Write("scroll.header.transform", $"result=null;step={step}");
+            }
+        }
+#endif
 
         private void ViewVisibleMessagesCore(bool intermediate)
         {
@@ -306,6 +323,21 @@ namespace Unigram.Views
                     _headerStep = 3;
 #endif
                     var transform = container.TransformToVisual(DateHeaderRelative);
+#if MODERN_TDLIB
+                    // TransformToVisual yields null for a container virtualization has detached
+                    // from the live tree, which scrolling fast through weeks of history produces
+                    // routinely. Its on-screen position is undefined, so skip it entirely rather
+                    // than treat it as the first visible item; the next container, or the next
+                    // scroll pass, supplies the date. Restore Opacity first: this container may
+                    // be a date separator that an earlier pass hid under the floating pill, and
+                    // skipping bypasses every path that would otherwise show it again.
+                    if (transform == null)
+                    {
+                        TraceTransform(3);
+                        container.Opacity = 1;
+                        continue;
+                    }
+#endif
                     var point = transform.TransformPoint(new Point());
 
                     if (point.Y + container.ActualHeight >= 0)
@@ -338,6 +370,19 @@ namespace Unigram.Views
                     _headerStep = 5;
 #endif
                     var transform = container.TransformToVisual(DateHeaderRelative);
+#if MODERN_TDLIB
+                    // Same hazard as above, and this is the site the device logs identified
+                    // (step=5 on every recorded failure, with every other collaborator non-null).
+                    // Leave the inline separator visible and leave minDate set, so the next
+                    // MessageHeaderDate container in this pass - or the next pass - can still
+                    // position the floating pill.
+                    if (transform == null)
+                    {
+                        TraceTransform(5);
+                        container.Opacity = 1;
+                        continue;
+                    }
+#endif
                     var point = transform.TransformPoint(new Point());
                     var height = (float)DateHeader.ActualHeight;
                     var offset = (float)point.Y + height;

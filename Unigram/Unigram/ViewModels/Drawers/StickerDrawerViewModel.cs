@@ -362,6 +362,32 @@ namespace Unigram.ViewModels.Drawers
         //    SavedStickers.Remove(_groupSet);
         //}
 
+#if MODERN_TDLIB
+        private static int _syncBudget = 2;
+
+        // The drawer-open NullReferenceException reaches Application.UnhandledException with no
+        // stack at all, because .NET Native discards it for this exception type. Rather than
+        // guess which dereference fails, the three UI-thread continuations that populate the
+        // drawer each report a site ordinal, so the next device log either names the site or
+        // excludes this path outright. Catching here also keeps a drawer fault from unwinding
+        // into the dispatcher, where it would be fatal rather than merely handled.
+        private void ReplaceSavedStickers(int site, List<StickerSetViewModel> stickers, IEnumerable<StickerSetInfo> sets)
+        {
+            try
+            {
+                SavedStickers.ReplaceWith(stickers.Union(sets.Select(x => new StickerSetViewModel(ProtoService, Aggregator, x))));
+            }
+            catch (Exception ex)
+            {
+                if (_syncBudget > 0)
+                {
+                    _syncBudget--;
+                    Logs.PushDiagnostics.WriteException("drawer.stickers", ex, $"site={site}");
+                }
+            }
+        }
+#endif
+
         public void SyncStickers(Chat chat)
         {
             if (_updated)
@@ -423,17 +449,29 @@ namespace Unigram.ViewModels.Drawers
                                     if (result4 is StickerSet set)
                                     {
                                         stickers.Add(new StickerSetViewModel(ProtoService, Aggregator, sets.Sets[0], set));
+#if MODERN_TDLIB
+                                        BeginOnUIThread(() => ReplaceSavedStickers(1, stickers, sets.Sets.Skip(1)));
+#else
                                         BeginOnUIThread(() => SavedStickers.ReplaceWith(stickers.Union(sets.Sets.Skip(1).Select(x => new StickerSetViewModel(ProtoService, Aggregator, x)))));
+#endif
                                     }
                                     else
                                     {
+#if MODERN_TDLIB
+                                        BeginOnUIThread(() => ReplaceSavedStickers(2, stickers, sets.Sets));
+#else
                                         BeginOnUIThread(() => SavedStickers.ReplaceWith(stickers.Union(sets.Sets.Select(x => new StickerSetViewModel(ProtoService, Aggregator, x)))));
+#endif
                                     }
                                 });
                             }
                             else
                             {
+#if MODERN_TDLIB
+                                BeginOnUIThread(() => ReplaceSavedStickers(3, stickers, sets.Sets));
+#else
                                 BeginOnUIThread(() => SavedStickers.ReplaceWith(stickers.Union(sets.Sets.Select(x => new StickerSetViewModel(ProtoService, Aggregator, x)))));
+#endif
                             }
                         }
                     });
