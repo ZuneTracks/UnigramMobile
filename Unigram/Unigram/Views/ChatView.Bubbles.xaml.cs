@@ -323,33 +323,32 @@ namespace Unigram.Views
                     _headerStep = 3;
 #endif
 #if MODERN_TDLIB
-                    GeneralTransform transform;
+                    Point point;
                     try
                     {
-                        transform = container.TransformToVisual(DateHeaderRelative);
+                        var transform = container.TransformToVisual(DateHeaderRelative);
+                        if (transform == null)
+                        {
+                            TraceTransform(3);
+                            container.Opacity = 1;
+                            continue;
+                        }
+
+                        point = transform.TransformPoint(new Point());
                     }
                     catch (NullReferenceException)
                     {
-                        // WinRT can throw instead of returning null when virtualization detaches
-                        // the container during the call. Its on-screen position is undefined.
+                        // WinRT can throw from either transform operation when virtualization
+                        // detaches the container during the call. Its position is undefined.
                         TraceTransform(3, "throw");
                         container.Opacity = 1;
                         continue;
                     }
 
-                    // Other detached containers return null instead. Restore Opacity first: this
-                    // may be a date separator that an earlier pass hid under the floating pill,
-                    // and skipping bypasses every path that would otherwise show it again.
-                    if (transform == null)
-                    {
-                        TraceTransform(3);
-                        container.Opacity = 1;
-                        continue;
-                    }
 #else
                     var transform = container.TransformToVisual(DateHeaderRelative);
-#endif
                     var point = transform.TransformPoint(new Point());
+#endif
 
                     if (point.Y + container.ActualHeight >= 0)
                     {
@@ -381,31 +380,31 @@ namespace Unigram.Views
                     _headerStep = 5;
 #endif
 #if MODERN_TDLIB
-                    GeneralTransform transform;
+                    Point point;
                     try
                     {
-                        transform = container.TransformToVisual(DateHeaderRelative);
+                        var transform = container.TransformToVisual(DateHeaderRelative);
+                        if (transform == null)
+                        {
+                            TraceTransform(5);
+                            container.Opacity = 1;
+                            continue;
+                        }
+
+                        point = transform.TransformPoint(new Point());
                     }
                     catch (NullReferenceException)
                     {
-                        // The device log established this step as the reproducible failure site.
+                        // The device log established this as the reproducible failure site.
                         TraceTransform(5, "throw");
                         container.Opacity = 1;
                         continue;
                     }
 
-                    // A detached container can also return null. Leave the inline separator
-                    // visible and leave minDate set, so the next separator can position the pill.
-                    if (transform == null)
-                    {
-                        TraceTransform(5);
-                        container.Opacity = 1;
-                        continue;
-                    }
 #else
                     var transform = container.TransformToVisual(DateHeaderRelative);
-#endif
                     var point = transform.TransformPoint(new Point());
+#endif
                     var height = (float)DateHeader.ActualHeight;
                     var offset = (float)point.Y + height;
 

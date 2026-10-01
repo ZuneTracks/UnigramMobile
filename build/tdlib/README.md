@@ -518,7 +518,7 @@ The probe also now reports `DateHeader`, `DateHeaderLabel`, `PinnedMessage` and
 `ViewModel.Chat`, the four collaborators the original probe omitted. All are
 booleans and a step ordinal; no identifiers, content or paths.
 
-### Corrected in 26.9.6123.0: a detached container can throw during transform
+### Corrected in 26.9.6124.0: a detached container can throw during transform
 
 The ordinal paid for itself immediately. The next device log reported
 `step=5` on **all four** occurrences, with every one of the eleven probed
@@ -542,10 +542,16 @@ out `DateHeaderRelative` itself being detached or unloaded, which would have
 failed both calls. The fault is specific to the container being transformed.
 
 26.9.6121.0 guarded only a null return. The 26.9.6122.0 device log still showed
-four `step=5` NREs and **no** `scroll.header.transform` record, proving the
-exception escaped from `TransformToVisual` before the null check. 26.9.6123.0
-catches that specific `NullReferenceException` around each call and retains the
-null guard for the alternate outcome. The recovery is `continue` rather than
+four `step=5` NREs and **no** `scroll.header.transform` record. 26.9.6123.0
+then caught the `TransformToVisual` call itself, but the next device run still
+reported the same NRE without a transform record. That proves the surviving
+dereference is `transform.TransformPoint(...)`: the WinRT call can return a
+non-null transform object whose point conversion faults after virtualization has
+detached the container.
+
+26.9.6124.0 treats `TransformToVisual` and `TransformPoint` as one atomic
+operation, catches the specific `NullReferenceException` around both, and
+retains the null guard for the alternate outcome. The recovery is `continue` rather than
 guard-and-proceed. That is deliberate: if the transform failed, the container's
 on-screen position is undefined, so it must not be treated as the first visible
 item or used to position the floating pill. `minItem` stays true, so the next
