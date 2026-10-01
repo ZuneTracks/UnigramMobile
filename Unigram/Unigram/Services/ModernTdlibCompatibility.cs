@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Telegram.Td.Api;
@@ -98,21 +99,41 @@ namespace Unigram.Services
 
         public static Function CreateSetTdlibParameters(TdlibParameters parameters)
         {
-            return new SetTdlibParameters(
-                parameters.UseTestDc,
-                parameters.DatabaseDirectory,
-                parameters.FilesDirectory,
-                new byte[0],
-                parameters.UseFileDatabase,
-                parameters.UseChatInfoDatabase,
-                parameters.UseMessageDatabase,
-                parameters.UseSecretChats,
-                parameters.ApiId,
-                parameters.ApiHash,
-                parameters.SystemLanguageCode,
-                parameters.DeviceModel,
-                parameters.SystemVersion,
-                parameters.ApplicationVersion);
+            if (parameters == null)
+            {
+                throw new ArgumentNullException(nameof(parameters));
+            }
+
+            // The generated 1.8.66 activation factory takes all fourteen fields at once.
+            // Calling it that way made .NET Native marshal every argument in a single ABI
+            // call, and that call threw ArgumentNullException before reaching native code.
+            // Note that DatabaseEncryptionKey is not a contiguous buffer here: CxCli.h
+            // defines Array as IVector, so the field projects to IList<byte> and crosses
+            // the ABI element by element. The parameterless activation plus property
+            // setters marshals one value per call, which is how the previously shipping
+            // build populated this request.
+            var request = new SetTdlibParameters();
+
+            request.UseTestDc = parameters.UseTestDc;
+            request.DatabaseDirectory = parameters.DatabaseDirectory ?? string.Empty;
+            request.FilesDirectory = parameters.FilesDirectory ?? string.Empty;
+            request.UseFileDatabase = parameters.UseFileDatabase;
+            request.UseChatInfoDatabase = parameters.UseChatInfoDatabase;
+            request.UseMessageDatabase = parameters.UseMessageDatabase;
+            request.UseSecretChats = parameters.UseSecretChats;
+            request.ApiId = parameters.ApiId;
+            request.ApiHash = parameters.ApiHash ?? string.Empty;
+            request.SystemLanguageCode = parameters.SystemLanguageCode ?? string.Empty;
+            request.DeviceModel = parameters.DeviceModel ?? string.Empty;
+            request.SystemVersion = parameters.SystemVersion ?? string.Empty;
+            request.ApplicationVersion = parameters.ApplicationVersion ?? string.Empty;
+
+            // DatabaseEncryptionKey is deliberately left unset. This build stores the
+            // database unencrypted, and TDLib's own ToUnmanaged(Array<BYTE>^) maps a null
+            // vector to an empty key, which TdDb then resolves to the same default key a
+            // zero-length vector produced, so an existing database still opens.
+
+            return request;
         }
 
         public static Function CreateGetWebPagePreview(FormattedText text)

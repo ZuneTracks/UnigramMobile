@@ -456,12 +456,20 @@ namespace Unigram.Services
                         PushDiagnostics.WriteException("tdlib.options", ex);
                     }
 
-                    _client.Send(ModernTdlibCompatibility.CreateSetTdlibParameters(parameters), result =>
+                    // Construction and dispatch are logged separately so that a failure in
+                    // either is identifiable from the device log without another guess cycle.
+                    PushDiagnostics.Write("tdlib.parameters", "stage=build");
+                    var request = ModernTdlibCompatibility.CreateSetTdlibParameters(parameters);
+                    PushDiagnostics.Write("tdlib.parameters", "stage=built");
+
+                    _client.Send(request, result =>
                     {
                         PushDiagnostics.Write("tdlib.parameters", result is Error error
                             ? $"result=error;code={error.Code};message={PushDiagnostics.SanitizeErrorMessage(error.Message)}"
                             : "result=ok");
                     });
+
+                    PushDiagnostics.Write("tdlib.parameters", "stage=sent");
 #else
                     InitializeDiagnostics();
                     _client.Send(new SetOption("language_pack_database_path", new OptionValueString(System.IO.Path.Combine(ApplicationData.Current.LocalFolder.Path, "langpack"))));
@@ -1544,6 +1552,28 @@ namespace Unigram.Services
 
         public void OnResult(BaseObject update)
         {
+#if MODERN_TDLIB
+            // TDLib's native receive thread invokes this through a reverse P/Invoke.
+            // .NET Native cannot marshal a managed exception back into C++, so anything
+            // escaping here reaches RhpFailFastForPInvokeExceptionPreemp and terminates the
+            // process immediately, leaving no managed stack in the crash dump. Containing it
+            // keeps one unmapped or malformed update from being fatal and records the update
+            // type, which is API surface rather than user data.
+            try
+            {
+                OnResultCore(update);
+            }
+            catch (Exception ex)
+            {
+                PushDiagnostics.WriteException($"tdlib.update.{update?.GetType().Name ?? "null"}", ex);
+            }
+#else
+            OnResultCore(update);
+#endif
+        }
+
+        private void OnResultCore(BaseObject update)
+        {
             if (update is UpdateAuthorizationState updateAuthorizationState)
             {
                 PushDiagnostics.Write("tdlib.authorization", $"state={updateAuthorizationState.AuthorizationState?.GetType().Name ?? "null"}");
@@ -2169,7 +2199,20 @@ namespace Unigram.Services
     {
         public void OnResult(BaseObject result)
         {
+#if MODERN_TDLIB
+            // Also reached directly from TDLib's native thread, so an exception here would
+            // fail fast exactly as it would in ProtoService.OnResult.
+            try
+            {
+                SetResult(result);
+            }
+            catch (Exception ex)
+            {
+                PushDiagnostics.WriteException("tdlib.completion", ex);
+            }
+#else
             SetResult(result);
+#endif
         }
     }
 
@@ -2184,7 +2227,19 @@ namespace Unigram.Services
 
         public void OnResult(BaseObject result)
         {
+#if MODERN_TDLIB
+            // Request callbacks run on TDLib's native thread too; see ProtoService.OnResult.
+            try
+            {
+                _callback(result);
+            }
+            catch (Exception ex)
+            {
+                PushDiagnostics.WriteException("tdlib.callback", ex);
+            }
+#else
             _callback(result);
+#endif
         }
     }
 

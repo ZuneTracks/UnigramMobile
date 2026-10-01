@@ -59,7 +59,27 @@ namespace Unigram.Logs
 
         public static void WriteException(string eventName, Exception exception)
         {
-            Write(eventName, $"result=error;hresult=0x{exception.HResult:X8};type={exception.GetType().Name}");
+            if (exception == null)
+            {
+                Write(eventName, "result=error;type=none");
+                return;
+            }
+
+            var details = $"result=error;hresult=0x{exception.HResult:X8};type={exception.GetType().Name}";
+
+#if MODERN_TDLIB
+            // The parameter name carried by an argument exception identifies which value an
+            // interop call rejected, which is what makes a marshalling failure actionable.
+            // It is a compile-time identifier from the API surface, never user data.
+            if (exception is ArgumentException argument && !string.IsNullOrEmpty(argument.ParamName))
+            {
+                details += $";param={argument.ParamName}";
+            }
+
+            details += $";message={SanitizeErrorMessage(exception.Message)}";
+#endif
+
+            Write(eventName, details);
         }
 
         public static string HashIdentifier(string value)
