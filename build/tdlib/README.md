@@ -163,6 +163,35 @@ background task and updated the tile. 26.9.6122.0 adds a privacy-safe
 WNS association is provisioned, a missing native-task record is an upstream
 delivery/configuration issue, not a Live Tile rendering failure.
 
+#### 26.9.6038 Store build comparison
+
+The submitted 26.9.6038 Store-build source was compared directly with this
+experimental worktree. `Common\Toast.cs` and the complete native notification
+task (`NotificationTask.cpp` and `.h`) are byte-identical. The managed
+notification-service differences are only the required modern-TDLib API
+adaptations and experimental diagnostics; the WNS registration, background
+task, and Live Tile behavior are already present in this branch.
+
+The functional difference is packaging. 26.9.6038 is associated with the
+separate Store identity `ZuneTracks.UnigramMobileUWP`; the modern build uses
+`49197Wirdschon.UnigramMobileTdlibExperimental` to protect the existing
+production TDLib database and allow side-by-side installation. Replacing the
+experimental manifest identity with the 26.9.6038 Store identity would turn
+this package into an update/replacement of that Store app, require its private
+signing key, and violate the isolation requirement. It is therefore explicitly
+unsafe and is not done here.
+
+To enable remote WNS delivery for this experimental package, reserve and
+associate **a new Store identity** for
+`49197Wirdschon.UnigramMobileTdlibExperimental` in the owning Dev Center
+account, then obtain its Store-signed package through the normal submission
+pipeline. No application credential, certificate, PFX, or Store association
+metadata from 26.9.6038 is copied into this repository or sideload artifact.
+After installing that identity, verify `wns.channel.created`,
+`tdlib.register_device.result|result=success`, and, after a remote push,
+`native.task.run`, `native.raw.received`, and
+`native.notification.displayed`.
+
 ### Composition degradations on device
 
 `MainPage` could not be constructed on Windows 10 Mobile: the constructor threw
