@@ -282,6 +282,23 @@ implementation of a supported newer TgCalls/WebRTC transport; it is not a
 safe C#-level compatibility change. Diagnostics never record call identifiers,
 peers, IP addresses, keys, or signaling data.
 
+#### TgCalls ARM UWP feasibility proof
+
+The experimental branch pins the external
+`TelegramMessenger/tgcalls@1c236c09f8d8569fead14bd68000618a52051225`
+checkout under `%LOCALAPPDATA%\UnigramTdlibExperiment\tgcalls`. Its
+`InstanceImpl` implements Android's current private-call transports (`2.7.7`
+protocol V0 and `5.0.0` protocol V1), but the upstream checkout provides no
+WebRTC headers, ARM UWP libraries, or UWP build project. The reproducible
+`build\tgcalls\Test-TgCallsUwpArm.ps1` proof successfully compiles the
+metadata unit with VS 2017 v141 ARM and stops at the actual call engine's
+missing `rtc_base/logging.h` dependency. See `build\tgcalls\README.md` for
+the source pin, command, licensing gate, and integration prerequisites.
+Standard vcpkg rejects `webrtc:arm-uwp`, while the current Unigram UWP WebRTC
+port supports only x64/ARM64, so an ARM Windows Mobile WebRTC build must be
+ported from source. No unsupported protocol version is advertised as a result
+of this proof.
+
 For a conclusive test, pin the separate **Unigram Mobile TDLib Experimental**
 primary tile, foreground the app on the chat list or a different chat, then
 receive a message in a non-open chat. A currently open target chat is
