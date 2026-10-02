@@ -353,22 +353,22 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6150.0_ARM_ModernTgCalls_CallUiRace.appx
+    Unigram_26.9.6151.0_ARM_ModernTgCalls_RoutingCrashFix.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6150.0_ARM_ModernTgCalls_CallUiRace_Sideload.zip
+    Unigram_26.9.6151.0_ARM_ModernTgCalls_RoutingCrashFix_Sideload.zip
 APPX SHA-256:
-1D3948A99E699A90516D473FBA94D8E2EB60B0BAD587EBEC54F888737E6466A9
+E05454597C7A9F588AED792786A5F39B3BEE9B7744441A31950BF8CD5A8D22E7
 ZIP SHA-256:
-331EEACB11A1C12E65CC22A6495954C275ECF0E2A403A871E49125861B6B61D5
+D9E29C7979E1EC0E302890AA9F100341029DD3F132A51C36F35CD4F7951AA2F7
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6150.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6151.0`,
 ARM architecture, and the existing native notification background entry point.
 
 This remains a device-test package, not a released call fix. The 26.9.6148.0
@@ -395,6 +395,17 @@ diagnostics with only the operation, HRESULT, and sanitized message. This does
 not change TDLib call negotiation, bridge session creation, signaling, or the
 legacy transport selection.
 
+Version 26.9.6151.0 fixes the remaining deterministic Mobile call-page crash.
+On the tested Windows 10 Mobile image, the Phone contract is present while
+`AudioRoutingManager.GetDefault()` can return no manager. The old call-page
+loaded/unloaded, route-click, and endpoint-change paths dereferenced that
+unavailable manager immediately after `CallStatePending`, causing an
+unhandled `NullReferenceException` and process restart. The page now retains a
+manager only when it is available, hides the routing control otherwise, and
+unsubscribes from that same manager during cleanup. The `6150` device trace
+reached modern bridge `Established` with bidirectional signaling before that
+UI exception restarted the app; it did not show a native bridge rejection.
+
 Chat Folders is now device-verified: after registering `FoldersViewModel` and
 `FolderViewModel` for modern TDLib, a folder created in the experimental app
 with two group chats synchronized successfully with the regular Telegram
@@ -408,5 +419,6 @@ package configurations. Collect fresh privacy-safe diagnostics: a modern call
 should now log `voip.ready result=creating` followed by either
 `bridge_create`/`bridge_start` failure detail or the subsequent session
 startup result. It should not emit an unhandled `CallStatePending`
-null-reference error; any view failure is instead recorded as `voip.ui`. This
-is not a claim that Android/iOS audio is established.
+null-reference error or restart when audio routing is unavailable; that state
+is recorded as `voip.ui result=routing_unavailable` and route selection is
+hidden. This is not a claim that Android/iOS audio is established.

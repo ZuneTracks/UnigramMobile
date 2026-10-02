@@ -53,6 +53,7 @@ namespace Unigram.Views
 
         private DispatcherTimer _debugTimer;
         private DispatcherTimer _durationTimer;
+        private AudioRoutingManager _audioRoutingManager;
 
         private bool _disposed;
 
@@ -137,24 +138,32 @@ namespace Unigram.Views
                 return;
             }
 
-            if (ApiInfo.IsPhoneContractPresent)
-            {
-                Routing.Visibility = Visibility.Visible;
-                AudioRoutingManager.GetDefault().AudioEndpointChanged += AudioEndpointChanged;
-            }
-            else
+            if (!ApiInfo.IsPhoneContractPresent)
             {
                 Routing.Visibility = Visibility.Collapsed;
+                return;
             }
+
+            _audioRoutingManager = AudioRoutingManager.GetDefault();
+            if (_audioRoutingManager == null)
+            {
+                Routing.Visibility = Visibility.Collapsed;
+                Logs.PushDiagnostics.Write("voip.ui", "result=routing_unavailable");
+                return;
+            }
+
+            Routing.Visibility = Visibility.Visible;
+            _audioRoutingManager.AudioEndpointChanged += AudioEndpointChanged;
+            Routing.IsChecked = _audioRoutingManager.GetAudioEndpoint() == AudioRoutingEndpoint.Speakerphone;
         }
 
         private void OnUnloaded(object sender, RoutedEventArgs e)
         {
             Debug.WriteLine("Unloaded");
 
-            if (ApiInfo.IsPhoneContractPresent)
+            if (_audioRoutingManager != null)
             {
-                AudioRoutingManager.GetDefault().AudioEndpointChanged -= AudioEndpointChanged;
+                _audioRoutingManager.AudioEndpointChanged -= AudioEndpointChanged;
             }
         }
 
@@ -171,9 +180,10 @@ namespace Unigram.Views
                 _controller = null;
             }
 
-            if (ApiInfo.IsPhoneContractPresent)
+            if (_audioRoutingManager != null)
             {
-                AudioRoutingManager.GetDefault().AudioEndpointChanged -= AudioEndpointChanged;
+                _audioRoutingManager.AudioEndpointChanged -= AudioEndpointChanged;
+                _audioRoutingManager = null;
             }
         }
 
@@ -586,9 +596,13 @@ namespace Unigram.Views
 
         private void Routing_Click(object sender, RoutedEventArgs e)
         {
-            var routingManager = AudioRoutingManager.GetDefault();
-
             var toggle = sender as ToggleButton;
+            var routingManager = _audioRoutingManager;
+            if (toggle == null || routingManager == null)
+            {
+                return;
+            }
+
             toggle.IsChecked = !toggle.IsChecked;
 
             if (toggle.IsChecked.Value)
@@ -635,8 +649,10 @@ namespace Unigram.Views
 
             await Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
             {
-                var routingManager = AudioRoutingManager.GetDefault();
-                Routing.IsChecked = routingManager.GetAudioEndpoint() == AudioRoutingEndpoint.Speakerphone;
+                if (!_disposed && Routing != null && sender != null)
+                {
+                    Routing.IsChecked = sender.GetAudioEndpoint() == AudioRoutingEndpoint.Speakerphone;
+                }
             });
         }
 
