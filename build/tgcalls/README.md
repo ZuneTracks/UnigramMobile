@@ -229,11 +229,39 @@ Unigram.Native.Calls.Proof.pri
 native-engine\TgCallsEngine.lib
 ```
 
-`ModernCallsBridge.dll` is an ARM AppContainer DLL. Its minimal
-`Diagnostics::GetBuildInfo()` WinRT API registers `InstanceImpl` with TgCalls'
-`Meta` registry, then obtains the first supported version through that actual
-native-engine path; it is not a hard-coded version string. This is a linkage
-proof only and is not yet an app payload or a callable signaling lifecycle.
+`ModernCallsBridge.dll` is an ARM AppContainer DLL. `Diagnostics::GetBuildInfo()`
+registers `InstanceImpl` with TgCalls' `Meta` registry, then obtains the first
+supported version through that actual native-engine path; it is not a
+hard-coded version string.
+
+The proof now also exports an audio-only lifecycle surface:
+
+- `AudioCallConfiguration` carries the registered protocol version, timeouts,
+  P2P/TCP settings, API layer, direction, network type, 256-byte encryption
+  key, reflector endpoints, and STUN/TURN server entries.
+- `AudioCallSession` creates the native instance, accepts encrypted signaling,
+  controls mute and network type, asynchronously stops, and reports native
+  state, emitted signaling, and final-stop events.
+- The bridge rejects missing versions, missing endpoint/server data, non-UTF-16
+  strings, non-256-byte keys, and reflector peer tags other than 16 bytes.
+  It neither logs nor persists keys, server credentials, or signaling.
+- The C++/CX owner is weakly referenced from native callbacks and has
+  deterministic disposal, so callback ownership cannot retain a stopped call
+  session.
+
+This is still an external build proof, not an app payload. It has not yet been
+selected by `CallsService`, included in an APPX, or device-tested with
+Android/iOS. The legacy ARM `libtgvoip` fallback therefore remains the only
+packaged call transport.
+
+Current verified output hashes from the external proof root:
+
+```text
+E3E4A5703D440814DB462BD6ABA3E338963C1DDC4F6B5BF62803D86BCD6F2F4C  ModernCallsBridge.dll
+E7A33F9FF3637EC3747C4304BC3EC01AFBCE8DE1933F368193FB527CB22E05C7  Unigram.Native.Calls.Proof.winmd
+5829394098835DEA8A09811A8DECE1171B348301E426E9B83ACD386CB3E1AF38  Unigram.Native.Calls.Proof.pri
+57B291C0961CE6B182D8CC7A0F2276E92E34331007EEECB41A5ABD3EF0A5E78D  native-engine\TgCallsEngine.lib
+```
 
 The engine's `AudioOnlyPlatform.cpp` deliberately reports empty video encoder
 and decoder factory formats, reports no video encoding support, and exposes no
@@ -250,8 +278,6 @@ uses undecorated symbols. The wrapper applies the narrow ARM directive fix,
 rebuilds `thread_win.obj`, and preserves BoringSSL's real thread-exit callback
 and TLS directory instead of suppressing either linker dependency.
 
-This proof must remain external until a narrow audio lifecycle facade can
-create, signal, control, and stop a real TgCalls instance. Any later app
-integration must package the resulting bridge conditionally, retain
-`libtgvoip` for validated legacy Windows 10 Mobile calls, and must not
+Any later app integration must package the resulting bridge conditionally,
+retain `libtgvoip` for validated legacy Windows 10 Mobile calls, and must not
 advertise modern TgCalls versions until device interoperability is verified.
