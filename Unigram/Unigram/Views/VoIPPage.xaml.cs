@@ -263,17 +263,22 @@ namespace Unigram.Views
                 if (user.ProfilePhoto != null)
                 {
                     var file = user.ProfilePhoto.Big;
-                    if (file.Local.IsDownloadingCompleted)
+                    if (file?.Local?.IsDownloadingCompleted == true)
                     {
                         Image.Source = new BitmapImage(new Uri("file:///" + file.Local.Path));
                         BackgroundPanel.Background = new SolidColorBrush(Colors.Transparent);
                     }
-                    else if (file.Local.CanBeDownloaded && !file.Local.IsDownloadingActive)
+                    else if (file?.Local != null && file.Local.CanBeDownloaded && !file.Local.IsDownloadingActive)
                     {
                         Image.Source = null;
                         BackgroundPanel.Background = PlaceholderHelper.GetBrush(user.Id);
 
                         _protoService?.DownloadFile(file.Id, 1, 0);
+                    }
+                    else
+                    {
+                        Image.Source = null;
+                        BackgroundPanel.Background = PlaceholderHelper.GetBrush(user.Id);
                     }
                 }
                 else

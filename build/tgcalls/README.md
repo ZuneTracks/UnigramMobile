@@ -353,22 +353,22 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6143.0_ARM_ModernTgCalls_ProtocolIsolation.appx
+    Unigram_26.9.6144.0_ARM_ModernTgCalls_IncomingCallGuard.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6143.0_ARM_ModernTgCalls_ProtocolIsolation_Sideload.zip
+    Unigram_26.9.6144.0_ARM_ModernTgCalls_IncomingCallGuard_Sideload.zip
 APPX SHA-256:
-ABCB97761311145CB6EC04CEF3297885A51D24FAEF83367D22B49CBED9C938D4
+673E4E36D543735F0850136C55560FC8C13C790AB656BBF8A24245C416A2FD1E
 ZIP SHA-256:
-ACEBD4E7CBD217BFD216F25669BCAA3E0CB3C9D9C354D62B4F0F2B76D3B22661
+30077A5898CDE08339D30A78AA38B9DFFCBC243673AB9E152D3E44819D973DDB
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6143.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6144.0`,
 ARM architecture, and the existing native notification background entry point.
 
 This remains a device-test package, not a released call fix. Required
@@ -378,5 +378,7 @@ background behavior, reconnect, rejection, and cleanup. This package changes
 the call-request path so `CallProtocol` creation cannot invoke the bridge's
 version-discovery entry point. The supplied device diagnostics showed that
 entry point failing with `0x800401F9` before either `CreateCall` or
-`AcceptCall` reached TDLib. Preserve the legacy-W10M call regression test in
-both `UseModernTgCalls=false` and enabled package configurations.
+`AcceptCall` reached TDLib. It also makes the incoming-call image path tolerate
+an absent profile-photo file/local metadata object instead of allowing an
+unhandled null-reference failure. Preserve the legacy-W10M call regression
+test in both `UseModernTgCalls=false` and enabled package configurations.
