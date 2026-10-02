@@ -10,9 +10,14 @@ $ErrorActionPreference = 'Stop'
 
 $expectedScriptsCommit = '6ce0019e1e5ea4e06ab3bc21651242567774a4e0'
 $buildScript = Join-Path $DependencyScriptsRoot 'webrtc\build.ps1'
+$rustPatch = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-no-rust.patch'
 
 if (-not (Test-Path -LiteralPath $buildScript)) {
     throw "The pinned WebRTC UWP build script was not found at '$buildScript'."
+}
+
+if (-not (Test-Path -LiteralPath $rustPatch)) {
+    throw "The ARM UWP Rust compatibility patch was not found at '$rustPatch'."
 }
 
 $actualScriptsCommit = (& git -C $DependencyScriptsRoot rev-parse HEAD).Trim()
@@ -40,6 +45,18 @@ $scriptText = $scriptText.Replace(
     $visualStudioLookup,
     "`$path = & `$vswhere -version '[17.0,19.0)' -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath"
 )
+$scriptText = $scriptText.Replace(
+    'target_cpu=\`"$a\`""',
+    'target_cpu=\`"$a\`" enable_rust=false"'
+)
+$scriptText = $scriptText.Replace(
+    '$vs = Get-VisualStudio',
+    "Use-Patch (Join-Path `$Src 'build') '$rustPatch'`r`n`r`n`$vs = Get-VisualStudio"
+)
+
+if (-not $scriptText.Contains('enable_rust=false') -or -not $scriptText.Contains($rustPatch)) {
+    throw 'Unable to apply the ARM UWP Rust compatibility configuration to the temporary build script.'
+}
 
 $temporaryBuildScript = Join-Path (Split-Path -Parent $buildScript) ('.copilot-arm-' + [Guid]::NewGuid().ToString('N') + '.ps1')
 [System.IO.File]::WriteAllText($temporaryBuildScript, $scriptText, [System.Text.UTF8Encoding]::new($false))

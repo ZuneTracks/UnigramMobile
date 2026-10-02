@@ -108,6 +108,13 @@ approximately 20 GB of WebRTC dependencies, then generates
 `target_os="winuwp"` and `target_cpu="arm"` before building `webrtc.lib`.
 This operation can take several hours.
 
+Chromium M123's generic Rust configuration rejects Windows ARM before GN sees
+that WebRTC's standalone build defaults Rust off. The wrapper explicitly
+passes `enable_rust=false` and applies the small, guarded
+`patches\webrtc-m123-winuwp-arm-no-rust.patch`: it permits ARM only when Rust
+is disabled and continues to reject it if a dependency enables Rust. This does
+not disable SCTP, WebRTC signaling, or any C++ audio transport component.
+
 The generated library is only a native proof input. It must still compile and
 link with the audio-only C++/CX TgCalls bridge, activate from its WinMD, and
 complete device interoperability before it can replace any packaged transport.
