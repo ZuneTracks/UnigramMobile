@@ -1128,7 +1128,16 @@ namespace Unigram.Services
 
         public static Function CreateCall(long userId, CallProtocol protocol)
         {
-            return new CreateCall(userId, protocol, false);
+            if (protocol == null)
+            {
+                throw new ArgumentNullException(nameof(protocol));
+            }
+
+            var request = new CreateCall();
+            request.UserId = userId;
+            request.Protocol = protocol;
+            request.IsVideo = false;
+            return request;
         }
 
         public static CallProtocol CreateAudioCallProtocol()
@@ -1217,7 +1226,15 @@ namespace Unigram.Services
 
         public static Function CreateAcceptCall(int callId, CallProtocol protocol)
         {
-            return new AcceptCall(callId, protocol);
+            if (protocol == null)
+            {
+                throw new ArgumentNullException(nameof(protocol));
+            }
+
+            var request = new AcceptCall();
+            request.CallId = callId;
+            request.Protocol = protocol;
+            return request;
         }
 
         public static Function CreateDiscardCall(int callId, bool isDisconnected, int duration, long connectionId)

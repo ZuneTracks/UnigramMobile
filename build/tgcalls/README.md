@@ -321,6 +321,13 @@ but server/configuration validation or bridge creation fails, the app records
 a privacy-safe result and discards the call; it does not silently substitute
 legacy `libtgvoip` after modern negotiation.
 
+`CreateCall` and `AcceptCall` are created parameterlessly and populated through
+property setters. Their generated modern TDLib constructors marshal a
+`CallProtocol` object through a multi-argument WinMD activation factory, which
+is not reliable on this C++/CX projection; `DiscardCall` uses only primitive
+arguments and is not affected. The property-setter path avoids that ABI
+boundary and is used for both outgoing and accepted calls.
+
 Legacy peers without a matching library version continue on the existing
 `libtgvoip` route. The existing call page remains the legacy controller UI:
 modern transport state updates the connecting/established tone lifecycle, but
@@ -333,22 +340,22 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6140.0_ARM_ModernTgCalls_LifecycleFix.appx
+    Unigram_26.9.6141.0_ARM_ModernTgCalls_AbiFix.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6140.0_ARM_ModernTgCalls_LifecycleFix_Sideload.zip
+    Unigram_26.9.6141.0_ARM_ModernTgCalls_AbiFix_Sideload.zip
 APPX SHA-256:
-395212211E7A76BD7C43DA3BE902D356BAD93B8E2F98866D5F7BC5C74206278C
+86BC17525F28A9CC9056C3BF5ABC47809665F94AD723A8EB1BD0D1E78B7C8C88
 ZIP SHA-256:
-02F4E1EFCE2F8DFA5F0C2C5063ABBDD351336D58BFAE28A79E6F10B7783F0031
+083D53543B4B20330ECA4B7263E99703322CFFB99B31B50534DC011E4F7F4B1A
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6140.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6141.0`,
 ARM architecture, and the existing native notification background entry point.
 
 This remains a device-test package, not a released call fix. Required
