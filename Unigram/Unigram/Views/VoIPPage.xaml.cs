@@ -8,6 +8,7 @@ using Telegram.Td.Api;
 using Unigram.Common;
 using Unigram.Controls;
 using Unigram.Services;
+using Unigram.Views.Popups;
 using Windows.Foundation;
 using Windows.Foundation.Metadata;
 using Windows.Phone.Media.Devices;
@@ -537,19 +538,27 @@ namespace Unigram.Views
 
         private async void Accept_Click(object sender, RoutedEventArgs e)
         {
-            Function request;
-            BaseObject response;
-            if (_call.IsOutgoing && _call.State is CallStateDiscarded discarded && discarded.Reason is CallDiscardReasonDeclined)
+            try
             {
-                request = ModernTdlibCompatibility.CreateCall(_call.UserId, ModernTdlibCompatibility.CreateAudioCallProtocol());
-                response = await _protoService.SendAsync(request);
-                ModernTdlibCompatibility.LogAudioCallRequestResult("retry", response);
-                return;
-            }
+                Function request;
+                BaseObject response;
+                if (_call.IsOutgoing && _call.State is CallStateDiscarded discarded && discarded.Reason is CallDiscardReasonDeclined)
+                {
+                    request = ModernTdlibCompatibility.CreateCall(_call.UserId, ModernTdlibCompatibility.CreateAudioCallProtocol());
+                    response = await _protoService.SendAsync(request);
+                    ModernTdlibCompatibility.LogAudioCallRequestResult("retry", response);
+                    return;
+                }
 
-            request = ModernTdlibCompatibility.CreateAcceptCall(_call.Id, ModernTdlibCompatibility.CreateAudioCallProtocol());
-            response = await _protoService.SendAsync(request);
-            ModernTdlibCompatibility.LogAudioCallRequestResult("accept", response);
+                request = ModernTdlibCompatibility.CreateAcceptCall(_call.Id, ModernTdlibCompatibility.CreateAudioCallProtocol());
+                response = await _protoService.SendAsync(request);
+                ModernTdlibCompatibility.LogAudioCallRequestResult("accept", response);
+            }
+            catch (Exception ex)
+            {
+                ModernTdlibCompatibility.LogAudioCallRequestException("accept_exception", ex);
+                await MessagePopup.ShowAsync(Strings.Resources.VoipFailed, Strings.Resources.AppName, Strings.Resources.OK);
+            }
         }
 
         private void Hangup_Click(object sender, RoutedEventArgs e)

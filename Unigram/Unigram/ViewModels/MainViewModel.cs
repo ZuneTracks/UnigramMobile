@@ -558,7 +558,7 @@ namespace Unigram.ViewModels
             }
 
 #if MODERN_TDLIB
-            ProtoService.Send(new DeleteChatFolder(filter.ChatFilterId, new List<long>()));
+            ProtoService.Send(ModernTdlibCompatibility.CreateDeleteChatFolder(filter.ChatFilterId, new List<long>()));
 #else
             ProtoService.Send(new DeleteChatFilter(filter.ChatFilterId));
 #endif

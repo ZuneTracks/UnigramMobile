@@ -49,7 +49,7 @@ namespace Unigram.ViewModels.Folders
             if (parameter is int id)
             {
 #if MODERN_TDLIB
-                var response = await ProtoService.SendAsync(new GetChatFolder(id));
+                var response = await ProtoService.SendAsync(ModernTdlibCompatibility.CreateGetChatFolder(id));
                 if (response is ChatFolder result)
 #else
                 var response = await ProtoService.SendAsync(new GetChatFilter(id));
@@ -70,11 +70,9 @@ namespace Unigram.ViewModels.Folders
                 Id = null;
 #if MODERN_TDLIB
                 Filter = null;
-                filter = new ChatFolder(
-                    new ChatFolderName(new FormattedText(string.Empty, new TextEntity[0]), false),
-                    new ChatFolderIcon(string.Empty),
-                    0,
-                    false,
+                filter = ModernTdlibCompatibility.CreateChatFolder(
+                    string.Empty,
+                    string.Empty,
                     new List<long>(),
                     new List<long>(),
                     new List<long>(),
@@ -225,10 +223,6 @@ namespace Unigram.ViewModels.Folders
 
         public async Task AddIncludeAsync()
         {
-#if MODERN_TDLIB
-            await MessagePopup.ShowAsync("Selecting folder chats is unavailable in the modern TDLib experiment.", Strings.Resources.AppName, Strings.Resources.OK);
-            return;
-#else
             var result = await SharePopup.AddExecute(true, Include.ToList());
             if (result != null)
             {
@@ -252,10 +246,8 @@ namespace Unigram.ViewModels.Folders
 
                     return int.MaxValue;
                 });
-
                 Include.ReplaceWith(flags.Union(chats));
             }
-#endif
         }
 
         public RelayCommand AddExcludeCommand { get; }
@@ -267,10 +259,6 @@ namespace Unigram.ViewModels.Folders
 
         public async Task AddExcludeAsync()
         {
-#if MODERN_TDLIB
-            await MessagePopup.ShowAsync("Selecting folder chats is unavailable in the modern TDLib experiment.", Strings.Resources.AppName, Strings.Resources.OK);
-            return;
-#else
             var result = await SharePopup.AddExecute(false, Exclude.ToList());
             if (result != null)
             {
@@ -282,10 +270,8 @@ namespace Unigram.ViewModels.Folders
                         Include.Remove(already);
                     }
                 }
-
                 Exclude.ReplaceWith(result);
             }
-#endif
         }
 
         public RelayCommand<ChatFilterElement> RemoveIncludeCommand { get; }
@@ -321,10 +307,10 @@ namespace Unigram.ViewModels.Folders
 #if MODERN_TDLIB
             if (Id is int id)
             {
-                return ProtoService.SendAsync(new EditChatFolder(id, GetFilter()));
+                return ProtoService.SendAsync(ModernTdlibCompatibility.CreateEditChatFolder(id, GetFilter()));
             }
 
-            return ProtoService.SendAsync(new CreateChatFolder(GetFilter()));
+            return ProtoService.SendAsync(ModernTdlibCompatibility.CreateCreateChatFolder(GetFilter()));
 #else
             Function function;
             if (Id is int id)
@@ -420,11 +406,9 @@ namespace Unigram.ViewModels.Folders
             }
 
             var iconName = _iconPicked ? Enum.GetName(typeof(ChatFilterIcon), Icon) : string.Empty;
-            return new ChatFolder(
-                new ChatFolderName(new FormattedText(Title ?? string.Empty, new TextEntity[0]), false),
-                new ChatFolderIcon(iconName),
-                0,
-                false,
+            return ModernTdlibCompatibility.CreateChatFolder(
+                Title,
+                iconName,
                 pinnedChatIds,
                 includedChatIds,
                 excludedChatIds,

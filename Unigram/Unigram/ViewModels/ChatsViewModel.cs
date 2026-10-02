@@ -580,7 +580,7 @@ namespace Unigram.ViewModels
         private async void FolderAddExecute((int ChatFilterId, Chat Chat) data)
         {
 #if MODERN_TDLIB
-            var filter = await ProtoService.SendAsync(new GetChatFolder(data.ChatFilterId)) as ChatFolder;
+            var filter = await ProtoService.SendAsync(ModernTdlibCompatibility.CreateGetChatFolder(data.ChatFilterId)) as ChatFolder;
 #else
             var filter = await ProtoService.SendAsync(new GetChatFilter(data.ChatFilterId)) as ChatFilter;
 #endif
@@ -606,7 +606,7 @@ namespace Unigram.ViewModels
             filter.IncludedChatIds.Add(data.Chat.Id);
 
 #if MODERN_TDLIB
-            ProtoService.Send(new EditChatFolder(data.ChatFilterId, filter));
+            ProtoService.Send(ModernTdlibCompatibility.CreateEditChatFolder(data.ChatFilterId, filter));
 #else
             ProtoService.Send(new EditChatFilter(data.ChatFilterId, filter));
 #endif
@@ -620,7 +620,7 @@ namespace Unigram.ViewModels
         private async void FolderRemoveExecute((int ChatFilterId, Chat Chat) data)
         {
 #if MODERN_TDLIB
-            var filter = await ProtoService.SendAsync(new GetChatFolder(data.ChatFilterId)) as ChatFolder;
+            var filter = await ProtoService.SendAsync(ModernTdlibCompatibility.CreateGetChatFolder(data.ChatFilterId)) as ChatFolder;
 #else
             var filter = await ProtoService.SendAsync(new GetChatFilter(data.ChatFilterId)) as ChatFilter;
 #endif
@@ -646,7 +646,7 @@ namespace Unigram.ViewModels
             filter.ExcludedChatIds.Add(data.Chat.Id);
 
 #if MODERN_TDLIB
-            ProtoService.Send(new EditChatFolder(data.ChatFilterId, filter));
+            ProtoService.Send(ModernTdlibCompatibility.CreateEditChatFolder(data.ChatFilterId, filter));
 #else
             ProtoService.Send(new EditChatFilter(data.ChatFilterId, filter));
 #endif

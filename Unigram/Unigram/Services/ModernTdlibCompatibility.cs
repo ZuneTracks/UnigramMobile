@@ -1140,6 +1140,91 @@ namespace Unigram.Services
             return request;
         }
 
+        public static Function CreateGetChatFolder(int folderId)
+        {
+            var request = new GetChatFolder();
+            request.ChatFolderId = folderId;
+            return request;
+        }
+
+        public static Function CreateCreateChatFolder(ChatFolder folder)
+        {
+            if (folder == null)
+            {
+                throw new ArgumentNullException(nameof(folder));
+            }
+
+            var request = new CreateChatFolder();
+            request.Folder = folder;
+            return request;
+        }
+
+        public static Function CreateEditChatFolder(int folderId, ChatFolder folder)
+        {
+            if (folder == null)
+            {
+                throw new ArgumentNullException(nameof(folder));
+            }
+
+            var request = new EditChatFolder();
+            request.ChatFolderId = folderId;
+            request.Folder = folder;
+            return request;
+        }
+
+        public static Function CreateDeleteChatFolder(int folderId, IList<long> leaveChatIds)
+        {
+            var request = new DeleteChatFolder();
+            request.ChatFolderId = folderId;
+            request.LeaveChatIds = leaveChatIds ?? new List<long>();
+            return request;
+        }
+
+        public static ChatFolder CreateChatFolder(
+            string title,
+            string iconName,
+            IList<long> pinnedChatIds,
+            IList<long> includedChatIds,
+            IList<long> excludedChatIds,
+            bool excludeMuted,
+            bool excludeRead,
+            bool excludeArchived,
+            bool includeContacts,
+            bool includeNonContacts,
+            bool includeBots,
+            bool includeGroups,
+            bool includeChannels)
+        {
+            var name = new ChatFolderName();
+            name.Text = new FormattedText
+            {
+                Text = title ?? string.Empty,
+                Entities = new List<TextEntity>()
+            };
+            name.AnimateCustomEmoji = false;
+
+            var icon = new ChatFolderIcon();
+            icon.Name = iconName ?? string.Empty;
+
+            var folder = new ChatFolder();
+            folder.Name = name;
+            folder.Icon = icon;
+            folder.ColorId = 0;
+            folder.IsShareable = false;
+            folder.PinnedChatIds = pinnedChatIds ?? new List<long>();
+            folder.IncludedChatIds = includedChatIds ?? new List<long>();
+            folder.ExcludedChatIds = excludedChatIds ?? new List<long>();
+            folder.ExcludeMuted = excludeMuted;
+            folder.ExcludeRead = excludeRead;
+            folder.ExcludeArchived = excludeArchived;
+            folder.IncludeContacts = includeContacts;
+            folder.IncludeNonContacts = includeNonContacts;
+            folder.IncludeBots = includeBots;
+            folder.IncludeGroups = includeGroups;
+            folder.IncludeChannels = includeChannels;
+            return folder;
+        }
+
         public static CallProtocol CreateAudioCallProtocol()
         {
             // The modern C++/CX projection has already exhibited activation-factory
@@ -1222,6 +1307,11 @@ namespace Unigram.Services
             }
 
             PushDiagnostics.Write($"voip.{operation}", $"result={response?.GetType().Name ?? "null"}");
+        }
+
+        public static void LogAudioCallRequestException(string operation, Exception exception)
+        {
+            PushDiagnostics.WriteException($"voip.{operation}", exception);
         }
 
         public static Function CreateAcceptCall(int callId, CallProtocol protocol)

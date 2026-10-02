@@ -155,7 +155,7 @@ namespace Unigram.ViewModels.Folders
         {
             Recommended.Remove(filter);
 #if MODERN_TDLIB
-            ProtoService.Send(new CreateChatFolder(filter.Folder));
+            ProtoService.Send(ModernTdlibCompatibility.CreateCreateChatFolder(filter.Folder));
 #else
             ProtoService.Send(new CreateChatFilter(filter.Filter));
 #endif
@@ -177,7 +177,7 @@ namespace Unigram.ViewModels.Folders
             }
 
 #if MODERN_TDLIB
-            ProtoService.Send(new DeleteChatFolder(filter.Id, new List<long>()));
+            ProtoService.Send(ModernTdlibCompatibility.CreateDeleteChatFolder(filter.Id, new List<long>()));
 #else
             ProtoService.Send(new DeleteChatFilter(filter.Id));
 #endif

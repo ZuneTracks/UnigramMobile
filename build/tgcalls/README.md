@@ -328,6 +328,16 @@ is not reliable on this C++/CX projection; `DiscardCall` uses only primitive
 arguments and is not affected. The property-setter path avoids that ABI
 boundary and is used for both outgoing and accepted calls.
 
+Call actions record activation failures with privacy-safe diagnostics and show
+an explicit failure dialog rather than failing silently. That makes the
+remaining device-side test result observable without logging call keys,
+signaling, user IDs, or message content.
+
+Modern chat folders use the same parameterless/property-setter construction
+for folder names, folder objects, and get/create/edit/delete requests. The
+folder chat picker is enabled again for included and excluded chats; its
+selected IDs are mapped to `ChatFolder` fields before the request is sent.
+
 Legacy peers without a matching library version continue on the existing
 `libtgvoip` route. The existing call page remains the legacy controller UI:
 modern transport state updates the connecting/established tone lifecycle, but
@@ -340,22 +350,22 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6141.0_ARM_ModernTgCalls_AbiFix.appx
+    Unigram_26.9.6142.0_ARM_ModernTgCalls_FoldersFix.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6141.0_ARM_ModernTgCalls_AbiFix_Sideload.zip
+    Unigram_26.9.6142.0_ARM_ModernTgCalls_FoldersFix_Sideload.zip
 APPX SHA-256:
-86BC17525F28A9CC9056C3BF5ABC47809665F94AD723A8EB1BD0D1E78B7C8C88
+5AB01BAE77AC83D8FD93456670BCA63053761A9AA2BB6A888A01294DE615D6D2
 ZIP SHA-256:
-083D53543B4B20330ECA4B7263E99703322CFFB99B31B50534DC011E4F7F4B1A
+DF42D43A7CF54A2B63549DB0649109D1E535469A8D68DB14730DAC4E5F18167F
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6141.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6142.0`,
 ARM architecture, and the existing native notification background entry point.
 
 This remains a device-test package, not a released call fix. Required

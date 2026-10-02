@@ -3176,18 +3176,26 @@ namespace Unigram.ViewModels
                 return;
             }
 
-            var response = await ProtoService.SendAsync(ModernTdlibCompatibility.CreateCall(user.Id, ModernTdlibCompatibility.CreateAudioCallProtocol()));
-            ModernTdlibCompatibility.LogAudioCallRequestResult("create", response);
-            if (response is Error error)
+            try
             {
-                if (error.Code == 400 && error.Message.Equals("PARTICIPANT_VERSION_OUTDATED"))
+                var response = await ProtoService.SendAsync(ModernTdlibCompatibility.CreateCall(user.Id, ModernTdlibCompatibility.CreateAudioCallProtocol()));
+                ModernTdlibCompatibility.LogAudioCallRequestResult("create", response);
+                if (response is Error error)
                 {
-                    await MessagePopup.ShowAsync(string.Format(Strings.Resources.VoipPeerOutdated, user.GetFullName()), Strings.Resources.AppName, Strings.Resources.OK);
+                    if (error.Code == 400 && error.Message.Equals("PARTICIPANT_VERSION_OUTDATED"))
+                    {
+                        await MessagePopup.ShowAsync(string.Format(Strings.Resources.VoipPeerOutdated, user.GetFullName()), Strings.Resources.AppName, Strings.Resources.OK);
+                    }
+                    else if (error.Code == 400 && error.Message.Equals("USER_PRIVACY_RESTRICTED"))
+                    {
+                        await MessagePopup.ShowAsync(string.Format(Strings.Resources.CallNotAvailable, user.GetFullName()), Strings.Resources.AppName, Strings.Resources.OK);
+                    }
                 }
-                else if (error.Code == 400 && error.Message.Equals("USER_PRIVACY_RESTRICTED"))
-                {
-                    await MessagePopup.ShowAsync(string.Format(Strings.Resources.CallNotAvailable, user.GetFullName()), Strings.Resources.AppName, Strings.Resources.OK);
-                }
+            }
+            catch (Exception ex)
+            {
+                ModernTdlibCompatibility.LogAudioCallRequestException("create_exception", ex);
+                await MessagePopup.ShowAsync(string.Format(Strings.Resources.CallNotAvailable, user.GetFullName()), Strings.Resources.VoipFailed, Strings.Resources.OK);
             }
         }
 
