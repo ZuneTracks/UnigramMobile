@@ -353,22 +353,22 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6149.0_ARM_ModernTgCalls_ServerMapping.appx
+    Unigram_26.9.6150.0_ARM_ModernTgCalls_CallUiRace.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6149.0_ARM_ModernTgCalls_ServerMapping_Sideload.zip
+    Unigram_26.9.6150.0_ARM_ModernTgCalls_CallUiRace_Sideload.zip
 APPX SHA-256:
-B10F30E52B2E5075F274F9AB8904A31CF849E719D779B0BD3F0BAC1067A82B46
+1D3948A99E699A90516D473FBA94D8E2EB60B0BAD587EBEC54F888737E6466A9
 ZIP SHA-256:
-A122F3CB5E402846235335D5CB30F3FAA7A848EFA528E02408BB32A5A13FB326
+331EEACB11A1C12E65CC22A6495954C275ECF0E2A403A871E49125861B6B61D5
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6149.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6150.0`,
 ARM architecture, and the existing native notification background entry point.
 
 This remains a device-test package, not a released call fix. The 26.9.6148.0
@@ -385,6 +385,16 @@ implementation's stable sorted ordinal, and accepts IPv6-only endpoints. It
 records only aggregate mapped server counts before bridge creation; no
 endpoint, credential, peer-tag, signaling, or key data is logged.
 
+Version 26.9.6150.0 retains the corrected server mapping and serializes
+call-window show/hide operations through the existing asynchronous mutex.
+Rapid pending-call updates previously could concurrently create or dispose the
+secondary compact view, producing an unhandled `NullReferenceException` before
+call setup. The UI path now holds that mutex across creation, update, and
+disposal; unexpected view failures are emitted as privacy-safe `voip.ui`
+diagnostics with only the operation, HRESULT, and sanitized message. This does
+not change TDLib call negotiation, bridge session creation, signaling, or the
+legacy transport selection.
+
 Chat Folders is now device-verified: after registering `FoldersViewModel` and
 `FolderViewModel` for modern TDLib, a folder created in the experimental app
 with two group chats synchronized successfully with the regular Telegram
@@ -397,4 +407,6 @@ legacy-W10M call regression test in both `UseModernTgCalls=false` and enabled
 package configurations. Collect fresh privacy-safe diagnostics: a modern call
 should now log `voip.ready result=creating` followed by either
 `bridge_create`/`bridge_start` failure detail or the subsequent session
-startup result. This is not a claim that Android/iOS audio is established.
+startup result. It should not emit an unhandled `CallStatePending`
+null-reference error; any view failure is instead recorded as `voip.ui`. This
+is not a claim that Android/iOS audio is established.

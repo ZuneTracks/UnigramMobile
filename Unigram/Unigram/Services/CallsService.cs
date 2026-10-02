@@ -70,6 +70,7 @@ namespace Unigram.Services
         private VoIPPage _callPage;
         private OverlayPage _callDialog;
         private ViewLifetimeControl _callLifetime;
+        private readonly DisposableMutex _callPageMutex = new DisposableMutex();
 
         public VoIPService(IProtoService protoService, ICacheService cacheService, ISettingsService settingsService, IEventAggregator aggregator, IViewService viewService)
             : base(protoService, cacheService, settingsService, aggregator)
@@ -919,88 +920,145 @@ namespace Unigram.Services
             }
         }
 
-        public async void Show()
+        public void Show()
         {
             if (_call == null)
             {
                 return;
             }
 
-            Show(_call, _controller, _callStarted);
-
-            if (_callDialog != null)
-            {
-                _callDialog.IsOpen = true;
-            }
-            else if (_callLifetime != null)
-            {
-                _callLifetime = await _viewService.OpenAsync(() => _callPage = _callPage ?? new VoIPPage(ProtoService, CacheService, Aggregator, _call, _controller, _callStarted), _call.Id);
-                _callLifetime.WindowWrapper.ApplicationView().Consolidated -= ApplicationView_Consolidated;
-                _callLifetime.WindowWrapper.ApplicationView().Consolidated += ApplicationView_Consolidated;
-            }
-
-            Aggregator.Publish(new UpdateCallDialog(_call, true));
+            Show(_call, _controller, _callStarted, true);
         }
 
-        private async void Show(Call call, VoIPControllerWrapper controller, DateTime started)
+        private void Show(Call call, VoIPControllerWrapper controller, DateTime started, bool activate = false)
         {
-            if (_callPage == null)
-            {
-                if (ApplicationView.GetForCurrentView().IsViewModeSupported(ApplicationViewMode.CompactOverlay))
-                {
-                    _callLifetime = await _viewService.OpenAsync(() => _callPage = _callPage ?? new VoIPPage(ProtoService, CacheService, Aggregator, _call, _controller, _callStarted), call.Id);
-                    _callLifetime.WindowWrapper.ApplicationView().Consolidated -= ApplicationView_Consolidated;
-                    _callLifetime.WindowWrapper.ApplicationView().Consolidated += ApplicationView_Consolidated;
-                }
-                else
-                {
-                    _callPage = new VoIPPage(ProtoService, CacheService, Aggregator, _call, _controller, _callStarted);
-
-                    _callDialog = new OverlayPage();
-                    _callDialog.HorizontalAlignment = HorizontalAlignment.Stretch;
-                    _callDialog.VerticalAlignment = VerticalAlignment.Stretch;
-                    _callDialog.Content = _callPage;
-                    _callDialog.IsOpen = true;
-                }
-
-                Aggregator.Publish(new UpdateCallDialog(call, true));
-            }
-
-            await _callPage.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
-            {
-                if (controller != null)
-                {
-                    _callPage.Connect(controller);
-                }
-
-                _callPage.Update(call, started);
-            });
-            EnableDisplayOnOffController();
+            _ = ShowAsync(call, controller, started, activate);
         }
 
-        private async void Hide()
+        private async Task ShowAsync(Call call, VoIPControllerWrapper controller, DateTime started, bool activate)
         {
-            if (_callPage != null)
+            using (await _callPageMutex.WaitAsync())
             {
-                await _callPage.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
+                try
                 {
-                    if (_callDialog != null)
+                    var createdCallPage = false;
+                    if (_callPage == null)
                     {
-                        _callDialog.IsOpen = false;
-                        _callDialog = null;
-                    }
-                    else if (_callLifetime != null)
-                    {
-                        _callLifetime.StopViewInUse();
-                        _callLifetime.WindowWrapper.Window.Close();
-                        _callLifetime = null;
+                        if (ApplicationView.GetForCurrentView().IsViewModeSupported(ApplicationViewMode.CompactOverlay))
+                        {
+                            _callLifetime = await _viewService.OpenAsync(
+                                () => _callPage = _callPage ?? new VoIPPage(ProtoService, CacheService, Aggregator, _call, _controller, _callStarted),
+                                call.Id);
+                            _callLifetime.WindowWrapper.ApplicationView().Consolidated -= ApplicationView_Consolidated;
+                            _callLifetime.WindowWrapper.ApplicationView().Consolidated += ApplicationView_Consolidated;
+                        }
+                        else
+                        {
+                            _callPage = new VoIPPage(ProtoService, CacheService, Aggregator, _call, _controller, _callStarted);
+
+                            _callDialog = new OverlayPage();
+                            _callDialog.HorizontalAlignment = HorizontalAlignment.Stretch;
+                            _callDialog.VerticalAlignment = VerticalAlignment.Stretch;
+                            _callDialog.Content = _callPage;
+                            _callDialog.IsOpen = true;
+                        }
+
+                        Aggregator.Publish(new UpdateCallDialog(call, true));
+                        createdCallPage = true;
                     }
 
-                    _callPage.Dispose();
-                    _callPage = null;
-                });
+                    var callPage = _callPage;
+                    if (callPage == null)
+                    {
+                        WriteAudioCallDiagnostic("voip.ui", "result=skipped;reason=page_unavailable");
+                        return;
+                    }
 
-                Aggregator.Publish(new UpdateCallDialog(_call, true));
+                    if (activate && !createdCallPage)
+                    {
+                        if (_callDialog != null)
+                        {
+                            _callDialog.IsOpen = true;
+                        }
+                        else if (_callLifetime != null)
+                        {
+                            _callLifetime = await _viewService.OpenAsync(
+                                () => _callPage = _callPage ?? new VoIPPage(ProtoService, CacheService, Aggregator, _call, _controller, _callStarted),
+                                call.Id);
+                            _callLifetime.WindowWrapper.ApplicationView().Consolidated -= ApplicationView_Consolidated;
+                            _callLifetime.WindowWrapper.ApplicationView().Consolidated += ApplicationView_Consolidated;
+                        }
+
+                        Aggregator.Publish(new UpdateCallDialog(_call, true));
+                    }
+
+                    await callPage.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
+                    {
+                        if (controller != null)
+                        {
+                            callPage.Connect(controller);
+                        }
+
+                        callPage.Update(call, started);
+                    });
+                    EnableDisplayOnOffController();
+                }
+                catch (Exception error)
+                {
+                    WriteAudioCallDiagnostic(
+                        "voip.ui",
+                        $"result=error;operation=show;hresult=0x{error.HResult:X8};message={Logs.PushDiagnostics.SanitizeErrorMessage(error.Message)}");
+                }
+            }
+        }
+
+        private void Hide()
+        {
+            _ = HideAsync();
+        }
+
+        private async Task HideAsync()
+        {
+            using (await _callPageMutex.WaitAsync())
+            {
+                var callPage = _callPage;
+                if (callPage == null)
+                {
+                    DisableDisplayOnOffController();
+                    return;
+                }
+
+                try
+                {
+                    await callPage.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
+                    {
+                        if (_callDialog != null)
+                        {
+                            _callDialog.IsOpen = false;
+                            _callDialog = null;
+                        }
+                        else if (_callLifetime != null)
+                        {
+                            _callLifetime.StopViewInUse();
+                            _callLifetime.WindowWrapper.Window.Close();
+                            _callLifetime = null;
+                        }
+
+                        callPage.Dispose();
+                        if (_callPage == callPage)
+                        {
+                            _callPage = null;
+                        }
+                    });
+
+                    Aggregator.Publish(new UpdateCallDialog(_call, true));
+                }
+                catch (Exception error)
+                {
+                    WriteAudioCallDiagnostic(
+                        "voip.ui",
+                        $"result=error;operation=hide;hresult=0x{error.HResult:X8};message={Logs.PushDiagnostics.SanitizeErrorMessage(error.Message)}");
+                }
             }
             DisableDisplayOnOffController();
         }
