@@ -134,6 +134,13 @@ or the eventual APPX architecture. They trade performance for a correctly
 compiled native ARM proof and require audio performance/device validation
 before distribution.
 
+Opus also enables an ARM runtime-dispatched GNU assembly routine whenever its
+target is Windows ARM. `patches\webrtc-m123-winuwp-arm-scalar-opus.patch`
+disables that assembly-only selection for UWP ARM, retaining Opus's existing
+portable C implementation in `pitch.c`. This is the same scalar-proof
+constraint as the common-audio changes, not a change to Opus support or media
+encryption.
+
 The scalar configuration retains `WEBRTC_ARCH_ARM` for generic ARM behavior,
 but MSVC cannot compile the GNU extended assembly used only to control the
 floating-point denormal mode. The wrapper therefore applies
@@ -149,14 +156,18 @@ ARM64/sanitizer fallback. The portable C cryptographic implementation remains
 in use; this is a performance tradeoff that needs device validation, not a
 substitute or a reduction in encryption behavior.
 
-The proof intentionally excludes AV1 by passing `enable_libaom=false`.
+The proof intentionally excludes AV1 and libvpx by passing
+`enable_libaom=false rtc_build_libvpx=false rtc_libvpx_build_vp9=false`.
 `patches\webrtc-m123-winuwp-arm-audio-only-libaom.patch` makes the standalone
-root target honor that existing option instead of unconditionally including
-the AV1 adapter, whose ARM-generated headers are not supplied by this fork.
-VP8/VP9 still require an ARM libvpx configuration that the fork does not
-supply; the current proof build stops at its missing `vpx_config.h` and
-`vpx/vp8*.h` headers. AV1, VP8, VP9, and all broader video-call work remain
-explicitly deferred rather than silently falling back.
+root target honor those existing configuration options instead of
+unconditionally including the AV1, VP8, and VP9 factory adapters.
+`patches\webrtc-m123-winuwp-arm-audio-only-libvpx.patch` preserves the public
+VP8/VP9 target labels for dependency-graph compatibility but omits their
+libvpx-dependent implementation sources whenever `rtc_build_libvpx=false`.
+The fork does not supply the required ARM-generated libvpx headers
+(`vpx_config.h` and `vpx/vp8*.h`), so this is an explicit audio-only build,
+not a codec fallback. AV1, VP8, VP9, and all broader video-call work remain
+deferred.
 
 The generated library is only a native proof input. It must still compile and
 link with the audio-only C++/CX TgCalls bridge, activate from its WinMD, and
