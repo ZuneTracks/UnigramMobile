@@ -2,12 +2,9 @@ namespace Unigram {
 namespace Native {
 namespace Calls {
 namespace Proof {
-namespace {
-__declspec(thread) volatile long g_tls_anchor = 0;
-}
-
 void EnsureUwpTlsSupport() {
-    (void)g_tls_anchor;
+    // Avoid explicit static TLS in a dynamically activated WinRT component.
+    // BoringSSL manages its own per-thread data through the Windows TLS APIs.
 }
 }
 }

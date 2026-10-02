@@ -548,9 +548,22 @@ namespace Unigram.Services
                 return false;
             }
 
+            ModernCalls.AudioCallSession session;
             try
             {
-                var session = ModernCalls.AudioCallSession.Create(configuration);
+                WriteAudioCallDiagnostic("voip.ready", "result=creating;transport=modern_tgcalls");
+                session = ModernCalls.AudioCallSession.Create(configuration);
+            }
+            catch (Exception error)
+            {
+                WriteAudioCallDiagnostic(
+                    "voip.ready",
+                    $"result=rejected;reason=bridge_create;transport=modern_tgcalls;hresult=0x{error.HResult:X8};message={Logs.PushDiagnostics.SanitizeErrorMessage(error.Message)}");
+                return false;
+            }
+
+            try
+            {
                 session.StateChanged += (sender, state) => OnModernCallStateChanged(call.Id, state);
                 session.SignalingData += (sender, data) => SendModernSignalingData(call.Id, session, data);
                 session.Stopped += (sender, completed) => OnModernCallStopped(call.Id, session, completed);
@@ -566,10 +579,12 @@ namespace Unigram.Services
                 }
                 return true;
             }
-            catch (ArgumentException)
+            catch (Exception error)
             {
                 DisposeModernCall();
-                WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=bridge_configuration;transport=modern_tgcalls");
+                WriteAudioCallDiagnostic(
+                    "voip.ready",
+                    $"result=rejected;reason=bridge_start;transport=modern_tgcalls;hresult=0x{error.HResult:X8};message={Logs.PushDiagnostics.SanitizeErrorMessage(error.Message)}");
                 return false;
             }
         }
