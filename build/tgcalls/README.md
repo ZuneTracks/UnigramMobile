@@ -311,9 +311,12 @@ ModernCallsBridge.dll
 Unigram.Native.Calls.Proof.pri
 ```
 
-The app reads the registered versions from the bridge and advertises only
-those values. It selects the modern transport only when the peer's
-`CallProtocol.LibraryVersions` has an exact intersection with that registry.
+The app uses the audited version list from the pinned TgCalls source
+(`2.7.7` and `5.0.0`) and advertises only those values. This avoids activating
+the WebRTC bridge merely to build `CallProtocol`; bridge activation is
+deferred until TDLib provides ready-state configuration. It selects the modern
+transport only when the peer's `CallProtocol.LibraryVersions` has an exact
+intersection with that list.
 It maps Telegram reflector endpoints and TDLib WebRTC STUN/TURN server roles,
 forwards `UpdateNewCallSignalingData` to the bridge, and sends emitted
 signaling through `SendCallSignalingData`. If a modern version was negotiated
@@ -350,29 +353,30 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6142.0_ARM_ModernTgCalls_FoldersFix.appx
+    Unigram_26.9.6143.0_ARM_ModernTgCalls_ProtocolIsolation.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6142.0_ARM_ModernTgCalls_FoldersFix_Sideload.zip
+    Unigram_26.9.6143.0_ARM_ModernTgCalls_ProtocolIsolation_Sideload.zip
 APPX SHA-256:
-5AB01BAE77AC83D8FD93456670BCA63053761A9AA2BB6A888A01294DE615D6D2
+ABCB97761311145CB6EC04CEF3297885A51D24FAEF83367D22B49CBED9C938D4
 ZIP SHA-256:
-DF42D43A7CF54A2B63549DB0649109D1E535469A8D68DB14730DAC4E5F18167F
+ACEBD4E7CBD217BFD216F25669BCAA3E0CB3C9D9C354D62B4F0F2B76D3B22661
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6142.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6143.0`,
 ARM architecture, and the existing native notification background entry point.
 
 This remains a device-test package, not a released call fix. Required
 validation is experimental W10M to/from current Android and iOS audio calls,
 including accept, outgoing signaling, mute, route changes, foreground and
 background behavior, reconnect, rejection, and cleanup. This package changes
-the session lifecycle so the first modern offer/answer is emitted only after
-the app's signaling handler is attached. Preserve the legacy-W10M call
-regression test in both `UseModernTgCalls=false` and enabled package
-configurations.
+the call-request path so `CallProtocol` creation cannot invoke the bridge's
+version-discovery entry point. The supplied device diagnostics showed that
+entry point failing with `0x800401F9` before either `CreateCall` or
+`AcceptCall` reached TDLib. Preserve the legacy-W10M call regression test in
+both `UseModernTgCalls=false` and enabled package configurations.

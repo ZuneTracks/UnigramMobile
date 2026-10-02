@@ -409,7 +409,9 @@ namespace Unigram.Services
                         }
                         break;
                     case CallStateError error:
-                        WriteAudioCallDiagnostic("voip.error", $"code={error.Error?.Code ?? 0}");
+                        WriteAudioCallDiagnostic(
+                            "voip.error",
+                            $"code={error.Error?.Code ?? 0};message={Logs.PushDiagnostics.SanitizeErrorMessage(error.Error?.Message)}");
                         StopTone();
                         Hide();
                         break;

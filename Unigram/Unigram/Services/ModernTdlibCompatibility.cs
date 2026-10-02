@@ -6,9 +6,6 @@ using Unigram.Common;
 using Unigram.Logs;
 using Unigram.Services.ViewService;
 using Unigram.ViewModels;
-#if MODERN_TGCALLS
-using ModernCalls = Unigram.Native.Calls.Proof;
-#endif
 
 namespace Unigram.Services
 {
@@ -50,6 +47,14 @@ namespace Unigram.Services
     {
         private const int LegacyVoipMinimumLayer = 65;
         private static int _audioCallDiagnosticBudget = 24;
+#if MODERN_TGCALLS
+        // These are the registered versions from the pinned TgCalls source used by
+        // the ARM bridge. Keeping the audited source-pin list in managed code
+        // avoids loading WebRTC merely to construct a TDLib call request; the
+        // bridge is activated only after TDLib provides the ready-state server
+        // configuration.
+        private static readonly string[] ModernTgCallsVersions = { "2.7.7", "5.0.0" };
+#endif
 
         public static MessageTopic GetMessageTopic(long threadId)
         {
@@ -1240,18 +1245,11 @@ namespace Unigram.Services
             };
 
 #if MODERN_TGCALLS
-            foreach (var version in ModernCalls.Diagnostics.GetSupportedVersions())
+            foreach (var version in ModernTgCallsVersions)
             {
-                if (!string.IsNullOrWhiteSpace(version))
-                {
-                    protocol.LibraryVersions.Add(version);
-                }
+                protocol.LibraryVersions.Add(version);
             }
 
-            if (protocol.LibraryVersions.Count == 0)
-            {
-                throw new InvalidOperationException("The enabled modern call bridge did not register a supported version.");
-            }
 #endif
 
             if (System.Threading.Interlocked.Decrement(ref _audioCallDiagnosticBudget) >= 0)
@@ -1272,7 +1270,6 @@ namespace Unigram.Services
                 return null;
             }
 
-            var localVersions = ModernCalls.Diagnostics.GetSupportedVersions();
             foreach (var peerVersion in peerVersions)
             {
                 if (string.IsNullOrWhiteSpace(peerVersion))
@@ -1280,7 +1277,7 @@ namespace Unigram.Services
                     continue;
                 }
 
-                foreach (var localVersion in localVersions)
+                foreach (var localVersion in ModernTgCallsVersions)
                 {
                     if (string.Equals(peerVersion, localVersion, StringComparison.Ordinal))
                     {
@@ -1302,7 +1299,9 @@ namespace Unigram.Services
 
             if (response is Error error)
             {
-                PushDiagnostics.Write($"voip.{operation}", $"result=error;code={error.Code}");
+                PushDiagnostics.Write(
+                    $"voip.{operation}",
+                    $"result=error;code={error.Code};message={PushDiagnostics.SanitizeErrorMessage(error.Message)}");
                 return;
             }
 
