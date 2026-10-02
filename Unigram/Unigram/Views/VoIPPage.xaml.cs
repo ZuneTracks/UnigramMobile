@@ -61,7 +61,9 @@ namespace Unigram.Views
 
         public VoIPPage(IProtoService protoService, ICacheService cacheService, IEventAggregator aggregator, Call call, VoIPControllerWrapper controller, DateTime started)
         {
+            Logs.PushDiagnostics.Write("voip.ui", "stage=construct_begin");
             this.InitializeComponent();
+            Logs.PushDiagnostics.Write("voip.ui", "stage=initialized");
 
             _protoService = protoService;
             _cacheService = cacheService;
@@ -109,25 +111,36 @@ namespace Unigram.Views
 
             // Why does this crashes due to an access violation exception on certain devices?
             ElementCompositionPreview.SetElementChildVisual(BlurPanel, _blurVisual);
+            Logs.PushDiagnostics.Write("voip.ui", "stage=composition_ready");
 
             #endregion
 
             var titleBar = ApplicationView.GetForCurrentView().TitleBar;
-            titleBar.ButtonBackgroundColor = Colors.Transparent;
-            titleBar.ButtonForegroundColor = Colors.White;
-            titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
-            titleBar.ButtonInactiveForegroundColor = Colors.White;
+            if (titleBar != null)
+            {
+                titleBar.ButtonBackgroundColor = Colors.Transparent;
+                titleBar.ButtonForegroundColor = Colors.White;
+                titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
+                titleBar.ButtonInactiveForegroundColor = Colors.White;
+                Window.Current.SetTitleBar(BlurPanel);
+            }
+            else
+            {
+                Logs.PushDiagnostics.Write("voip.ui", "result=title_bar_unavailable");
+            }
 
-            Window.Current.SetTitleBar(BlurPanel);
+            Logs.PushDiagnostics.Write("voip.ui", "stage=chrome_ready");
 
             if (call != null)
             {
                 Update(call, started);
+                Logs.PushDiagnostics.Write("voip.ui", "stage=call_updated");
             }
 
             if (controller != null)
             {
                 Connect(controller);
+                Logs.PushDiagnostics.Write("voip.ui", "stage=controller_connected");
             }
         }
 

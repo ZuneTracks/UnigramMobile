@@ -141,34 +141,48 @@ namespace Unigram.Common
 
             // Desktop Title Bar
             var titleBar = Windows.UI.ViewManagement.ApplicationView.GetForCurrentView().TitleBar;
-            CoreApplication.GetCurrentView().TitleBar.ExtendViewIntoTitleBar = true;
+            var coreTitleBar = CoreApplication.GetCurrentView().TitleBar;
+            if (coreTitleBar != null)
+            {
+                coreTitleBar.ExtendViewIntoTitleBar = true;
+            }
 
-            // Background
-            titleBar.BackgroundColor = background;
-            titleBar.InactiveBackgroundColor = background;
+            if (titleBar != null)
+            {
+                // Background
+                titleBar.BackgroundColor = background;
+                titleBar.InactiveBackgroundColor = background;
 
-            // Foreground
-            titleBar.ForegroundColor = foreground;
-            titleBar.ButtonForegroundColor = foreground;
-            titleBar.ButtonHoverForegroundColor = foreground;
+                // Foreground
+                titleBar.ForegroundColor = foreground;
+                titleBar.ButtonForegroundColor = foreground;
+                titleBar.ButtonHoverForegroundColor = foreground;
 
-            // Buttons
-            //titleBar.ButtonBackgroundColor = background;
-            //titleBar.ButtonInactiveBackgroundColor = background;
-            titleBar.ButtonBackgroundColor = Colors.Transparent;
-            titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
+                // Buttons
+                //titleBar.ButtonBackgroundColor = background;
+                //titleBar.ButtonInactiveBackgroundColor = background;
+                titleBar.ButtonBackgroundColor = Colors.Transparent;
+                titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
 
-            // Buttons feedback
-            titleBar.ButtonPressedBackgroundColor = buttonPressed;
-            titleBar.ButtonHoverBackgroundColor = buttonHover;
+                // Buttons feedback
+                titleBar.ButtonPressedBackgroundColor = buttonPressed;
+                titleBar.ButtonHoverBackgroundColor = buttonHover;
+            }
+            else
+            {
+                PushDiagnostics.Write("view.title_bar", "result=unavailable");
+            }
 
             // Mobile Status Bar
             if (ApiInfo.HasStatusBar)
             {
                 var statusBar = StatusBar.GetForCurrentView();
-                statusBar.BackgroundColor = Application.Current.Resources["PageTitleBackgroundBrush"] is SolidColorBrush pageTitleBackgroundBrush ? pageTitleBackgroundBrush.Color : background;
-                statusBar.ForegroundColor = foreground;
-                statusBar.BackgroundOpacity = 1;
+                if (statusBar != null)
+                {
+                    statusBar.BackgroundColor = Application.Current.Resources["PageTitleBackgroundBrush"] is SolidColorBrush pageTitleBackgroundBrush ? pageTitleBackgroundBrush.Color : background;
+                    statusBar.ForegroundColor = foreground;
+                    statusBar.BackgroundOpacity = 1;
+                }
             }
         }
 

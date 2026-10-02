@@ -353,22 +353,22 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6151.0_ARM_ModernTgCalls_RoutingCrashFix.appx
+    Unigram_26.9.6152.0_ARM_ModernTgCalls_CompactViewCrashFix.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6151.0_ARM_ModernTgCalls_RoutingCrashFix_Sideload.zip
+    Unigram_26.9.6152.0_ARM_ModernTgCalls_CompactViewCrashFix_Sideload.zip
 APPX SHA-256:
-E05454597C7A9F588AED792786A5F39B3BEE9B7744441A31950BF8CD5A8D22E7
+957E4E1CD11BA5DD16FA4AFBA247A07695E7CF18A0F3B58C352037962620EDEB
 ZIP SHA-256:
-D9E29C7979E1EC0E302890AA9F100341029DD3F132A51C36F35CD4F7951AA2F7
+644C3AFBB1B1AB28D9C5A7E06A223A791BAF6655B5AC93CDBC0C3AA220501AF7
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6151.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6152.0`,
 ARM architecture, and the existing native notification background entry point.
 
 This remains a device-test package, not a released call fix. The 26.9.6148.0
@@ -395,16 +395,25 @@ diagnostics with only the operation, HRESULT, and sanitized message. This does
 not change TDLib call negotiation, bridge session creation, signaling, or the
 legacy transport selection.
 
-Version 26.9.6151.0 fixes the remaining deterministic Mobile call-page crash.
-On the tested Windows 10 Mobile image, the Phone contract is present while
+Version 26.9.6151.0 guards the call-page routing API. On the tested Windows
+10 Mobile image, the Phone contract is present while
 `AudioRoutingManager.GetDefault()` can return no manager. The old call-page
 loaded/unloaded, route-click, and endpoint-change paths dereferenced that
-unavailable manager immediately after `CallStatePending`, causing an
-unhandled `NullReferenceException` and process restart. The page now retains a
-manager only when it is available, hides the routing control otherwise, and
-unsubscribes from that same manager during cleanup. The `6150` device trace
-reached modern bridge `Established` with bidirectional signaling before that
-UI exception restarted the app; it did not show a native bridge rejection.
+unavailable manager. The page now retains a manager only when it is available,
+hides the routing control otherwise, and unsubscribes from that same manager
+during cleanup. The `6151` device trace proved the null reference occurred
+before the call page's `Loaded` event, so this guard did not cover the actual
+secondary-view fault.
+
+Version 26.9.6152.0 also guards `TLWindowContext` title/status-bar
+customization. It is instantiated while the compact secondary view is created,
+before the `VoIPPage` content is loaded, and previously dereferenced
+`ApplicationView.TitleBar` and `CoreApplicationViewTitleBar` unconditionally.
+Those shell objects are absent in the Windows 10 Mobile compact-view context.
+The call page now records ordered, privacy-safe `voip.ui` construction stages
+as well. The `6151` trace reached modern bridge `Established` with
+bidirectional signaling before the app restart; it did not show a native
+bridge rejection.
 
 Chat Folders is now device-verified: after registering `FoldersViewModel` and
 `FolderViewModel` for modern TDLib, a folder created in the experimental app
@@ -421,4 +430,6 @@ should now log `voip.ready result=creating` followed by either
 startup result. It should not emit an unhandled `CallStatePending`
 null-reference error or restart when audio routing is unavailable; that state
 is recorded as `voip.ui result=routing_unavailable` and route selection is
-hidden. This is not a claim that Android/iOS audio is established.
+hidden. `6152` should log `view.title_bar result=unavailable` or complete the
+`voip.ui` construction stages without crashing. This is not a claim that
+Android/iOS audio is established.
