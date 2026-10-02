@@ -843,7 +843,7 @@ namespace Unigram.ViewModels
                 return;
             }
 
-            var response = await ProtoService.SendAsync(ModernTdlibCompatibility.CreateCall(user.Id, new CallProtocol(true, true, 65, libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer(), new string[0])));
+            var response = await ProtoService.SendAsync(ModernTdlibCompatibility.CreateCall(user.Id, ModernTdlibCompatibility.CreateAudioCallProtocol()));
             if (response is Error error)
             {
                 if (error.Code == 400 && error.Message.Equals("PARTICIPANT_VERSION_OUTDATED"))

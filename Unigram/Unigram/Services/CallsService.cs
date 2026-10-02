@@ -259,6 +259,11 @@ namespace Unigram.Services
 
                 _controller.CallStateChanged += (s, args) =>
                 {
+                    var error = args == libtgvoip.CallState.Failed
+                        ? $";error={s.GetLastError()}"
+                        : string.Empty;
+                    WriteAudioCallDiagnostic("voip.transport", $"result=state;state={args}{error}");
+
                     BeginOnUIThread(() =>
                     {
                         if (args == libtgvoip.CallState.WaitInit || args == libtgvoip.CallState.WaitInitAck)
@@ -304,7 +309,7 @@ namespace Unigram.Services
                     return;
                 }
 
-                WriteAudioCallDiagnostic("voip.ready", $"result=starting;reflector_endpoints={endpoints.Count};p2p={ready.Protocol.UdpP2p && ready.AllowP2p}");
+                WriteAudioCallDiagnostic("voip.ready", $"result=starting;reflector_endpoints={endpoints.Count};p2p={ready.Protocol.UdpP2p && ready.AllowP2p};protocol_min={ready.Protocol.MinLayer};protocol_max={ready.Protocol.MaxLayer};library_versions={ready.Protocol.LibraryVersions?.Count ?? 0}");
                 _controller.SetEncryptionKey(ready.EncryptionKey.ToArray(), update.Call.IsOutgoing);
                 _controller.SetPublicEndpoints(endpoints.ToArray(), ready.Protocol.UdpP2p && ready.AllowP2p, ready.Protocol.MaxLayer);
                 _controller.Start();
@@ -346,6 +351,7 @@ namespace Unigram.Services
                         }
                         break;
                     case CallStateError error:
+                        WriteAudioCallDiagnostic("voip.error", $"code={error.Error?.Code ?? 0}");
                         StopTone();
                         Hide();
                         break;

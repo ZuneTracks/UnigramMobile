@@ -245,6 +245,24 @@ cover outgoing, incoming accept/decline, microphone mute, speaker/earpiece
 routing, call teardown, and the resulting `voip.*` diagnostics before any
 video-call work begins.
 
+#### Audio-call protocol compatibility
+
+The ARM `libtgvoip` wrapper is a 2019 legacy transport and reports its maximum
+protocol layer at runtime. The original call code sent an empty
+`CallProtocol.LibraryVersions` vector. TDLib 1.8.66 carries that vector
+unchanged to `phone.requestCall`, `phone.acceptCall`, and
+`phone.confirmCall`. Modern Telegram clients, notably iOS, can negotiate by
+library version rather than by layer alone; an empty vector is rejected as an
+incompatible call protocol before media setup.
+
+26.9.6133.0 advertises the wrapper's recognized legacy protocol tag `2.4.4`
+with its actual reported maximum layer for every create, accept, and retry
+request. This is an audio-only compatibility declaration, not a claim of
+WebRTC/tgcalls or video support. The ready-state diagnostics now include only
+negotiated layer bounds, tag count, reflector count, TDLib error codes, and
+native transport state/error enums—never call identifiers, peers, IP
+addresses, keys, or signaling data.
+
 For a conclusive test, pin the separate **Unigram Mobile TDLib Experimental**
 primary tile, foreground the app on the chat list or a different chat, then
 receive a message in a non-open chat. A currently open target chat is

@@ -45,6 +45,9 @@ namespace Unigram.Services
 
     public static class ModernTdlibCompatibility
     {
+        private const int LegacyVoipMinimumLayer = 65;
+        private const string LegacyVoipLibraryVersion = "2.4.4";
+
         public static MessageTopic GetMessageTopic(long threadId)
         {
             return threadId == 0 ? null : new MessageTopicThread(threadId);
@@ -1123,6 +1126,16 @@ namespace Unigram.Services
         public static Function CreateCall(long userId, CallProtocol protocol)
         {
             return new CreateCall(userId, protocol, false);
+        }
+
+        public static CallProtocol CreateAudioCallProtocol()
+        {
+            return new CallProtocol(
+                true,
+                true,
+                LegacyVoipMinimumLayer,
+                libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer(),
+                new[] { LegacyVoipLibraryVersion });
         }
 
         public static Function CreateAcceptCall(int callId, CallProtocol protocol)
