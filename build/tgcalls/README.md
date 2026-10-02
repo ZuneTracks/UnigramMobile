@@ -62,6 +62,32 @@ After supplying a source-compatible WebRTC checkout, repeat the probe with:
 .\build\tgcalls\Test-TgCallsUwpArm.ps1 -WebRtcRoot C:\path\to\webrtc\src
 ```
 
+The default probe deliberately uses the app's v141 ARM compiler. The pinned
+M123 Abseil source rejects Visual Studio 2017, so that check currently proves
+that the modern engine cannot be built in the app's existing native toolset.
+It must not be bypassed by editing the upstream version check. To evaluate a
+separate VS 2022 bridge toolset after the WebRTC Release ARM build exists,
+pass its environment script and host/target pair explicitly:
+
+```powershell
+.\build\tgcalls\Test-TgCallsUwpArm.ps1 `
+    -WebRtcRoot C:\wrtcar\src `
+    -VcVarsAllPath 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat' `
+    -VcVarsArchitecture x64_arm
+```
+
+With `-WebRtcRoot`, the probe adds the pinned Abseil and generated-output
+include roots plus the UWP WebRTC platform definitions from the ARM GN build.
+This only validates C++ source compilation; a separate C++/CX WinMD project
+must still prove toolset/link/runtime compatibility before integration.
+
+M123 adds string device-selection members to `AudioDeviceModule`. The pinned
+TgCalls wrapper already delegates these members but incorrectly limits that
+delegation to its desktop UWP macro. The probe applies
+`patches\tgcalls-m123-winuwp-audio-device.patch` to expose the same existing
+delegation on UWP ARM; it neither changes device selection semantics nor adds
+a fallback.
+
 The required WebRTC build must target Windows Store ARM with the app's
 Windows 10 SDK 18362 constraints and provide the matching headers, generated
 configuration, static libraries, and UWP-compatible audio/network
