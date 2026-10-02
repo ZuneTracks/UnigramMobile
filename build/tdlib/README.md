@@ -267,18 +267,20 @@ property setters because the modern projection previously exhibited
 activation-factory marshalling failures for other multi-argument request
 types.
 
-26.9.6138.0 is the Android compatibility test. Current Telegram Android
-advertises a version vector but recognizes `2.4.4` as its legacy reflector
-transport. The app therefore advertises only `2.4.4`, the one version its
-bundled ARM wrapper can actually implement; it must not claim newer WebRTC
-versions. Bounded `voip.protocol` records confirm only the emitted minimum,
-maximum, and library-version count. Bounded `voip.create`, `voip.retry`, and
-`voip.accept` records distinguish a local TDLib request rejection from a later
-peer or transport failure. This legacy reflector transport does not claim iOS
-WebRTC/tgcalls support. The ready-state diagnostics include only negotiated
-layer bounds, tag count, reflector count, TDLib error codes, and native
-transport state/error enums—never call identifiers, peers, IP addresses, keys,
-or signaling data.
+26.9.6138.0 tested `2.4.4`, but current Android advertises only its newer
+`2.7.7` and `5.0.0` transports. The bundled 2019 ARM wrapper does not expose
+either transport and must not falsely advertise one. 26.9.6139.0 therefore
+restores the W10M-compatible empty vector and explicitly documents Android and
+iOS as unsupported by this native transport.
+
+Bounded `voip.protocol` records confirm only the emitted minimum, maximum, and
+library-version count. Bounded `voip.create`, `voip.retry`, and `voip.accept`
+records distinguish a local TDLib request rejection from a later peer or
+transport failure. Ready-state diagnostics now include reflector and WebRTC
+endpoint counts. Supporting current Android/iOS requires an ARM UWP
+implementation of a supported newer TgCalls/WebRTC transport; it is not a
+safe C#-level compatibility change. Diagnostics never record call identifiers,
+peers, IP addresses, keys, or signaling data.
 
 For a conclusive test, pin the separate **Unigram Mobile TDLib Experimental**
 primary tile, foreground the app on the chat list or a different chat, then

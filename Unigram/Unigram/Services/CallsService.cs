@@ -284,6 +284,7 @@ namespace Unigram.Services
                 });
 
                 var endpoints = new List<Endpoint>();
+                var webRtcEndpointCount = 0;
 
                 foreach (var server in ready.Servers ?? new CallServer[0])
                 {
@@ -298,18 +299,22 @@ namespace Unigram.Services
                             port = (ushort)server.Port
                         });
                     }
+                    else if (server.Type is CallServerTypeWebrtc)
+                    {
+                        webRtcEndpointCount++;
+                    }
                 }
 
                 if (endpoints.Count == 0)
                 {
-                    WriteAudioCallDiagnostic("voip.ready", "result=skipped;reason=no_reflector_endpoint");
+                    WriteAudioCallDiagnostic("voip.ready", $"result=skipped;reason=no_reflector_endpoint;webrtc_endpoints={webRtcEndpointCount}");
                     _controller.Dispose();
                     _controller = null;
                     ProtoService.Send(ModernTdlibCompatibility.CreateDiscardCall(update.Call.Id, true, 0, 0));
                     return;
                 }
 
-                WriteAudioCallDiagnostic("voip.ready", $"result=starting;reflector_endpoints={endpoints.Count};p2p={ready.Protocol.UdpP2p && ready.AllowP2p};protocol_min={ready.Protocol.MinLayer};protocol_max={ready.Protocol.MaxLayer};library_versions={ready.Protocol.LibraryVersions?.Count ?? 0}");
+                WriteAudioCallDiagnostic("voip.ready", $"result=starting;reflector_endpoints={endpoints.Count};webrtc_endpoints={webRtcEndpointCount};p2p={ready.Protocol.UdpP2p && ready.AllowP2p};protocol_min={ready.Protocol.MinLayer};protocol_max={ready.Protocol.MaxLayer};library_versions={ready.Protocol.LibraryVersions?.Count ?? 0}");
                 _controller.SetEncryptionKey(ready.EncryptionKey.ToArray(), update.Call.IsOutgoing);
                 _controller.SetPublicEndpoints(endpoints.ToArray(), ready.Protocol.UdpP2p && ready.AllowP2p, ready.Protocol.MaxLayer);
                 _controller.Start();

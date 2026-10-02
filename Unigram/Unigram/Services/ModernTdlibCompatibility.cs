@@ -46,7 +46,6 @@ namespace Unigram.Services
     public static class ModernTdlibCompatibility
     {
         private const int LegacyVoipMinimumLayer = 65;
-        private const string LegacyVoipLibraryVersion = "2.4.4";
         private static int _audioCallDiagnosticBudget = 24;
 
         public static MessageTopic GetMessageTopic(long threadId)
@@ -1140,7 +1139,7 @@ namespace Unigram.Services
                 UdpReflector = true,
                 MinLayer = LegacyVoipMinimumLayer,
                 MaxLayer = libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer(),
-                LibraryVersions = new List<string> { LegacyVoipLibraryVersion }
+                LibraryVersions = new List<string>()
             };
 
             if (System.Threading.Interlocked.Decrement(ref _audioCallDiagnosticBudget) >= 0)
