@@ -121,6 +121,43 @@ though the UWP compiler toolchain does. The wrapper applies
 desktop-oriented copy only for the static UWP ARM library; the ARM compiler
 environment still comes from `setup_toolchain.py`.
 
+MSVC cannot assemble the fork's GNU ARMv7/NEON routines or compile their
+GCC-style inline assembly. For this proof only, the wrapper selects WebRTC's
+existing scalar paths with `arm_version=6 arm_use_neon=false` and applies
+`patches\webrtc-m123-winuwp-arm-scalar-audio.patch`. The scalar PFFFT
+configuration also reveals an upstream GN list-assignment error; the wrapper
+applies `patches\webrtc-m123-winuwp-arm-scalar-pffft.patch` to preserve the
+Windows math-constant define while adding `PFFFT_SIMD_DISABLE`. These changes
+control WebRTC optimization feature selection only; they do not change the
+`target_cpu` (`arm`), UWP architecture, audio codec support, SCTP, signaling,
+or the eventual APPX architecture. They trade performance for a correctly
+compiled native ARM proof and require audio performance/device validation
+before distribution.
+
+The scalar configuration retains `WEBRTC_ARCH_ARM` for generic ARM behavior,
+but MSVC cannot compile the GNU extended assembly used only to control the
+floating-point denormal mode. The wrapper therefore applies
+`patches\webrtc-m123-winuwp-arm-msvc-denormal.patch`, which leaves denormal
+control unsupported for 32-bit MSVC ARM and uses WebRTC's existing no-op
+fallback. It does not affect media encryption, audio codecs, signaling, or
+call lifecycle.
+
+The same compiler limitation reaches BoringSSL's optimized GAS sources.
+`patches\webrtc-m123-winuwp-arm-boringssl-no-asm.patch` selects BoringSSL's
+existing `OPENSSL_NO_ASM` configuration for UWP ARM, matching its established
+ARM64/sanitizer fallback. The portable C cryptographic implementation remains
+in use; this is a performance tradeoff that needs device validation, not a
+substitute or a reduction in encryption behavior.
+
+The proof intentionally excludes AV1 by passing `enable_libaom=false`.
+`patches\webrtc-m123-winuwp-arm-audio-only-libaom.patch` makes the standalone
+root target honor that existing option instead of unconditionally including
+the AV1 adapter, whose ARM-generated headers are not supplied by this fork.
+VP8/VP9 still require an ARM libvpx configuration that the fork does not
+supply; the current proof build stops at its missing `vpx_config.h` and
+`vpx/vp8*.h` headers. AV1, VP8, VP9, and all broader video-call work remain
+explicitly deferred rather than silently falling back.
+
 The generated library is only a native proof input. It must still compile and
 link with the audio-only C++/CX TgCalls bridge, activate from its WinMD, and
 complete device interoperability before it can replace any packaged transport.
