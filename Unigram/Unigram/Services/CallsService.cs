@@ -243,8 +243,6 @@ namespace Unigram.Services
                     return;
                 }
 
-                VoIPControllerWrapper.UpdateServerConfig(ready.Config);
-
 #if MODERN_TGCALLS
                 var modernVersion = ModernTdlibCompatibility.GetModernAudioCallVersion(ready.Protocol?.LibraryVersions);
                 if (!string.IsNullOrEmpty(modernVersion))
@@ -271,6 +269,8 @@ namespace Unigram.Services
 
                 ClearPendingModernSignalingData(update.Call.Id);
 #endif
+
+                VoIPControllerWrapper.UpdateServerConfig(ready.Config);
 
                 var logFile = Path.Combine(ApplicationData.Current.LocalFolder.Path, $"{SessionId}", $"voip{update.Call.Id}.txt");
                 var statsDumpFile = Path.Combine(ApplicationData.Current.LocalFolder.Path, $"{SessionId}", "tgvoip.statsDump.txt");

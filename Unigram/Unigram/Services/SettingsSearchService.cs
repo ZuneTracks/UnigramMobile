@@ -4,9 +4,7 @@ using System.Text.RegularExpressions;
 using Telegram.Td.Api;
 using Unigram.Common;
 using Unigram.Views;
-#if !MODERN_TDLIB
 using Unigram.Views.Folders;
-#endif
 using Unigram.Views.Settings;
 using Unigram.Views.Settings.Privacy;
 
@@ -92,12 +90,10 @@ namespace Unigram.Services
                 new SettingsSearchPage(typeof(SettingsSessionsPage), Strings.Resources.Devices, "\uEA6C"),
                 new SettingsSearchPage(null, Strings.Resources.Language, "\uE164"),
                 new SettingsSearchPage(null, Strings.Resources.AskAQuestion, "\uED15"),
-#if !MODERN_TDLIB
                 new SettingsSearchPage(typeof(FoldersPage), Strings.Resources.Filters, "\uF12B", new SettingsSearchEntry[]
                 {
                     new SettingsSearchPage(typeof(FoldersPage), Strings.Additional.SettingsFoldersTabView)
                 })
-#endif
             };
 
             // FAQ indexing is done asyncronously

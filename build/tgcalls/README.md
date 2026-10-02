@@ -353,39 +353,43 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6145.0_ARM_ModernTgCalls_BridgeActivationProbe.appx
+    Unigram_26.9.6146.0_ARM_ModernTgCalls_LegacyConfigFix.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6145.0_ARM_ModernTgCalls_BridgeActivationProbe_Sideload.zip
+    Unigram_26.9.6146.0_ARM_ModernTgCalls_LegacyConfigFix_Sideload.zip
 APPX SHA-256:
-B37BD8BEDC3EF7F1C6FE2683361611C2E344FB64CD97AE8E420AE10D21A4188B
+D60848F3E6701E2CA863B21C407D0FDEC5C0F52BF7E960F197EF911AE3943D39
 ZIP SHA-256:
-410DA400A4C74E0B1C9C4B052AD7DA8FC2FCDBEC9722C05AE1A395288847F4FA
+C41CCA3E33EC6C8AF65C43EB91CCA0D28868C271FD4034F3A2B2386DA0EF83F2
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6145.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6146.0`,
 ARM architecture, and the existing native notification background entry point.
 
-This remains a device-test package, not a released call fix. Required
-validation is experimental W10M to/from current Android and iOS audio calls,
-including accept, outgoing signaling, mute, route changes, foreground and
-background behavior, reconnect, rejection, and cleanup. This package changes
-the call-request path so `CallProtocol` creation cannot invoke the bridge's
-version-discovery entry point. The supplied device diagnostics showed that
-entry point failing with `0x800401F9` before either `CreateCall` or
-`AcceptCall` reached TDLib. It also makes the incoming-call image path tolerate
-an absent profile-photo file/local metadata object instead of allowing an
-unhandled null-reference failure.
+This remains a device-test package, not a released call fix. The 26.9.6145.0
+device trace proved that the managed assembly was current, but it did not log
+the `bridge_create` stage. The cause was `libtgvoip`'s
+`UpdateServerConfig` being called before modern transport selection, so the
+obsolete legacy DLL returned `0x800401F9` before the modern bridge could be
+configured. Version 26.9.6146.0 invokes that legacy configuration only after
+the legacy transport has been selected; a call negotiated for `2.7.7` or
+`5.0.0` now reaches the bridge configuration/create diagnostics.
 
-The 26.9.6145.0 bridge-activation probe removes only the bridge's explicit
-static TLS anchor and separates bridge `Create` from `Start` diagnostics. A
-native boundary failure now records a privacy-safe `bridge_create` or
-`bridge_start` result with its HRESULT rather than surfacing only as an
-application-level unhandled exception. This is not a claim that Android/iOS
-audio is established; preserve the legacy-W10M call regression test in both
-`UseModernTgCalls=false` and enabled package configurations.
+It also restores the Chat Folders entry in Settings and Settings Search for
+the modern TDLib build. The existing modern folder request factories remain in
+use, so opening the page no longer takes the former intentional
+`chat-folder.disabled` path.
+
+Required validation is experimental W10M to/from current Android and iOS audio
+calls, including accept, outgoing signaling, mute, route changes, foreground
+and background behavior, reconnect, rejection, and cleanup. Preserve the
+legacy-W10M call regression test in both `UseModernTgCalls=false` and enabled
+package configurations. Collect fresh privacy-safe diagnostics: a modern call
+should now log `voip.ready result=creating` followed by either
+`bridge_create`/`bridge_start` failure detail or the subsequent session
+startup result. This is not a claim that Android/iOS audio is established.

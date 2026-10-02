@@ -4,15 +4,10 @@ using Unigram.Common;
 using Unigram.Controls;
 using Unigram.Controls.Gallery;
 using Unigram.Entities;
-#if MODERN_TDLIB
-using Unigram.Logs;
-#endif
 using Unigram.ViewModels;
 using Unigram.ViewModels.Delegates;
 using Unigram.ViewModels.Users;
-#if !MODERN_TDLIB
 using Unigram.Views.Folders;
-#endif
 using Unigram.Views.Popups;
 using Unigram.Views.Settings;
 using Windows.ApplicationModel;
@@ -162,11 +157,7 @@ namespace Unigram.Views
 
         private void Folders_Click(object sender, RoutedEventArgs e)
         {
-#if !MODERN_TDLIB
             MasterDetail.NavigationService.Navigate(typeof(FoldersPage));
-#else
-            PushDiagnostics.Write("chat-folder.disabled", "result=unsupported;feature=experimental_tdlib");
-#endif
             MasterDetail.NavigationService.GoBackAt(0, false);
         }
 
