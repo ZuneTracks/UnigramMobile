@@ -51,8 +51,20 @@ namespace Unigram.Services
         private DateTime _callStarted;
         private VoIPControllerWrapper _controller;
 #if MODERN_TGCALLS
+        private enum ModernSignalingQueueResult
+        {
+            Queued,
+            SessionReady,
+            LimitExceeded
+        }
+
+        private const int MaxPendingModernSignalingMessages = 32;
+        private const int MaxPendingModernSignalingBytes = 1024 * 1024;
+        private readonly object _modernSignalingLock = new object();
         private ModernCalls.AudioCallSession _modernController;
         private int _modernCallId;
+        private volatile bool _modernCallStarting;
+        private readonly Dictionary<int, List<List<byte>>> _pendingModernSignalingData = new Dictionary<int, List<List<byte>>>();
 #endif
 
         private VoIPPage _callPage;
@@ -256,6 +268,8 @@ namespace Unigram.Services
                     ProtoService.Send(ModernTdlibCompatibility.CreateDiscardCall(update.Call.Id, true, 0, 0));
                     return;
                 }
+
+                ClearPendingModernSignalingData(update.Call.Id);
 #endif
 
                 var logFile = Path.Combine(ApplicationData.Current.LocalFolder.Path, $"{SessionId}", $"voip{update.Call.Id}.txt");
@@ -370,6 +384,7 @@ namespace Unigram.Services
                 _controller?.Dispose();
                 _controller = null;
 #if MODERN_TGCALLS
+                ClearPendingModernSignalingData(update.Call.Id);
                 DisposeModernCall();
 #endif
                 _call = null;
@@ -408,21 +423,55 @@ namespace Unigram.Services
 #if MODERN_TGCALLS
         public void Handle(UpdateNewCallSignalingData update)
         {
-            if (update == null || update.Data == null || _modernController == null || update.CallId != _modernCallId)
+            if (update == null || update.Data == null)
             {
-                WriteAudioCallDiagnostic("voip.signaling", "result=ignored;reason=no_matching_modern_call");
+                WriteAudioCallDiagnostic("voip.signaling", "result=ignored;reason=invalid_update");
                 return;
             }
 
-            try
+            var session = _modernController;
+            if (session != null && update.CallId == _modernCallId)
             {
-                _modernController.ReceiveSignalingData(update.Data.ToList());
-                WriteAudioCallDiagnostic("voip.signaling", "result=received;transport=modern_tgcalls");
+                switch (QueueModernSignalingDataIfSessionStarting(update.CallId, update.Data))
+                {
+                    case ModernSignalingQueueResult.Queued:
+                        WriteAudioCallDiagnostic("voip.signaling", "result=queued;reason=session_unavailable");
+                        return;
+                    case ModernSignalingQueueResult.LimitExceeded:
+                        WriteAudioCallDiagnostic("voip.signaling", "result=rejected;reason=buffer_limit");
+                        ClearPendingModernSignalingData(update.CallId);
+                        ProtoService.Send(ModernTdlibCompatibility.CreateDiscardCall(update.CallId, true, 0, 0));
+                        return;
+                }
+
+                try
+                {
+                    session.ReceiveSignalingData(update.Data.ToList());
+                    WriteAudioCallDiagnostic("voip.signaling", "result=received;transport=modern_tgcalls");
+                }
+                catch (ArgumentException)
+                {
+                    WriteAudioCallDiagnostic("voip.signaling", "result=rejected;transport=modern_tgcalls");
+                }
+                return;
             }
-            catch (ArgumentException)
+
+            if (_call != null && update.CallId == _call.Id)
             {
-                WriteAudioCallDiagnostic("voip.signaling", "result=rejected;transport=modern_tgcalls");
+                if (TryQueueModernSignalingData(update.CallId, update.Data))
+                {
+                    WriteAudioCallDiagnostic("voip.signaling", "result=queued;reason=session_unavailable");
+                }
+                else
+                {
+                    WriteAudioCallDiagnostic("voip.signaling", "result=rejected;reason=buffer_limit");
+                    ClearPendingModernSignalingData(update.CallId);
+                    ProtoService.Send(ModernTdlibCompatibility.CreateDiscardCall(update.CallId, true, 0, 0));
+                }
+                return;
             }
+
+            WriteAudioCallDiagnostic("voip.signaling", "result=ignored;reason=no_matching_modern_call");
         }
 
         private bool TryStartModernCall(Call call, CallStateReady ready, string version)
@@ -506,10 +555,18 @@ namespace Unigram.Services
 
                 _modernController = session;
                 _modernCallId = call.Id;
+                _modernCallStarting = true;
+                session.Start();
+                if (!FlushPendingModernSignalingData(call.Id, session))
+                {
+                    DisposeModernCall();
+                    return false;
+                }
                 return true;
             }
             catch (ArgumentException)
             {
+                DisposeModernCall();
                 WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=bridge_configuration;transport=modern_tgcalls");
                 return false;
             }
@@ -580,12 +637,112 @@ namespace Unigram.Services
 
         private void DisposeModernCall()
         {
+            var callId = _modernCallId;
             if (_modernController != null)
             {
                 _modernController.Dispose();
                 _modernController = null;
             }
             _modernCallId = 0;
+            _modernCallStarting = false;
+            ClearPendingModernSignalingData(callId);
+        }
+
+        private bool TryQueueModernSignalingData(int callId, IList<byte> data)
+        {
+            lock (_modernSignalingLock)
+            {
+                return TryQueueModernSignalingDataLocked(callId, data);
+            }
+        }
+
+        private ModernSignalingQueueResult QueueModernSignalingDataIfSessionStarting(int callId, IList<byte> data)
+        {
+            lock (_modernSignalingLock)
+            {
+                if (!_modernCallStarting)
+                {
+                    return ModernSignalingQueueResult.SessionReady;
+                }
+
+                return TryQueueModernSignalingDataLocked(callId, data)
+                    ? ModernSignalingQueueResult.Queued
+                    : ModernSignalingQueueResult.LimitExceeded;
+            }
+        }
+
+        private bool TryQueueModernSignalingDataLocked(int callId, IList<byte> data)
+        {
+            if (data.Count > MaxPendingModernSignalingBytes)
+            {
+                return false;
+            }
+
+            if (!_pendingModernSignalingData.TryGetValue(callId, out var pending))
+            {
+                pending = new List<List<byte>>();
+                _pendingModernSignalingData[callId] = pending;
+            }
+
+            var pendingBytes = pending.Sum(item => item.Count);
+            if (pending.Count >= MaxPendingModernSignalingMessages ||
+                pendingBytes > MaxPendingModernSignalingBytes - data.Count)
+            {
+                return false;
+            }
+
+            pending.Add(data.ToList());
+            return true;
+        }
+
+        private bool FlushPendingModernSignalingData(int callId, ModernCalls.AudioCallSession session)
+        {
+            try
+            {
+                var flushed = false;
+                while (true)
+                {
+                    List<List<byte>> pending;
+                    lock (_modernSignalingLock)
+                    {
+                        if (!_pendingModernSignalingData.TryGetValue(callId, out pending))
+                        {
+                            _modernCallStarting = false;
+                            if (flushed)
+                            {
+                                WriteAudioCallDiagnostic("voip.signaling", "result=flushed;transport=modern_tgcalls");
+                            }
+                            return true;
+                        }
+
+                        _pendingModernSignalingData.Remove(callId);
+                    }
+
+                    flushed = true;
+                    foreach (var data in pending)
+                    {
+                        session.ReceiveSignalingData(data);
+                    }
+                }
+            }
+            catch (ArgumentException)
+            {
+                WriteAudioCallDiagnostic("voip.signaling", "result=rejected;reason=buffered_data");
+                return false;
+            }
+        }
+
+        private void ClearPendingModernSignalingData(int callId)
+        {
+            if (callId == 0)
+            {
+                return;
+            }
+
+            lock (_modernSignalingLock)
+            {
+                _pendingModernSignalingData.Remove(callId);
+            }
         }
 #endif
 

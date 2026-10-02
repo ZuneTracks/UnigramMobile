@@ -73,18 +73,25 @@ public:
             throw std::invalid_argument("The TgCalls encryption key must contain exactly 256 bytes.");
         }
 
-        tgcalls::Register<tgcalls::InstanceImpl>();
+        return CallSessionPtr(new CallSession(configuration, std::move(callbacks)));
+    }
 
-        auto session = CallSessionPtr(new CallSession(std::move(callbacks)));
+    void Start() {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_started) {
+            throw std::logic_error("The TgCalls session has already started.");
+        }
+
+        tgcalls::Register<tgcalls::InstanceImpl>();
 
         auto encryptionKey = std::make_shared<std::array<uint8_t, tgcalls::EncryptionKey::kSize>>();
         std::copy(
-            configuration.encryptionKey.begin(),
-            configuration.encryptionKey.end(),
+            _configuration.encryptionKey.begin(),
+            _configuration.encryptionKey.end(),
             encryptionKey->begin());
         auto endpoints = std::vector<tgcalls::Endpoint>{};
-        endpoints.reserve(configuration.endpoints.size());
-        for (const auto& endpoint : configuration.endpoints) {
+        endpoints.reserve(_configuration.endpoints.size());
+        for (const auto& endpoint : _configuration.endpoints) {
             if (endpoint.peerTag.size() != 16) {
                 throw std::invalid_argument("Every reflector endpoint peer tag must contain exactly 16 bytes.");
             }
@@ -102,8 +109,8 @@ public:
         }
 
         auto rtcServers = std::vector<tgcalls::RtcServer>{};
-        rtcServers.reserve(configuration.rtcServers.size());
-        for (const auto& server : configuration.rtcServers) {
+        rtcServers.reserve(_configuration.rtcServers.size());
+        for (const auto& server : _configuration.rtcServers) {
             auto target = tgcalls::RtcServer{};
             target.id = server.id;
             target.host = ToUtf8(server.host);
@@ -115,24 +122,24 @@ public:
             rtcServers.push_back(std::move(target));
         }
 
-        const auto weak = std::weak_ptr<CallSession>(session);
+        const auto weak = std::weak_ptr<CallSession>(shared_from_this());
         auto descriptor = tgcalls::Descriptor{
-            .version = ToUtf8(configuration.version),
+            .version = ToUtf8(_configuration.version),
             .config = {
-                .initializationTimeout = configuration.initializationTimeout,
-                .receiveTimeout = configuration.receiveTimeout,
-                .enableP2P = configuration.enableP2P,
-                .allowTCP = configuration.allowTcp,
+                .initializationTimeout = _configuration.initializationTimeout,
+                .receiveTimeout = _configuration.receiveTimeout,
+                .enableP2P = _configuration.enableP2P,
+                .allowTCP = _configuration.allowTcp,
                 .enableAEC = true,
                 .enableNS = true,
                 .enableAGC = true,
                 .enableVolumeControl = true,
-                .maxApiLayer = configuration.maxApiLayer,
+                .maxApiLayer = _configuration.maxApiLayer,
             },
             .endpoints = std::move(endpoints),
             .rtcServers = std::move(rtcServers),
-            .initialNetworkType = ToTgCallsNetworkType(configuration.initialNetworkType),
-            .encryptionKey = tgcalls::EncryptionKey(encryptionKey, configuration.isOutgoing),
+            .initialNetworkType = ToTgCallsNetworkType(_configuration.initialNetworkType),
+            .encryptionKey = tgcalls::EncryptionKey(encryptionKey, _configuration.isOutgoing),
             .stateUpdated = [weak](tgcalls::State state) {
                 if (const auto strong = weak.lock()) {
                     strong->StateChanged(ToFacadeState(state));
@@ -145,12 +152,12 @@ public:
             },
         };
 
-        session->_instance = tgcalls::Meta::Create(descriptor.version, std::move(descriptor));
-        if (!session->_instance) {
+        _instance = tgcalls::Meta::Create(descriptor.version, std::move(descriptor));
+        if (!_instance) {
             throw std::invalid_argument("The requested TgCalls protocol version is not registered.");
         }
 
-        return session;
+        _started = true;
     }
 
     void ReceiveSignalingData(std::vector<uint8_t> data) {
@@ -173,6 +180,9 @@ public:
 
     void Stop() {
         std::unique_lock<std::mutex> lock(_mutex);
+        if (!_started) {
+            return;
+        }
         if (_stopping) {
             return;
         }
@@ -193,11 +203,14 @@ public:
     }
 
 private:
-    explicit CallSession(CallCallbacks callbacks) : _callbacks(std::move(callbacks)) {
+    explicit CallSession(
+        const CallConfiguration& configuration,
+        CallCallbacks callbacks)
+        : _configuration(configuration), _callbacks(std::move(callbacks)) {
     }
 
     void EnsureActive() const {
-        if (!_instance || _stopping) {
+        if (!_started || !_instance || _stopping) {
             throw std::logic_error("The TgCalls session is not active.");
         }
     }
@@ -215,8 +228,10 @@ private:
     }
 
     std::mutex _mutex;
+    CallConfiguration _configuration;
     std::unique_ptr<tgcalls::Instance> _instance;
     CallCallbacks _callbacks;
+    bool _started = false;
     bool _stopping = false;
 };
 
@@ -244,6 +259,13 @@ CallSessionPtr CreateCallSession(
     const CallConfiguration& configuration,
     CallCallbacks callbacks) {
     return CallSession::Create(configuration, std::move(callbacks));
+}
+
+void StartCallSession(const CallSessionPtr& session) {
+    if (!session) {
+        throw std::invalid_argument("The TgCalls session is unavailable.");
+    }
+    session->Start();
 }
 
 void ReceiveSignalingData(const CallSessionPtr& session, std::vector<uint8_t> data) {

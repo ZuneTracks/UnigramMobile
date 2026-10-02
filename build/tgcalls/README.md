@@ -239,9 +239,12 @@ The proof now also exports an audio-only lifecycle surface:
 - `AudioCallConfiguration` carries the registered protocol version, timeouts,
   P2P/TCP settings, API layer, direction, network type, 256-byte encryption
   key, reflector endpoints, and STUN/TURN server entries.
-- `AudioCallSession` creates the native instance, accepts encrypted signaling,
-  controls mute and network type, asynchronously stops, and reports native
-  state, emitted signaling, and final-stop events.
+- `AudioCallSession` is configured before it starts the native instance.
+  The app subscribes to state/signaling/stop events, assigns session ownership,
+  then explicitly calls `Start()` so the first synchronous offer or answer
+  cannot be lost. It accepts encrypted signaling, controls mute and network
+  type, asynchronously stops, and reports native state, emitted signaling, and
+  final-stop events.
 - The bridge rejects missing versions, missing endpoint/server data, non-UTF-16
   strings, non-256-byte keys, and reflector peer tags other than 16 bytes.
   It neither logs nor persists keys, server credentials, or signaling.
@@ -249,18 +252,19 @@ The proof now also exports an audio-only lifecycle surface:
   deterministic disposal, so callback ownership cannot retain a stopped call
   session.
 
-This is still an external build proof, not an app payload. It has not yet been
-selected by `CallsService`, included in an APPX, or device-tested with
-Android/iOS. The legacy ARM `libtgvoip` fallback therefore remains the only
-packaged call transport.
+The bridge is included only in opt-in experimental APPXs, where
+`CallsService` selects it after modern protocol-version negotiation. It has
+not yet been device-tested with Android/iOS. The default build remains
+`libtgvoip`-only, and negotiated modern calls never silently fall back to the
+legacy transport after setup fails.
 
 Current verified output hashes from the external proof root:
 
 ```text
-AD8289C5008C5530A2330D7F1BC82E56B1750073E1458D1293E25C6AD19926E9  ModernCallsBridge.dll
-9432A7AB2A65C0D7D6A9724691B4155283DAA84BD997D6CA8D5612BAABC3890D  Unigram.Native.Calls.Proof.winmd
+573C65F6D07F933306E1F1DCC7BB6423550C28DA375BAF767BCF0D23549C247B  ModernCallsBridge.dll
+54505BA880224F24E1BB9229C69E4AB5B534B6FD4847DCE9EF5A8CBE26B9224C  Unigram.Native.Calls.Proof.winmd
 5829394098835DEA8A09811A8DECE1171B348301E426E9B83ACD386CB3E1AF38  Unigram.Native.Calls.Proof.pri
-F155A1BB87D63385898124E5642DEC5B7EF29C1A6EFC055D6D47D09E15F0A5FA  native-engine\TgCallsEngine.lib
+3E48E7CF39E911B7B25C73454C8277C2857866219D36E2FE0C70DA066BDD8814  native-engine\TgCallsEngine.lib
 ```
 
 The engine's `AudioOnlyPlatform.cpp` deliberately reports empty video encoder
@@ -329,27 +333,29 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6139.0_ARM_ModernTgCalls_Test.appx
+    Unigram_26.9.6140.0_ARM_ModernTgCalls_LifecycleFix.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6139.0_ARM_ModernTgCalls_Test_Sideload.zip
+    Unigram_26.9.6140.0_ARM_ModernTgCalls_LifecycleFix_Sideload.zip
 APPX SHA-256:
-90C95398B04C4C120D9851FF8B7F461534167977E5CAAA380661334A4CB6570C
+395212211E7A76BD7C43DA3BE902D356BAD93B8E2F98866D5F7BC5C74206278C
 ZIP SHA-256:
-7D440D5DEEF2C44BD1CBF722DE00EF29B45F3BA59EE6F413FF4B773D79720D3C
+02F4E1EFCE2F8DFA5F0C2C5063ABBDD351336D58BFAE28A79E6F10B7783F0031
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6139.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6140.0`,
 ARM architecture, and the existing native notification background entry point.
 
 This remains a device-test package, not a released call fix. Required
 validation is experimental W10M to/from current Android and iOS audio calls,
 including accept, outgoing signaling, mute, route changes, foreground and
-background behavior, reconnect, rejection, and cleanup. Preserve the
-legacy-W10M call regression test in both `UseModernTgCalls=false` and enabled
-package configurations.
+background behavior, reconnect, rejection, and cleanup. This package changes
+the session lifecycle so the first modern offer/answer is emitted only after
+the app's signaling handler is attached. Preserve the legacy-W10M call
+regression test in both `UseModernTgCalls=false` and enabled package
+configurations.

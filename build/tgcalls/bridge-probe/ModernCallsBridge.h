@@ -79,6 +79,7 @@ public:
 
     virtual ~AudioCallSession();
 
+    void Start();
     void ReceiveSignalingData(Windows::Foundation::Collections::IVector<unsigned char>^ data);
     void SetMuted(bool value);
     void SetNetworkType(NetworkType value);

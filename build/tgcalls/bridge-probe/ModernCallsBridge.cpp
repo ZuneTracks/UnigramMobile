@@ -187,6 +187,15 @@ AudioCallSession::~AudioCallSession() {
     _holder = nullptr;
 }
 
+void AudioCallSession::Start() {
+    try {
+        const auto holder = GetSessionHolder(_holder);
+        Unigram::Native::Calls::StartCallSession(holder->session);
+    } catch (const std::exception& error) {
+        throw ref new InvalidArgumentException(ToPlatformString(error));
+    }
+}
+
 void AudioCallSession::ReceiveSignalingData(IVector<unsigned char>^ data) {
     try {
         const auto holder = GetSessionHolder(_holder);

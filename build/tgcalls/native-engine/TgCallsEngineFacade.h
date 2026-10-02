@@ -80,6 +80,7 @@ std::vector<std::wstring> GetSupportedVersions();
 CallSessionPtr CreateCallSession(
     const CallConfiguration& configuration,
     CallCallbacks callbacks);
+void StartCallSession(const CallSessionPtr& session);
 void ReceiveSignalingData(const CallSessionPtr& session, std::vector<uint8_t> data);
 void SetMuted(const CallSessionPtr& session, bool value);
 void SetNetworkType(const CallSessionPtr& session, NetworkType value);
