@@ -81,3 +81,30 @@ TgCalls is LGPL-3.0. Before distributing any resulting APPX, preserve the
 upstream license and source pin, publish required notices and corresponding
 source for modifications, and complete a licensing review of the component
 linkage and redistribution terms.
+
+## ARM WebRTC source build
+
+`UnigramDev/webrtc-uwp` carries the needed `winuwp` platform changes, but its
+published archives intentionally omit 32-bit ARM. The external
+`UnigramDev/deps@6ce0019e1e5ea4e06ab3bc21651242567774a4e0` build script
+pins the UWP fork at
+`801b01361857fd9afd40f0efd29034b0e48001c7` and its WebRTC source branch at
+`branch-heads/6312`.
+
+Run the experimental wrapper with VS 2022 ARM C++ Build Tools installed:
+
+```powershell
+.\build\tgcalls\Build-WebRtcUwpArm.ps1
+```
+
+It verifies the external build-script revision, selects a Visual Studio
+instance with the ARM workload, and injects `arm` into the script's published
+x64/ARM64 architecture allow-list only in a temporary copy. The external
+script and its pinned upstream source remain unmodified. It downloads
+`depot_tools`, synchronizes approximately 20 GB of WebRTC dependencies, then
+generates `target_os="winuwp"` and `target_cpu="arm"` before building
+`webrtc.lib`. This operation can take several hours.
+
+The generated library is only a native proof input. It must still compile and
+link with the audio-only C++/CX TgCalls bridge, activate from its WinMD, and
+complete device interoperability before it can replace any packaged transport.
