@@ -260,17 +260,25 @@ its actual reported maximum layer for every create, accept, and retry request.
 That tag alone did not restore interoperability in device testing and is not
 used by the Android/W10M compatibility baseline.
 
-26.9.6135.0 restores the proven Android/W10M legacy protocol: `min_layer=65`,
-the wrapper-reported maximum layer, and an empty `library_versions` vector.
-It constructs `CallProtocol` through parameterless activation plus individual
+26.9.6135.0 restores the proven W10M legacy protocol: `min_layer=65`, the
+wrapper-reported maximum layer, and an empty `library_versions` vector. It
+constructs `CallProtocol` through parameterless activation plus individual
 property setters because the modern projection previously exhibited
 activation-factory marshalling failures for other multi-argument request
-types. Bounded `voip.protocol` records confirm only the emitted minimum,
-maximum, and library-version count. This legacy reflector transport does not
-claim iOS WebRTC/tgcalls support. The ready-state diagnostics include only
-negotiated layer bounds, tag count, reflector count, TDLib error codes, and
-native transport state/error enums—never call identifiers, peers, IP
-addresses, keys, or signaling data.
+types.
+
+26.9.6138.0 is the Android compatibility test. Current Telegram Android
+advertises a version vector but recognizes `2.4.4` as its legacy reflector
+transport. The app therefore advertises only `2.4.4`, the one version its
+bundled ARM wrapper can actually implement; it must not claim newer WebRTC
+versions. Bounded `voip.protocol` records confirm only the emitted minimum,
+maximum, and library-version count. Bounded `voip.create`, `voip.retry`, and
+`voip.accept` records distinguish a local TDLib request rejection from a later
+peer or transport failure. This legacy reflector transport does not claim iOS
+WebRTC/tgcalls support. The ready-state diagnostics include only negotiated
+layer bounds, tag count, reflector count, TDLib error codes, and native
+transport state/error enums—never call identifiers, peers, IP addresses, keys,
+or signaling data.
 
 For a conclusive test, pin the separate **Unigram Mobile TDLib Experimental**
 primary tile, foreground the app on the chat list or a different chat, then

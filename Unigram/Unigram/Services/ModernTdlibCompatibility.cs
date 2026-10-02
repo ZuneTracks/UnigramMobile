@@ -46,7 +46,8 @@ namespace Unigram.Services
     public static class ModernTdlibCompatibility
     {
         private const int LegacyVoipMinimumLayer = 65;
-        private static int _audioCallProtocolDiagnosticBudget = 16;
+        private const string LegacyVoipLibraryVersion = "2.4.4";
+        private static int _audioCallDiagnosticBudget = 24;
 
         public static MessageTopic GetMessageTopic(long threadId)
         {
@@ -1139,10 +1140,10 @@ namespace Unigram.Services
                 UdpReflector = true,
                 MinLayer = LegacyVoipMinimumLayer,
                 MaxLayer = libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer(),
-                LibraryVersions = new List<string>()
+                LibraryVersions = new List<string> { LegacyVoipLibraryVersion }
             };
 
-            if (System.Threading.Interlocked.Decrement(ref _audioCallProtocolDiagnosticBudget) >= 0)
+            if (System.Threading.Interlocked.Decrement(ref _audioCallDiagnosticBudget) >= 0)
             {
                 PushDiagnostics.Write(
                     "voip.protocol",
@@ -1150,6 +1151,22 @@ namespace Unigram.Services
             }
 
             return protocol;
+        }
+
+        public static void LogAudioCallRequestResult(string operation, BaseObject response)
+        {
+            if (System.Threading.Interlocked.Decrement(ref _audioCallDiagnosticBudget) < 0)
+            {
+                return;
+            }
+
+            if (response is Error error)
+            {
+                PushDiagnostics.Write($"voip.{operation}", $"result=error;code={error.Code}");
+                return;
+            }
+
+            PushDiagnostics.Write($"voip.{operation}", $"result={response?.GetType().Name ?? "null"}");
         }
 
         public static Function CreateAcceptCall(int callId, CallProtocol protocol)

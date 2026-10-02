@@ -3177,6 +3177,7 @@ namespace Unigram.ViewModels
             }
 
             var response = await ProtoService.SendAsync(ModernTdlibCompatibility.CreateCall(user.Id, ModernTdlibCompatibility.CreateAudioCallProtocol()));
+            ModernTdlibCompatibility.LogAudioCallRequestResult("create", response);
             if (response is Error error)
             {
                 if (error.Code == 400 && error.Message.Equals("PARTICIPANT_VERSION_OUTDATED"))

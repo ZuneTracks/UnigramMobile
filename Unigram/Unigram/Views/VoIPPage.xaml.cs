@@ -535,16 +535,21 @@ namespace Unigram.Views
             _aggregator.Publish(new UpdateCall(new Call { State = new CallStateDiscarded { Reason = new CallDiscardReasonEmpty() } }));
         }
 
-        private void Accept_Click(object sender, RoutedEventArgs e)
+        private async void Accept_Click(object sender, RoutedEventArgs e)
         {
+            Function request;
+            BaseObject response;
             if (_call.IsOutgoing && _call.State is CallStateDiscarded discarded && discarded.Reason is CallDiscardReasonDeclined)
             {
-                _protoService.Send(ModernTdlibCompatibility.CreateCall(_call.UserId, ModernTdlibCompatibility.CreateAudioCallProtocol()));
+                request = ModernTdlibCompatibility.CreateCall(_call.UserId, ModernTdlibCompatibility.CreateAudioCallProtocol());
+                response = await _protoService.SendAsync(request);
+                ModernTdlibCompatibility.LogAudioCallRequestResult("retry", response);
+                return;
             }
-            else
-            {
-                _protoService.Send(ModernTdlibCompatibility.CreateAcceptCall(_call.Id, ModernTdlibCompatibility.CreateAudioCallProtocol()));
-            }
+
+            request = ModernTdlibCompatibility.CreateAcceptCall(_call.Id, ModernTdlibCompatibility.CreateAudioCallProtocol());
+            response = await _protoService.SendAsync(request);
+            ModernTdlibCompatibility.LogAudioCallRequestResult("accept", response);
         }
 
         private void Hangup_Click(object sender, RoutedEventArgs e)
