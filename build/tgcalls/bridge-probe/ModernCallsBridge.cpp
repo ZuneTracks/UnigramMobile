@@ -105,8 +105,10 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
 
     for (unsigned int index = 0; index < configuration->ReflectorEndpoints->Size; index++) {
         const auto endpoint = configuration->ReflectorEndpoints->GetAt(index);
-        if (endpoint == nullptr || endpoint->Ipv4Address == nullptr || endpoint->PeerTag == nullptr) {
-            throw ref new InvalidArgumentException(L"Every reflector endpoint must include an IPv4 address and peer tag.");
+        if (endpoint == nullptr ||
+            (endpoint->Ipv4Address == nullptr && endpoint->Ipv6Address == nullptr) ||
+            endpoint->PeerTag == nullptr) {
+            throw ref new InvalidArgumentException(L"Every reflector endpoint must include an address and peer tag.");
         }
 
         auto target = Unigram::Native::Calls::EndpointConfiguration{};

@@ -353,36 +353,37 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6148.0_ARM_ModernTgCalls_WinRtActivationExports.appx
+    Unigram_26.9.6149.0_ARM_ModernTgCalls_ServerMapping.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6148.0_ARM_ModernTgCalls_WinRtActivationExports_Sideload.zip
+    Unigram_26.9.6149.0_ARM_ModernTgCalls_ServerMapping_Sideload.zip
 APPX SHA-256:
-A399DD9EB94C6B366F93EDD6B3601466041A7E0907850E6A2624FC723D7FEE17
+B10F30E52B2E5075F274F9AB8904A31CF849E719D779B0BD3F0BAC1067A82B46
 ZIP SHA-256:
-9A9B8ECB1818D8BC88930783B5243622C59CC6D8A66F84D821CC90FB838E8337
+A122F3CB5E402846235335D5CB30F3FAA7A848EFA528E02408BB32A5A13FB326
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6148.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6149.0`,
 ARM architecture, and the existing native notification background entry point.
 
-This remains a device-test package, not a released call fix. The 26.9.6147.0
-trace proved that cleanup succeeds and `CallStateReady` reaches the type-free
-modern startup wrapper, but loading the typed bridge method returns
-`0x800401F9`. Inspection of the packaged `ModernCallsBridge.dll` found the
-root cause: it did not export the WinRT activation entry points
-`DllCanUnloadNow` and `DllGetActivationFactory`.
+This remains a device-test package, not a released call fix. The 26.9.6148.0
+trace proved that WinRT bridge activation succeeds, but the managed mapping
+then rejected TDLib WebRTC servers as `invalid_webrtc_server` because their
+64-bit IDs were incorrectly required to fit in a byte. TgCalls defines the
+corresponding wire ID as an 8-bit value; its reference implementation
+intentionally narrows TDLib's ID. That implementation also exposes Telegram
+reflectors as ordered TURN servers, which the bridge had omitted.
 
-Version 26.9.6148.0 defines `_WINRT_DLL` in the C++/CX bridge project and
-aligns its Runtime Component linker metadata with the app's working C++/CX
-components. The packaged bridge was verified to export both activation entry
-points. The existing startup diagnostics remain in place so any subsequent
-configuration/create/start issue is reported separately.
+Version 26.9.6149.0 mirrors that mapping: it narrows the WebRTC wire ID
+without rejecting the server, adds reflector TURN entries using the reference
+implementation's stable sorted ordinal, and accepts IPv6-only endpoints. It
+records only aggregate mapped server counts before bridge creation; no
+endpoint, credential, peer-tag, signaling, or key data is logged.
 
 Chat Folders is now device-verified: after registering `FoldersViewModel` and
 `FolderViewModel` for modern TDLib, a folder created in the experimental app

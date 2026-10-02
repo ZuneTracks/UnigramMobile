@@ -527,7 +527,14 @@ namespace Unigram.Services
                 EncryptionKey = ready.EncryptionKey.ToList()
             };
 
-            foreach (var server in ready.Servers ?? new CallServer[0])
+            var servers = ready.Servers ?? new CallServer[0];
+            var reflectorIds = servers
+                .Where(server => server?.Type is CallServerTypeTelegramReflector)
+                .Select(server => server.Id)
+                .OrderBy(id => id)
+                .ToList();
+
+            foreach (var server in servers)
             {
                 if (server.Port <= 0 || server.Port > ushort.MaxValue)
                 {
@@ -537,7 +544,8 @@ namespace Unigram.Services
 
                 if (server.Type is CallServerTypeTelegramReflector reflector)
                 {
-                    if (string.IsNullOrWhiteSpace(server.IpAddress) || reflector.PeerTag == null)
+                    if ((string.IsNullOrWhiteSpace(server.IpAddress) && string.IsNullOrWhiteSpace(server.Ipv6Address)) ||
+                        reflector.PeerTag == null)
                     {
                         WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=invalid_reflector;transport=modern_tgcalls");
                         return false;
@@ -552,11 +560,19 @@ namespace Unigram.Services
                         IsTcp = reflector.IsTcp,
                         PeerTag = reflector.PeerTag.ToList()
                     });
+
+                    var reflectorIndex = reflectorIds.BinarySearch(server.Id);
+                    if (reflectorIndex < 0)
+                    {
+                        WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=missing_reflector_index;transport=modern_tgcalls");
+                        return false;
+                    }
+
+                    configuration.RtcServers.Add(CreateModernReflectorRtcServer(server, reflector, unchecked((byte)(reflectorIndex + 1))));
                 }
                 else if (server.Type is CallServerTypeWebrtc webRtc)
                 {
-                    if (server.Id < byte.MinValue || server.Id > byte.MaxValue ||
-                        string.IsNullOrWhiteSpace(server.IpAddress))
+                    if (string.IsNullOrWhiteSpace(server.IpAddress) && string.IsNullOrWhiteSpace(server.Ipv6Address))
                     {
                         WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=invalid_webrtc_server;transport=modern_tgcalls");
                         return false;
@@ -572,6 +588,10 @@ namespace Unigram.Services
                     }
                 }
             }
+
+            WriteAudioCallDiagnostic(
+                "voip.ready",
+                $"result=servers_mapped;reflector_endpoints={configuration.ReflectorEndpoints.Count};rtc_servers={configuration.RtcServers.Count};transport=modern_tgcalls");
 
             if (configuration.ReflectorEndpoints.Count == 0 && configuration.RtcServers.Count == 0)
             {
@@ -620,12 +640,29 @@ namespace Unigram.Services
             }
         }
 
+        private static ModernCalls.RtcServer CreateModernReflectorRtcServer(
+            CallServer server,
+            CallServerTypeTelegramReflector reflector,
+            byte id)
+        {
+            return new ModernCalls.RtcServer
+            {
+                Id = id,
+                Host = string.IsNullOrWhiteSpace(server.IpAddress) ? server.Ipv6Address : server.IpAddress,
+                Port = (ushort)server.Port,
+                Username = "reflector",
+                Password = string.Concat(reflector.PeerTag.Select(value => value.ToString("X2"))),
+                IsTurn = true,
+                IsTcp = reflector.IsTcp
+            };
+        }
+
         private static ModernCalls.RtcServer CreateModernRtcServer(CallServer server, CallServerTypeWebrtc webRtc, bool isTurn)
         {
             return new ModernCalls.RtcServer
             {
-                Id = (byte)server.Id,
-                Host = server.IpAddress,
+                Id = unchecked((byte)server.Id),
+                Host = string.IsNullOrWhiteSpace(server.IpAddress) ? server.Ipv6Address : server.IpAddress,
                 Port = (ushort)server.Port,
                 Username = webRtc.Username ?? string.Empty,
                 Password = webRtc.Password ?? string.Empty,
