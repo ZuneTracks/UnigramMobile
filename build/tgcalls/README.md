@@ -230,10 +230,10 @@ native-engine\TgCallsEngine.lib
 ```
 
 `ModernCallsBridge.dll` is an ARM AppContainer DLL. Its minimal
-`Diagnostics::GetBuildInfo()` WinRT API obtains TgCalls' first supported
-version through the actual native engine facade; it is not a hard-coded
-version string. This is a linkage proof only and is not yet an app payload or
-a callable signaling lifecycle.
+`Diagnostics::GetBuildInfo()` WinRT API registers `InstanceImpl` with TgCalls'
+`Meta` registry, then obtains the first supported version through that actual
+native-engine path; it is not a hard-coded version string. This is a linkage
+proof only and is not yet an app payload or a callable signaling lifecycle.
 
 The engine's `AudioOnlyPlatform.cpp` deliberately reports empty video encoder
 and decoder factory formats, reports no video encoding support, and exposes no
