@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 $expectedScriptsCommit = '6ce0019e1e5ea4e06ab3bc21651242567774a4e0'
 $buildScript = Join-Path $DependencyScriptsRoot 'webrtc\build.ps1'
 $rustPatch = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-no-rust.patch'
+$runtimePatch = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-skip-runtime-copy.patch'
 
 if (-not (Test-Path -LiteralPath $buildScript)) {
     throw "The pinned WebRTC UWP build script was not found at '$buildScript'."
@@ -18,6 +19,10 @@ if (-not (Test-Path -LiteralPath $buildScript)) {
 
 if (-not (Test-Path -LiteralPath $rustPatch)) {
     throw "The ARM UWP Rust compatibility patch was not found at '$rustPatch'."
+}
+
+if (-not (Test-Path -LiteralPath $runtimePatch)) {
+    throw "The ARM UWP runtime-copy compatibility patch was not found at '$runtimePatch'."
 }
 
 $actualScriptsCommit = (& git -C $DependencyScriptsRoot rev-parse HEAD).Trim()
@@ -51,10 +56,10 @@ $scriptText = $scriptText.Replace(
 )
 $scriptText = $scriptText.Replace(
     '$vs = Get-VisualStudio',
-    "Use-Patch (Join-Path `$Src 'build') '$rustPatch'`r`n`r`n`$vs = Get-VisualStudio"
+    "Use-Patch (Join-Path `$Src 'build') '$rustPatch'`r`nUse-Patch (Join-Path `$Src 'build') '$runtimePatch'`r`n`r`n`$vs = Get-VisualStudio"
 )
 
-if (-not $scriptText.Contains('enable_rust=false') -or -not $scriptText.Contains($rustPatch)) {
+if (-not $scriptText.Contains('enable_rust=false') -or -not $scriptText.Contains($rustPatch) -or -not $scriptText.Contains($runtimePatch)) {
     throw 'Unable to apply the ARM UWP Rust compatibility configuration to the temporary build script.'
 }
 

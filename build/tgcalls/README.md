@@ -115,6 +115,12 @@ passes `enable_rust=false` and applies the small, guarded
 is disabled and continues to reject it if a dependency enables Rust. This does
 not disable SCTP, WebRTC signaling, or any C++ audio transport component.
 
+The corresponding Chromium runtime-DLL staging helper has no ARM case even
+though the UWP compiler toolchain does. The wrapper applies
+`patches\webrtc-m123-winuwp-arm-skip-runtime-copy.patch` to bypass that
+desktop-oriented copy only for the static UWP ARM library; the ARM compiler
+environment still comes from `setup_toolchain.py`.
+
 The generated library is only a native proof input. It must still compile and
 link with the audio-only C++/CX TgCalls bridge, activate from its WinMD, and
 complete device interoperability before it can replace any packaged transport.
