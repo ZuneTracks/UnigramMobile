@@ -198,3 +198,60 @@ deferred.
 The generated library is only a native proof input. It must still compile and
 link with the audio-only C++/CX TgCalls bridge, activate from its WinMD, and
 complete device interoperability before it can replace any packaged transport.
+
+## Linked ARM WinMD bridge proof
+
+`Build-ModernCallsBridgeProof.ps1` now builds the complete Release|ARM
+linkage proof:
+
+```powershell
+.\build\tgcalls\Build-ModernCallsBridgeProof.ps1
+```
+
+It first builds the pinned TgCalls core as a native v143 C++20 static library,
+then links that library and the generated ARM `webrtc.lib` into a separate
+v143 C++/CX UWP Runtime Component. This split is required because modern
+WebRTC headers use `generic`, which is reserved by C++/CX and therefore cannot
+be compiled under `/ZW`.
+
+The external proof output root is:
+
+```text
+%LOCALAPPDATA%\UnigramTdlibExperiment\bridge-probe
+```
+
+Successful builds produce:
+
+```text
+ModernCallsBridge.dll
+Unigram.Native.Calls.Proof.winmd
+Unigram.Native.Calls.Proof.pri
+native-engine\TgCallsEngine.lib
+```
+
+`ModernCallsBridge.dll` is an ARM AppContainer DLL. Its minimal
+`Diagnostics::GetBuildInfo()` WinRT API obtains TgCalls' first supported
+version through the actual native engine facade; it is not a hard-coded
+version string. This is a linkage proof only and is not yet an app payload or
+a callable signaling lifecycle.
+
+The engine's `AudioOnlyPlatform.cpp` deliberately reports empty video encoder
+and decoder factory formats, reports no video encoding support, and exposes no
+capture/source implementation. It retains Opus audio and the native
+peer-connection setup required by TgCalls, while avoiding the unavailable ARM
+libvpx codecs and Windows Mobile video-capture surface. Video remains
+explicitly unsupported.
+
+The source closure includes TgCalls' reflector relay, reflector port, and raw
+TCP port implementations. It also requires
+`webrtc-m123-winuwp-arm-boringssl-tls.patch`: BoringSSL's Windows code emits
+x86-decorated linker `/INCLUDE` names for non-x64 architectures, whereas ARM
+uses undecorated symbols. The wrapper applies the narrow ARM directive fix,
+rebuilds `thread_win.obj`, and preserves BoringSSL's real thread-exit callback
+and TLS directory instead of suppressing either linker dependency.
+
+This proof must remain external until a narrow audio lifecycle facade can
+create, signal, control, and stop a real TgCalls instance. Any later app
+integration must package the resulting bridge conditionally, retain
+`libtgvoip` for validated legacy Windows 10 Mobile calls, and must not
+advertise modern TgCalls versions until device interoperability is verified.

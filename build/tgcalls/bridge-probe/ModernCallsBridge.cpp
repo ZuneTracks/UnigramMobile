@@ -1,6 +1,8 @@
 #include "ModernCallsBridge.h"
 
-#include "rtc_base/checks.h"
+#include "TgCallsEngineFacade.h"
+
+#include <string>
 
 using namespace Platform;
 
@@ -9,9 +11,12 @@ namespace Native {
 namespace Calls {
 namespace Proof {
 
+void EnsureUwpTlsSupport();
+
 String^ Diagnostics::GetBuildInfo() {
-    RTC_DCHECK(true);
-    return "Modern TgCalls ARM UWP bridge proof";
+    EnsureUwpTlsSupport();
+    return ref new String((L"Modern TgCalls ARM UWP bridge proof: " +
+        std::wstring(Unigram::Native::Calls::GetFirstSupportedVersion())).c_str());
 }
 
 }

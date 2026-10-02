@@ -24,6 +24,8 @@
   <PropertyGroup>
     <WebRtcRoot Condition="'$(WebRtcRoot)'==''">C:\wrtcar\src</WebRtcRoot>
     <WebRtcOutputRoot Condition="'$(WebRtcOutputRoot)'==''">$(WebRtcRoot)\out\msvc\uwp\Release\arm</WebRtcOutputRoot>
+    <TgCallsRoot Condition="'$(TgCallsRoot)'==''">$(LOCALAPPDATA)\UnigramTdlibExperiment\tgcalls</TgCallsRoot>
+    <TgCallsEngineOutputRoot Condition="'$(TgCallsEngineOutputRoot)'==''">$(LOCALAPPDATA)\UnigramTdlibExperiment\bridge-probe\native-engine</TgCallsEngineOutputRoot>
   </PropertyGroup>
   <PropertyGroup Condition="'$(OutputDirectory)'!=''">
     <OutDir>$(OutputDirectory)\</OutDir>
@@ -34,18 +36,21 @@
       <CompileAsWinRT>true</CompileAsWinRT>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <AdditionalIncludeDirectories>$(WebRtcRoot);$(WebRtcRoot)\third_party\abseil-cpp;$(WebRtcOutputRoot)\gen;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\..\native-engine;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WEBRTC_WIN;WINUWP;WINAPI_FAMILY=WINAPI_FAMILY_PC_APP;WIN32_LEAN_AND_MEAN;NOMINMAX;_UNICODE;UNICODE;NTDDI_VERSION=NTDDI_WIN10_NI;_WIN32_WINNT=0x0A00;WINVER=0x0A00;WEBRTC_ENABLE_PROTOBUF=0;WEBRTC_STRICT_FIELD_TRIALS=0;WEBRTC_HAVE_SCTP;WEBRTC_ARCH_ARM;RTC_DISABLE_METRICS;WEBRTC_VIDEO_CAPTURE_WINRT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalOptions>/bigobj /Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>webrtc.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(WebRtcOutputRoot)\obj;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>TgCallsEngine.lib;webrtc.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(TgCallsEngineOutputRoot);$(WebRtcOutputRoot)\obj;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="ModernCallsBridge.h" />
     <ClCompile Include="ModernCallsBridge.cpp" />
+    <ClCompile Include="UwpTlsSupport.cpp">
+      <CompileAsWinRT>false</CompileAsWinRT>
+    </ClCompile>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

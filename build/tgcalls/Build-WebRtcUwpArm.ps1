@@ -16,6 +16,7 @@ $audioAssemblyPatch = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-sc
 $pffftPatch = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-scalar-pffft.patch'
 $denormalPatch = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-msvc-denormal.patch'
 $boringSslPatch = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-boringssl-no-asm.patch'
+$boringSslTlsPatch = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-boringssl-tls.patch'
 $audioOnlyLibaomPatch = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-audio-only-libaom.patch'
 $audioOnlyLibvpxPatch = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-audio-only-libvpx.patch'
 $opusPatch = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-scalar-opus.patch'
@@ -46,6 +47,10 @@ if (-not (Test-Path -LiteralPath $denormalPatch)) {
 
 if (-not (Test-Path -LiteralPath $boringSslPatch)) {
     throw "The ARM UWP BoringSSL no-assembly patch was not found at '$boringSslPatch'."
+}
+
+if (-not (Test-Path -LiteralPath $boringSslTlsPatch)) {
+    throw "The ARM UWP BoringSSL TLS-linker patch was not found at '$boringSslTlsPatch'."
 }
 
 if (-not (Test-Path -LiteralPath $audioOnlyLibaomPatch)) {
@@ -91,10 +96,10 @@ $scriptText = $scriptText.Replace(
 )
 $scriptText = $scriptText.Replace(
     '$vs = Get-VisualStudio',
-    "Use-Patch (Join-Path `$Src 'build') '$rustPatch'`r`nUse-Patch (Join-Path `$Src 'build') '$runtimePatch'`r`nUse-Patch `$Src '$audioAssemblyPatch'`r`nUse-Patch (Join-Path `$Src 'third_party') '$pffftPatch'`r`nUse-Patch `$Src '$denormalPatch'`r`nUse-Patch (Join-Path `$Src 'third_party') '$boringSslPatch'`r`nUse-Patch (Join-Path `$Src 'third_party') '$opusPatch'`r`nUse-Patch `$Src '$audioOnlyLibaomPatch'`r`nUse-Patch `$Src '$audioOnlyLibvpxPatch'`r`n`r`n`$vs = Get-VisualStudio"
+    "Use-Patch (Join-Path `$Src 'build') '$rustPatch'`r`nUse-Patch (Join-Path `$Src 'build') '$runtimePatch'`r`nUse-Patch `$Src '$audioAssemblyPatch'`r`nUse-Patch (Join-Path `$Src 'third_party') '$pffftPatch'`r`nUse-Patch `$Src '$denormalPatch'`r`nUse-Patch (Join-Path `$Src 'third_party') '$boringSslPatch'`r`n`$boringSslTlsSource = Join-Path `$Src 'third_party\boringssl\src\crypto\thread_win.c'`r`n`$boringSslTlsText = Get-Content -LiteralPath `$boringSslTlsSource -Raw`r`nif (`$boringSslTlsText.Contains('#if defined(_WIN64) || defined(_M_ARM)')) {`r`n    Write-Host '  already applied: webrtc-m123-winuwp-arm-boringssl-tls.patch'`r`n} else {`r`n    `$boringSslTlsUpdated = [regex]::Replace(`$boringSslTlsText, '(?m)^#ifdef _WIN64(?=\r?\n__pragma)', '#if defined(_WIN64) || defined(_M_ARM)', 1)`r`n    if (`$boringSslTlsUpdated -eq `$boringSslTlsText) { throw 'The ARM UWP BoringSSL TLS-linker patch does not apply cleanly.' }`r`n    Write-Host '  applying: webrtc-m123-winuwp-arm-boringssl-tls.patch'`r`n    [System.IO.File]::WriteAllText(`$boringSslTlsSource, `$boringSslTlsUpdated, [System.Text.UTF8Encoding]::new(`$false))`r`n}`r`nUse-Patch (Join-Path `$Src 'third_party') '$opusPatch'`r`nUse-Patch `$Src '$audioOnlyLibaomPatch'`r`nUse-Patch `$Src '$audioOnlyLibvpxPatch'`r`n`r`n`$vs = Get-VisualStudio"
 )
 
-if (-not $scriptText.Contains('enable_rust=false arm_version=6 arm_use_neon=false enable_libaom=false rtc_build_libvpx=false rtc_libvpx_build_vp9=false') -or -not $scriptText.Contains($rustPatch) -or -not $scriptText.Contains($runtimePatch) -or -not $scriptText.Contains($audioAssemblyPatch) -or -not $scriptText.Contains($pffftPatch) -or -not $scriptText.Contains($denormalPatch) -or -not $scriptText.Contains($boringSslPatch) -or -not $scriptText.Contains($opusPatch) -or -not $scriptText.Contains($audioOnlyLibaomPatch) -or -not $scriptText.Contains($audioOnlyLibvpxPatch)) {
+if (-not $scriptText.Contains('enable_rust=false arm_version=6 arm_use_neon=false enable_libaom=false rtc_build_libvpx=false rtc_libvpx_build_vp9=false') -or -not $scriptText.Contains($rustPatch) -or -not $scriptText.Contains($runtimePatch) -or -not $scriptText.Contains($audioAssemblyPatch) -or -not $scriptText.Contains($pffftPatch) -or -not $scriptText.Contains($denormalPatch) -or -not $scriptText.Contains($boringSslPatch) -or -not $scriptText.Contains('boringSslTlsSource') -or -not $scriptText.Contains($opusPatch) -or -not $scriptText.Contains($audioOnlyLibaomPatch) -or -not $scriptText.Contains($audioOnlyLibvpxPatch)) {
     throw 'Unable to apply the ARM UWP compatibility configuration to the temporary build script.'
 }
 
