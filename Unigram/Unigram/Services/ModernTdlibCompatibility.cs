@@ -1119,39 +1119,25 @@ namespace Unigram.Services
         {
             return new MessageSticker(sticker, false);
         }
-    }
 
-    public interface IVoIPService : IHandle<UpdateCall>
-    {
-        string CurrentAudioInput { get; set; }
-        float CurrentVolumeInput { get; set; }
-        string CurrentAudioOutput { get; set; }
-        float CurrentVolumeOutput { get; set; }
-        Call ActiveCall { get; }
-        void Show();
-    }
-
-    public sealed class VoIPService : TLViewModelBase, IVoIPService
-    {
-        public VoIPService(IProtoService protoService, ICacheService cacheService, ISettingsService settingsService, IEventAggregator aggregator, IViewService viewService)
-            : base(protoService, cacheService, settingsService, aggregator)
+        public static Function CreateCall(long userId, CallProtocol protocol)
         {
+            return new CreateCall(userId, protocol, false);
         }
 
-        public string CurrentAudioInput { get; set; }
-        public float CurrentVolumeInput { get; set; }
-        public string CurrentAudioOutput { get; set; }
-        public float CurrentVolumeOutput { get; set; }
-        public Call ActiveCall => null;
-
-        public void Show()
+        public static Function CreateAcceptCall(int callId, CallProtocol protocol)
         {
-            PushDiagnostics.Write("voip.disabled", "result=unsupported;feature=experimental_tdlib");
+            return new AcceptCall(callId, protocol);
         }
 
-        public void Handle(UpdateCall update)
+        public static Function CreateDiscardCall(int callId, bool isDisconnected, int duration, long connectionId)
         {
-            PushDiagnostics.Write("voip.update", "result=ignored;feature=experimental_tdlib");
+            return new DiscardCall(callId, isDisconnected, string.Empty, duration, false, connectionId);
+        }
+
+        public static Function CreateSendCallDebugInformation(int callId, string debugInformation)
+        {
+            return new SendCallDebugInformation(new InputCallDiscarded(callId), debugInformation ?? string.Empty);
         }
     }
 }

@@ -539,11 +539,11 @@ namespace Unigram.Views
         {
             if (_call.IsOutgoing && _call.State is CallStateDiscarded discarded && discarded.Reason is CallDiscardReasonDeclined)
             {
-                _protoService.Send(new CreateCall(_call.UserId, new CallProtocol(true, true, 65, libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer(), new string[0]), false));
+                _protoService.Send(ModernTdlibCompatibility.CreateCall(_call.UserId, new CallProtocol(true, true, 65, libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer(), new string[0])));
             }
             else
             {
-                _protoService.Send(new AcceptCall(_call.Id, new CallProtocol(true, true, 65, libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer(), new string[0])));
+                _protoService.Send(ModernTdlibCompatibility.CreateAcceptCall(_call.Id, new CallProtocol(true, true, 65, libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer(), new string[0])));
             }
         }
 
@@ -562,7 +562,7 @@ namespace Unigram.Views
             }
 
             var duration = _state == libtgvoip.CallState.Established ? DateTime.Now - _started : TimeSpan.Zero;
-            _protoService.Send(new DiscardCall(call.Id, false, (int)duration.TotalSeconds, false, relay));
+            _protoService.Send(ModernTdlibCompatibility.CreateDiscardCall(call.Id, false, (int)duration.TotalSeconds, relay));
         }
 
         private void Routing_Click(object sender, RoutedEventArgs e)

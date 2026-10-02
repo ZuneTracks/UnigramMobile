@@ -219,6 +219,32 @@ uses the corresponding `ms-appdata` URI. The cache is isolated with the
 experimental package and is removed with it; diagnostics report only the
 cache outcome, never paths or identifiers.
 
+### Experimental audio calls
+
+26.9.6132.0 begins the audio-call port. It restores the tracked ARM
+`libtgvoip` WinMD/DLL wrapper, the existing audio-only call page and service,
+and the call entry points that were deliberately compiled out during the
+modern-TDLib migration. The wrapper's ARM payload is byte-identical to the
+26.9.6038 worktree payload; no signing material, Store association metadata,
+or credentials are reused.
+
+The port adapts TDLib 1.8.66 call request shapes for call creation, acceptance,
+discard, and debug information. It creates every outgoing call with
+`is_video=false`. Incoming/video call states are explicitly discarded with a
+privacy-safe `voip.update|...reason=video_unsupported` diagnostic; camera and
+video rendering are not enabled. Additional bounded diagnostics record only
+state names, booleans, and reflector endpoint counts. They never record call
+IDs, users, IP addresses, encryption keys, signaling data, tokens, audio, or
+file paths.
+
+Audio call setup requires a Telegram reflector endpoint supported by the
+existing `libtgvoip` wrapper. A ready state without one is discarded rather
+than starting an invalid media session. The experimental manifest already
+contains `microphone` and `uap:voipCall` capabilities. Device validation must
+cover outgoing, incoming accept/decline, microphone mute, speaker/earpiece
+routing, call teardown, and the resulting `voip.*` diagnostics before any
+video-call work begins.
+
 For a conclusive test, pin the separate **Unigram Mobile TDLib Experimental**
 primary tile, foreground the app on the chat list or a different chat, then
 receive a message in a non-open chat. A currently open target chat is

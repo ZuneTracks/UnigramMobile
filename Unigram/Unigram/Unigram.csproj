@@ -526,7 +526,7 @@
     <Compile Include="Navigation\Services\NavigationService.cs" />
     <Compile Include="Navigation\Services\NavigationServiceList.cs" />
     <Compile Include="Selectors\ChatStatisticsOverviewTemplateSelector.cs" />
-    <Compile Include="Services\CallsService.cs" Condition="'$(UseModernTdlib)' != 'true'" />
+    <Compile Include="Services\CallsService.cs" />
     <Compile Include="Services\DataSavingMode.cs" />
     <Compile Include="Services\LegacyTdlibCompatibility.cs" Condition="'$(UseModernTdlib)' != 'true'" />
     <Compile Include="Services\ModernTdlibCompatibility.cs" Condition="'$(UseModernTdlib)' == 'true'" />
@@ -1143,7 +1143,7 @@
     <Compile Include="Views\Users\UserCommonChatsView.xaml.cs">
       <DependentUpon>UserCommonChatsView.xaml</DependentUpon>
     </Compile>
-    <Compile Include="Views\VoIPPage.xaml.cs" Condition="'$(UseModernTdlib)' != 'true'">
+    <Compile Include="Views\VoIPPage.xaml.cs">
       <DependentUpon>VoIPPage.xaml</DependentUpon>
     </Compile>
     <Content Include="Assets\Audio\sent.mp3" />
@@ -2696,7 +2696,7 @@
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>
-    <Page Include="Views\VoIPPage.xaml" Condition="'$(UseModernTdlib)' != 'true'">
+    <Page Include="Views\VoIPPage.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
@@ -2814,12 +2814,12 @@
     <ReferenceCopyLocalPaths Condition=" '$(Configuration)' == 'Debug' and '$(UseModernTdlib)' != 'true' " Include="$(ProjectDir)\..\Libraries\rlottie\$(Platform)\zlib1.dll" />
   </ItemGroup>
   <ItemGroup>
-    <Reference Include="libtgvoip" Condition="'$(UseModernTdlib)' != 'true'">
+    <Reference Include="libtgvoip">
       <HintPath>$(SolutionDir)\Libraries\libtgvoip\$(Platform)\libtgvoip.winmd</HintPath>
       <Implementation>libtgvoip.dll</Implementation>
     </Reference>
-    <ReferenceCopyLocalPaths Include="$(SolutionDir)\Libraries\libtgvoip\$(Platform)\libtgvoip.dll" Condition="'$(UseModernTdlib)' != 'true'" />
-    <ReferenceCopyLocalPaths Include="$(SolutionDir)\Libraries\libtgvoip\$(Platform)\libtgvoip.pri" Condition="'$(UseModernTdlib)' != 'true'" />
+    <ReferenceCopyLocalPaths Include="$(SolutionDir)\Libraries\libtgvoip\$(Platform)\libtgvoip.dll" />
+    <ReferenceCopyLocalPaths Include="$(SolutionDir)\Libraries\libtgvoip\$(Platform)\libtgvoip.pri" />
   </ItemGroup>
   <ItemGroup />
   <PropertyGroup Condition=" '$(VisualStudioVersion)' == '' or '$(VisualStudioVersion)' &lt; '14.0' ">

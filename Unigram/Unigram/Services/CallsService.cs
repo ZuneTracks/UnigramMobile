@@ -39,6 +39,7 @@ namespace Unigram.Services
         private readonly IViewService _viewService;
 
         private readonly MediaPlayer _mediaPlayer;
+        private static int _audioCallDiagnosticBudget = 64;
 
         private Call _call;
         private DateTime _callStarted;
@@ -178,7 +179,21 @@ namespace Unigram.Services
 
         public async void Handle(UpdateCall update)
         {
+            if (update?.Call == null)
+            {
+                WriteAudioCallDiagnostic("voip.update", "result=ignored;reason=call_unavailable");
+                return;
+            }
+
             _call = update.Call;
+            WriteAudioCallDiagnostic("voip.update", $"result=received;state={update.Call.State?.GetType().Name ?? "null"};outgoing={update.Call.IsOutgoing.ToString().ToLowerInvariant()};video={update.Call.IsVideo.ToString().ToLowerInvariant()}");
+
+            if (update.Call.IsVideo)
+            {
+                WriteAudioCallDiagnostic("voip.update", "result=ignored;reason=video_unsupported");
+                ProtoService.Send(ModernTdlibCompatibility.CreateDiscardCall(update.Call.Id, true, 0, 0));
+                return;
+            }
 
             if (update.Call.State is CallStatePending pending)
             {
@@ -186,17 +201,23 @@ namespace Unigram.Services
                 {
                     if (pending.IsCreated && pending.IsReceived)
                     {
-                        _mediaPlayer.Source = MediaSource.CreateFromUri(new Uri("ms-appx:///Assets/Audio/voip_ringback.mp3"));
-                        _mediaPlayer.IsLoopingEnabled = true;
-                        _mediaPlayer.Play();
+                        PlayTone("voip_ringback.mp3", true);
                     }
                 }
             }
             if (update.Call.State is CallStateReady ready)
             {
+                if (ready.Protocol == null || ready.EncryptionKey == null)
+                {
+                    WriteAudioCallDiagnostic("voip.ready", "result=skipped;reason=invalid_parameters");
+                    ProtoService.Send(ModernTdlibCompatibility.CreateDiscardCall(update.Call.Id, true, 0, 0));
+                    return;
+                }
+
                 var user = CacheService.GetUser(update.Call.UserId);
                 if (user == null)
                 {
+                    WriteAudioCallDiagnostic("voip.ready", "result=skipped;reason=user_unavailable");
                     return;
                 }
 
@@ -218,7 +239,7 @@ namespace Unigram.Services
                 {
                     initTimeout = call_packet_timeout_ms / 1000.0,
                     recvTimeout = call_connect_timeout_ms / 1000.0,
-                    dataSaving = base.Settings.UseLessData,
+                    dataSaving = GetVoipDataSavingMode(base.Settings.UseLessData),
                     enableAEC = true,
                     enableNS = true,
                     enableAGC = true,
@@ -242,14 +263,12 @@ namespace Unigram.Services
                     {
                         if (args == libtgvoip.CallState.WaitInit || args == libtgvoip.CallState.WaitInitAck)
                         {
-                            _mediaPlayer.Source = MediaSource.CreateFromUri(new Uri("ms-appx:///Assets/Audio/voip_connecting.mp3"));
-                            _mediaPlayer.IsLoopingEnabled = false;
-                            _mediaPlayer.Play();
+                            PlayTone("voip_connecting.mp3", false);
                         }
                         else if (args == libtgvoip.CallState.Established)
                         {
                             _callStarted = DateTime.Now;
-                            _mediaPlayer.Source = null;
+                            StopTone();
                         }
                     });
                 };
@@ -261,7 +280,7 @@ namespace Unigram.Services
 
                 var endpoints = new List<Endpoint>();
 
-                foreach (var server in ready.Servers)
+                foreach (var server in ready.Servers ?? new CallServer[0])
                 {
                     if (server.Type is CallServerTypeTelegramReflector telegramReflector)
                     {
@@ -276,6 +295,16 @@ namespace Unigram.Services
                     }
                 }
 
+                if (endpoints.Count == 0)
+                {
+                    WriteAudioCallDiagnostic("voip.ready", "result=skipped;reason=no_reflector_endpoint");
+                    _controller.Dispose();
+                    _controller = null;
+                    ProtoService.Send(ModernTdlibCompatibility.CreateDiscardCall(update.Call.Id, true, 0, 0));
+                    return;
+                }
+
+                WriteAudioCallDiagnostic("voip.ready", $"result=starting;reflector_endpoints={endpoints.Count};p2p={ready.Protocol.UdpP2p && ready.AllowP2p}");
                 _controller.SetEncryptionKey(ready.EncryptionKey.ToArray(), update.Call.IsOutgoing);
                 _controller.SetPublicEndpoints(endpoints.ToArray(), ready.Protocol.UdpP2p && ready.AllowP2p, ready.Protocol.MaxLayer);
                 _controller.Start();
@@ -283,9 +312,9 @@ namespace Unigram.Services
             }
             else if (update.Call.State is CallStateDiscarded discarded)
             {
-                if (discarded.NeedDebugInformation)
+                if (discarded.NeedDebugInformation && _controller != null)
                 {
-                    ProtoService.Send(new SendCallDebugInformation(update.Call.Id, _controller.GetDebugLog()));
+                    ProtoService.Send(ModernTdlibCompatibility.CreateSendCallDebugInformation(update.Call.Id, _controller.GetDebugLog()));
                 }
 
                 if (discarded.NeedRating)
@@ -305,20 +334,19 @@ namespace Unigram.Services
                     case CallStateDiscarded discarded:
                         if (update.Call.IsOutgoing && discarded.Reason is CallDiscardReasonDeclined)
                         {
-                            _mediaPlayer.Source = MediaSource.CreateFromUri(new Uri("ms-appx:///Assets/Audio/voip_busy.mp3"));
-                            _mediaPlayer.IsLoopingEnabled = true;
-                            _mediaPlayer.Play();
+                            PlayTone("voip_busy.mp3", true);
 
                             Show(update.Call, null, _callStarted);
                         }
                         else
                         {
-                            _mediaPlayer.Source = null;
+                            StopTone();
 
                             Hide();
                         }
                         break;
                     case CallStateError error:
+                        StopTone();
                         Hide();
                         break;
                     default:
@@ -326,6 +354,40 @@ namespace Unigram.Services
                         break;
                 }
             });
+        }
+
+        private static bool CanWriteAudioCallDiagnostic()
+        {
+            return System.Threading.Interlocked.Decrement(ref _audioCallDiagnosticBudget) >= 0;
+        }
+
+        private static void WriteAudioCallDiagnostic(string eventName, string details)
+        {
+            if (CanWriteAudioCallDiagnostic())
+            {
+                Logs.PushDiagnostics.Write(eventName, details);
+            }
+        }
+
+        private void PlayTone(string fileName, bool isLooping)
+        {
+            if (_mediaPlayer == null)
+            {
+                WriteAudioCallDiagnostic("voip.tone", "result=skipped;reason=media_unavailable");
+                return;
+            }
+
+            _mediaPlayer.Source = MediaSource.CreateFromUri(new Uri("ms-appx:///Assets/Audio/" + fileName));
+            _mediaPlayer.IsLoopingEnabled = isLooping;
+            _mediaPlayer.Play();
+        }
+
+        private void StopTone()
+        {
+            if (_mediaPlayer != null)
+            {
+                _mediaPlayer.Source = null;
+            }
         }
 
         private async Task SendRatingAsync(int callId)
@@ -352,8 +414,25 @@ namespace Unigram.Services
                         return;
                     }
 
-                    ProtoService.Send(new SendMessage(chat.Id, 0, 0, new MessageSendOptions(false, false, null), null, new InputMessageDocument(new InputFileLocal(file.Path), null, false, null)));
+                    ProtoService.Send(ModernTdlibCompatibility.CreateSendMessage(
+                        chat.Id,
+                        0,
+                        ModernTdlibCompatibility.CreateMessageSendOptions(false, false, null),
+                        ModernTdlibCompatibility.CreateInputMessageDocument(new InputFileLocal(file.Path), null, false, null)));
                 }
+            }
+        }
+
+        private static libtgvoip.DataSavingMode GetVoipDataSavingMode(DataSavingMode value)
+        {
+            switch (value)
+            {
+                case DataSavingMode.MobileOnly:
+                    return libtgvoip.DataSavingMode.MobileOnly;
+                case DataSavingMode.Always:
+                    return libtgvoip.DataSavingMode.Always;
+                default:
+                    return libtgvoip.DataSavingMode.Never;
             }
         }
 
