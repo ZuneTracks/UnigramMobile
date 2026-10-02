@@ -208,6 +208,17 @@ identifiers, or paths. The trace distinguishes no incoming TDLib notification,
 an inactive account, an unavailable chat, the intentionally suppressed
 currently-open chat, and a completed tile write.
 
+26.9.6131.0 corrects the avatar source itself. The legacy implementation
+assumed every completed TDLib profile photo lived under
+`0/profile_photos/<file-name>` and constructed a tile URI from that assumed
+layout. Modern TDLib can choose a different local download directory, so the
+tile API received a valid update containing an unread count but a URI that
+could not resolve to the avatar. The experimental build now copies the
+completed supported avatar into its own `tile-avatars` LocalState cache and
+uses the corresponding `ms-appdata` URI. The cache is isolated with the
+experimental package and is removed with it; diagnostics report only the
+cache outcome, never paths or identifiers.
+
 For a conclusive test, pin the separate **Unigram Mobile TDLib Experimental**
 primary tile, foreground the app on the chat list or a different chat, then
 receive a message in a non-open chat. A currently open target chat is

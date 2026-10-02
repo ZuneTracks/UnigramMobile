@@ -19,6 +19,7 @@ using Windows.ApplicationModel.AppService;
 using Windows.Data.Xml.Dom;
 using Windows.Foundation.Collections;
 using Windows.Networking.PushNotifications;
+using Windows.Storage;
 using Windows.UI.Notifications;
 using Windows.UI.Xaml.Controls;
 
@@ -536,7 +537,7 @@ namespace Unigram.Services
             var content = GetContent(chat, message);
             var sound = silent ? "silent" : string.Empty;
             var launch = GetLaunch(chat, message);
-            var picture = GetPhoto(chat);
+            var picture = await GetPhotoAsync(chat);
             var dateTime = BindConvert.Current.DateTime(date).ToUniversalTime().ToString("s") + "Z";
             var canReply = !(chat.Type is ChatTypeSupergroup super && super.IsChannel);
 
@@ -574,7 +575,7 @@ namespace Unigram.Services
             var content = GetContent(chat, message);
             var sound = silent ? "silent" : string.Empty;
             var launch = GetLaunch(chat, message);
-            var picture = GetPhoto(chat);
+            var picture = await GetPhotoAsync(chat);
             var dateTime = BindConvert.Current.DateTime(date).ToUniversalTime().ToString("s") + "Z";
             var canReply = !(chat.Type is ChatTypeSupergroup super && super.IsChannel);
 
@@ -1170,11 +1171,44 @@ namespace Unigram.Services
             return UpdateFromLabel(chat, message) + GetBriefLabel(chat, message);
         }
 
-        private string GetPhoto(Chat chat)
+        private async Task<string> GetPhotoAsync(Chat chat)
         {
-            if (chat.Photo != null && chat.Photo.Small.Local.IsDownloadingCompleted)
+            if (chat.Photo == null || !chat.Photo.Small.Local.IsDownloadingCompleted)
             {
-                return "ms-appdata:///local/0/profile_photos/" + Path.GetFileName(chat.Photo.Small.Local.Path);
+                WriteForegroundTileDiagnostic("managed.tile.avatar", "result=unavailable;reason=not_downloaded");
+                return string.Empty;
+            }
+
+            var extension = Path.GetExtension(chat.Photo.Small.Local.Path);
+            if (!string.Equals(extension, ".jpg", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(extension, ".jpeg", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(extension, ".png", StringComparison.OrdinalIgnoreCase))
+            {
+                WriteForegroundTileDiagnostic("managed.tile.avatar", "result=unavailable;reason=unsupported_format");
+                return string.Empty;
+            }
+
+            try
+            {
+                var folder = await ApplicationData.Current.LocalFolder.CreateFolderAsync("tile-avatars", CreationCollisionOption.OpenIfExists);
+                var fileName = $"tile-avatar-{chat.Photo.Small.Id}{extension.ToLowerInvariant()}";
+                var source = await StorageFile.GetFileFromPathAsync(chat.Photo.Small.Local.Path);
+                await source.CopyAsync(folder, fileName, NameCollisionOption.ReplaceExisting);
+
+                WriteForegroundTileDiagnostic("managed.tile.avatar", "result=cached");
+                return "ms-appdata:///local/tile-avatars/" + Uri.EscapeDataString(fileName);
+            }
+            catch (IOException ex)
+            {
+                WriteForegroundTileDiagnosticException("managed.tile.avatar.failed", ex);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                WriteForegroundTileDiagnosticException("managed.tile.avatar.failed", ex);
+            }
+            catch (ArgumentException ex)
+            {
+                WriteForegroundTileDiagnosticException("managed.tile.avatar.failed", ex);
             }
 
             return string.Empty;
