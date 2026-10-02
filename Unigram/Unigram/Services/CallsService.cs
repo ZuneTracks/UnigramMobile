@@ -252,9 +252,23 @@ namespace Unigram.Services
                         return;
                     }
 
-                    _controller?.Dispose();
+                    WriteAudioCallDiagnostic("voip.ready", "result=selected;transport=modern_tgcalls");
+                    var legacyController = _controller;
                     _controller = null;
-                    DisposeModernCall();
+                    try
+                    {
+                        legacyController?.Dispose();
+                        DisposeModernCall();
+                    }
+                    catch (Exception error)
+                    {
+                        WriteAudioCallDiagnostic(
+                            "voip.ready",
+                            $"result=rejected;reason=transport_cleanup;transport=modern_tgcalls;hresult=0x{error.HResult:X8};message={Logs.PushDiagnostics.SanitizeErrorMessage(error.Message)}");
+                        ProtoService.Send(ModernTdlibCompatibility.CreateDiscardCall(update.Call.Id, true, 0, 0));
+                        return;
+                    }
+
                     if (TryStartModernCall(update.Call, ready, modernVersion))
                     {
                         WriteAudioCallDiagnostic("voip.ready", "result=starting;transport=modern_tgcalls");
@@ -477,6 +491,23 @@ namespace Unigram.Services
         }
 
         private bool TryStartModernCall(Call call, CallStateReady ready, string version)
+        {
+            WriteAudioCallDiagnostic("voip.ready", "result=bridge_dispatch;transport=modern_tgcalls");
+            try
+            {
+                return TryStartModernCallWithBridgeTypes(call, ready, version);
+            }
+            catch (Exception error)
+            {
+                WriteAudioCallDiagnostic(
+                    "voip.ready",
+                    $"result=rejected;reason=bridge_dispatch;transport=modern_tgcalls;hresult=0x{error.HResult:X8};message={Logs.PushDiagnostics.SanitizeErrorMessage(error.Message)}");
+                return false;
+            }
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private bool TryStartModernCallWithBridgeTypes(Call call, CallStateReady ready, string version)
         {
             if (ready.Protocol == null || ready.EncryptionKey == null)
             {

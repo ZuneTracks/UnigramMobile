@@ -353,37 +353,39 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6146.0_ARM_ModernTgCalls_LegacyConfigFix.appx
+    Unigram_26.9.6147.0_ARM_ModernTgCalls_BridgeStageAndFolders.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6146.0_ARM_ModernTgCalls_LegacyConfigFix_Sideload.zip
+    Unigram_26.9.6147.0_ARM_ModernTgCalls_BridgeStageAndFolders_Sideload.zip
 APPX SHA-256:
-D60848F3E6701E2CA863B21C407D0FDEC5C0F52BF7E960F197EF911AE3943D39
+3913440FBB0F6FC75258FD664AFFC5FD1F0DB3924344DFC7E95599C3B7EDC88A
 ZIP SHA-256:
-C41CCA3E33EC6C8AF65C43EB91CCA0D28868C271FD4034F3A2B2386DA0EF83F2
+D9B40E898DACF4F1799EC42E3FF36C4F9A8C32405C9B1CAAC602178BBDAAF621
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6146.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6147.0`,
 ARM architecture, and the existing native notification background entry point.
 
-This remains a device-test package, not a released call fix. The 26.9.6145.0
-device trace proved that the managed assembly was current, but it did not log
-the `bridge_create` stage. The cause was `libtgvoip`'s
-`UpdateServerConfig` being called before modern transport selection, so the
-obsolete legacy DLL returned `0x800401F9` before the modern bridge could be
-configured. Version 26.9.6146.0 invokes that legacy configuration only after
-the legacy transport has been selected; a call negotiated for `2.7.7` or
-`5.0.0` now reaches the bridge configuration/create diagnostics.
+This remains a device-test package, not a released call fix. The 26.9.6146.0
+device trace proved that the legacy configuration call was no longer the
+blocker: `CallStateReady` still raised `0x800401F9` before the first
+`TryStartModernCall` marker. Version 26.9.6147.0 puts modern startup behind a
+type-free wrapper and a non-inlined bridge method, and records whether failure
+is in transport cleanup, bridge dispatch/type loading, bridge configuration,
+or session creation/start. It handles those failures locally and explicitly
+discards the call instead of allowing an unhandled exception to obscure the
+boundary.
 
-It also restores the Chat Folders entry in Settings and Settings Search for
-the modern TDLib build. The existing modern folder request factories remain in
-use, so opening the page no longer takes the former intentional
-`chat-folder.disabled` path.
+It also registers `FoldersViewModel` and `FolderViewModel` for modern TDLib.
+The 26.9.6146.0 trace showed that Settings navigation correctly reached
+`FoldersPage`, but Autofac rejected the page because those registrations were
+still conditionally excluded. The existing modern folder request factories
+remain in use.
 
 Required validation is experimental W10M to/from current Android and iOS audio
 calls, including accept, outgoing signaling, mute, route changes, foreground
