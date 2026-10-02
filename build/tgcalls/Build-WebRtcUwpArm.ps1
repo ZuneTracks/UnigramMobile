@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$DependencyScriptsRoot = (Join-Path $env:LOCALAPPDATA 'UnigramTdlibExperiment\webrtc-uwp-deps'),
-    [string]$Root = (Join-Path $env:LOCALAPPDATA 'UnigramTdlibExperiment\webrtc-uwp-arm'),
+    [string]$Root = 'C:\wrtcar',
     [ValidateSet('Release', 'Debug')][string[]]$Configuration = @('Release', 'Debug'),
     [switch]$SkipAcquire
 )

@@ -100,10 +100,13 @@ Run the experimental wrapper with VS 2022 ARM C++ Build Tools installed:
 It verifies the external build-script revision, selects a Visual Studio
 instance with the ARM workload, and injects `arm` into the script's published
 x64/ARM64 architecture allow-list only in a temporary copy. The external
-script and its pinned upstream source remain unmodified. It downloads
-`depot_tools`, synchronizes approximately 20 GB of WebRTC dependencies, then
-generates `target_os="winuwp"` and `target_cpu="arm"` before building
-`webrtc.lib`. This operation can take several hours.
+script and its pinned upstream source remain unmodified. The default build
+root is deliberately short (`C:\wrtcar`): Chromium's third-party checkout
+contains paths that exceed Windows' legacy limit under the longer
+`%LOCALAPPDATA%` location. It downloads `depot_tools`, synchronizes
+approximately 20 GB of WebRTC dependencies, then generates
+`target_os="winuwp"` and `target_cpu="arm"` before building `webrtc.lib`.
+This operation can take several hours.
 
 The generated library is only a native proof input. It must still compile and
 link with the audio-only C++/CX TgCalls bridge, activate from its WinMD, and
