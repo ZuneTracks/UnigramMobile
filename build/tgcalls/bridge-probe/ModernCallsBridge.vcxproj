@@ -21,6 +21,9 @@
     <UseDebugLibraries>false</UseDebugLibraries>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">
+    <GenerateManifest>false</GenerateManifest>
+  </PropertyGroup>
   <PropertyGroup>
     <WebRtcRoot Condition="'$(WebRtcRoot)'==''">C:\wrtcar\src</WebRtcRoot>
     <WebRtcOutputRoot Condition="'$(WebRtcOutputRoot)'==''">$(WebRtcRoot)\out\msvc\uwp\Release\arm</WebRtcOutputRoot>
@@ -37,10 +40,13 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\..\native-engine;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>WEBRTC_WIN;WINUWP;WINAPI_FAMILY=WINAPI_FAMILY_PC_APP;WIN32_LEAN_AND_MEAN;NOMINMAX;_UNICODE;UNICODE;NTDDI_VERSION=NTDDI_WIN10_RS2;_WIN32_WINNT=0x0A00;WINVER=0x0A00;WEBRTC_ENABLE_PROTOBUF=0;WEBRTC_STRICT_FIELD_TRIALS=0;WEBRTC_HAVE_SCTP;WEBRTC_ARCH_ARM;RTC_DISABLE_METRICS;WEBRTC_VIDEO_CAPTURE_WINRT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_WINRT_DLL;WEBRTC_WIN;WINUWP;WINAPI_FAMILY=WINAPI_FAMILY_PC_APP;WIN32_LEAN_AND_MEAN;NOMINMAX;_UNICODE;UNICODE;NTDDI_VERSION=NTDDI_WIN10_RS2;_WIN32_WINNT=0x0A00;WINVER=0x0A00;WEBRTC_ENABLE_PROTOBUF=0;WEBRTC_STRICT_FIELD_TRIALS=0;WEBRTC_HAVE_SCTP;WEBRTC_ARCH_ARM;RTC_DISABLE_METRICS;WEBRTC_VIDEO_CAPTURE_WINRT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalUsingDirectories>$(WindowsSDK_WindowsMetadata);%(AdditionalUsingDirectories)</AdditionalUsingDirectories>
       <AdditionalOptions>/bigobj /Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
+      <SubSystem>Console</SubSystem>
+      <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
       <AdditionalDependencies>TgCallsEngine.lib;webrtc.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(TgCallsEngineOutputRoot);$(WebRtcOutputRoot)\obj;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
