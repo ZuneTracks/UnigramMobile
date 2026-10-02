@@ -252,13 +252,22 @@ protocol layer at runtime. The original call code sent an empty
 `CallProtocol.LibraryVersions` vector. TDLib 1.8.66 carries that vector
 unchanged to `phone.requestCall`, `phone.acceptCall`, and
 `phone.confirmCall`. Modern Telegram clients, notably iOS, can negotiate by
-library version rather than by layer alone; an empty vector is rejected as an
-incompatible call protocol before media setup.
+library version rather than by layer alone; an empty vector isn't a compatible
+declaration for that newer iOS/TgCalls path.
 
-26.9.6133.0 advertises the wrapper's recognized legacy protocol tag `2.4.4`
-with its actual reported maximum layer for every create, accept, and retry
-request. This is an audio-only compatibility declaration, not a claim of
-WebRTC/tgcalls or video support. The ready-state diagnostics now include only
+26.9.6133.0 added the wrapper's recognized legacy protocol tag `2.4.4` with
+its actual reported maximum layer for every create, accept, and retry request.
+That tag alone did not restore interoperability in device testing and is not
+used by the Android/W10M compatibility baseline.
+
+26.9.6135.0 restores the proven Android/W10M legacy protocol: `min_layer=65`,
+the wrapper-reported maximum layer, and an empty `library_versions` vector.
+It constructs `CallProtocol` through parameterless activation plus individual
+property setters because the modern projection previously exhibited
+activation-factory marshalling failures for other multi-argument request
+types. Bounded `voip.protocol` records confirm only the emitted minimum,
+maximum, and library-version count. This legacy reflector transport does not
+claim iOS WebRTC/tgcalls support. The ready-state diagnostics include only
 negotiated layer bounds, tag count, reflector count, TDLib error codes, and
 native transport state/error enums—never call identifiers, peers, IP
 addresses, keys, or signaling data.

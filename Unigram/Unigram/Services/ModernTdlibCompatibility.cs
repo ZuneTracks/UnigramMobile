@@ -46,7 +46,7 @@ namespace Unigram.Services
     public static class ModernTdlibCompatibility
     {
         private const int LegacyVoipMinimumLayer = 65;
-        private const string LegacyVoipLibraryVersion = "2.4.4";
+        private static int _audioCallProtocolDiagnosticBudget = 16;
 
         public static MessageTopic GetMessageTopic(long threadId)
         {
@@ -1130,12 +1130,26 @@ namespace Unigram.Services
 
         public static CallProtocol CreateAudioCallProtocol()
         {
-            return new CallProtocol(
-                true,
-                true,
-                LegacyVoipMinimumLayer,
-                libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer(),
-                new[] { LegacyVoipLibraryVersion });
+            // The modern C++/CX projection has already exhibited activation-factory
+            // marshalling failures for other multi-argument requests. Set every
+            // field separately so the protocol values cross its ABI one at a time.
+            var protocol = new CallProtocol
+            {
+                UdpP2p = true,
+                UdpReflector = true,
+                MinLayer = LegacyVoipMinimumLayer,
+                MaxLayer = libtgvoip.VoIPControllerWrapper.GetConnectionMaxLayer(),
+                LibraryVersions = new List<string>()
+            };
+
+            if (System.Threading.Interlocked.Decrement(ref _audioCallProtocolDiagnosticBudget) >= 0)
+            {
+                PushDiagnostics.Write(
+                    "voip.protocol",
+                    $"result=created;min_layer={protocol.MinLayer};max_layer={protocol.MaxLayer};library_versions={protocol.LibraryVersions.Count}");
+            }
+
+            return protocol;
         }
 
         public static Function CreateAcceptCall(int callId, CallProtocol protocol)
