@@ -221,13 +221,23 @@ private:
 };
 
 const wchar_t* GetFirstSupportedVersion() {
-    static const std::wstring version = [] {
+    static const std::wstring version = GetSupportedVersions().front();
+    return version.c_str();
+}
+
+std::vector<std::wstring> GetSupportedVersions() {
+    static const std::vector<std::wstring> versions = [] {
         tgcalls::Register<tgcalls::InstanceImpl>();
-        const auto versions = tgcalls::Meta::Versions();
-        return std::wstring(versions.front().begin(), versions.front().end());
+        const auto registeredVersions = tgcalls::Meta::Versions();
+        auto result = std::vector<std::wstring>{};
+        result.reserve(registeredVersions.size());
+        for (const auto& version : registeredVersions) {
+            result.emplace_back(version.begin(), version.end());
+        }
+        return result;
     }();
 
-    return version.c_str();
+    return versions;
 }
 
 CallSessionPtr CreateCallSession(

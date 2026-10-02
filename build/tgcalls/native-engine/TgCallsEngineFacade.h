@@ -76,6 +76,7 @@ struct CallCallbacks {
 };
 
 const wchar_t* GetFirstSupportedVersion();
+std::vector<std::wstring> GetSupportedVersions();
 CallSessionPtr CreateCallSession(
     const CallConfiguration& configuration,
     CallCallbacks callbacks);

@@ -54,6 +54,12 @@
     <ModernTdlibBuildManifest Condition="'$(ModernTdlibBuildManifest)' == ''">$(ModernTdlibRoot)\TdlibBuildManifest.txt</ModernTdlibBuildManifest>
     <ModernTdlibVerifierScript>$(MSBuildThisFileDirectory)..\..\build\tdlib\Verify-TdlibArm.ps1</ModernTdlibVerifierScript>
     <ModernTdlibBuildScript>$(MSBuildThisFileDirectory)..\..\build\tdlib\Build-TdlibArm.ps1</ModernTdlibBuildScript>
+    <!-- The modern TgCalls bridge remains opt-in until it has completed device
+         interoperability testing. The legacy ARM libtgvoip payload is always
+         retained for validated Windows 10 Mobile calls. -->
+    <UseModernTgCalls Condition="'$(UseModernTgCalls)' == ''">false</UseModernTgCalls>
+    <ModernTgCallsBridgeRoot Condition="'$(ModernTgCallsBridgeRoot)' == ''">$(ModernTdlibWorkRoot)\bridge-probe</ModernTgCallsBridgeRoot>
+    <ModernTgCallsBridgeBuildScript>$(MSBuildThisFileDirectory)..\..\build\tgcalls\Build-ModernCallsBridgeProof.ps1</ModernTgCallsBridgeBuildScript>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x86'">
     <DebugSymbols>true</DebugSymbols>
@@ -138,6 +144,9 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(UseModernTdlib)' == 'true'">
     <DefineConstants>$(DefineConstants);MODERN_TDLIB</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(UseModernTgCalls)' == 'true'">
+    <DefineConstants>$(DefineConstants);MODERN_TGCALLS</DefineConstants>
   </PropertyGroup>
   <PropertyGroup>
     <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
@@ -2799,6 +2808,22 @@
     <ReferenceCopyLocalPaths Include="$(ModernTdlibRoot)\libssl-3-arm.dll" Condition="'$(UseModernTdlib)' == 'true'" />
     <ReferenceCopyLocalPaths Include="$(ModernTdlibRoot)\z.dll" Condition="'$(UseModernTdlib)' == 'true'" />
   </ItemGroup>
+  <ItemGroup Condition="'$(UseModernTgCalls)' == 'true'">
+    <Reference Include="Unigram.Native.Calls.Proof">
+      <HintPath>$(ModernTgCallsBridgeRoot)\Unigram.Native.Calls.Proof.winmd</HintPath>
+      <Implementation>ModernCallsBridge.dll</Implementation>
+      <IsWinMDFile>true</IsWinMDFile>
+      <Private>true</Private>
+    </Reference>
+    <ReferenceCopyLocalPaths Include="$(ModernTgCallsBridgeRoot)\Unigram.Native.Calls.Proof.winmd">
+      <Implementation>ModernCallsBridge.dll</Implementation>
+    </ReferenceCopyLocalPaths>
+    <ReferenceCopyLocalPaths Include="$(ModernTgCallsBridgeRoot)\ModernCallsBridge.dll" />
+    <ReferenceCopyLocalPaths Include="$(ModernTgCallsBridgeRoot)\Unigram.Native.Calls.Proof.pri" />
+    <AppxPackagePayload Include="$(ModernTgCallsBridgeRoot)\Unigram.Native.Calls.Proof.pri">
+      <TargetPath>Unigram.Native.Calls.Proof.pri</TargetPath>
+    </AppxPackagePayload>
+  </ItemGroup>
   <ItemGroup>
     <Reference Include="RLottie">
       <HintPath>$(ProjectDir)\..\Libraries\rlottie\$(Platform)\RLottie.winmd</HintPath>
@@ -2829,6 +2854,19 @@
   <Target Name="EnsureModernTdlib" BeforeTargets="ValidateModernTdlib" Inputs="$(ModernTdlibBuildScript);$(MSBuildThisFileDirectory)..\..\build\tdlib\vcpkg.json;@(ModernTdlibBuildInput)" Outputs="$(ModernTdlibBuildManifest)" Condition="'$(UseModernTdlib)' == 'true'">
     <Message Importance="High" Text="Preparing pinned TDLib $(ModernTdlibVersion) in $(ModernTdlibWorkRoot)..." />
     <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ModernTdlibBuildScript)&quot; -WorkRoot &quot;$(ModernTdlibWorkRoot)&quot; -Stage All" />
+  </Target>
+  <Target Name="EnsureModernTgCallsBridge" BeforeTargets="ValidateModernTgCallsBridge" Condition="'$(UseModernTgCalls)' == 'true'">
+    <Message Importance="High" Text="Preparing the opt-in ARM TgCalls bridge in $(ModernTgCallsBridgeRoot)..." />
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(ModernTgCallsBridgeBuildScript)&quot; -OutputRoot &quot;$(ModernTgCallsBridgeRoot)&quot;" />
+  </Target>
+  <Target Name="RemoveModernTgCallsPayload" BeforeTargets="ResolveAssemblyReferences" Condition="'$(UseModernTgCalls)' != 'true'">
+    <Delete Files="$(OutDir)ModernCallsBridge.dll;$(OutDir)ModernCallsBridge.pdb;$(OutDir)Unigram.Native.Calls.Proof.winmd;$(OutDir)Unigram.Native.Calls.Proof.pri" />
+  </Target>
+  <Target Name="ValidateModernTgCallsBridge" BeforeTargets="ResolveAssemblyReferences" DependsOnTargets="EnsureModernTgCallsBridge" Condition="'$(UseModernTgCalls)' == 'true'">
+    <Error Condition="'$(Platform)' != 'ARM'" Text="The modern TgCalls bridge is ARM-only." />
+    <Error Condition="!Exists('$(ModernTgCallsBridgeRoot)\Unigram.Native.Calls.Proof.winmd')" Text="Modern TgCalls WinMD was not found at $(ModernTgCallsBridgeRoot)\Unigram.Native.Calls.Proof.winmd." />
+    <Error Condition="!Exists('$(ModernTgCallsBridgeRoot)\ModernCallsBridge.dll')" Text="Modern TgCalls implementation was not found at $(ModernTgCallsBridgeRoot)\ModernCallsBridge.dll." />
+    <Error Condition="!Exists('$(ModernTgCallsBridgeRoot)\Unigram.Native.Calls.Proof.pri')" Text="Modern TgCalls PRI resources were not found at $(ModernTgCallsBridgeRoot)\Unigram.Native.Calls.Proof.pri." />
   </Target>
   <Target Name="ValidateModernTdlib" BeforeTargets="ResolveAssemblyReferences" Condition="'$(UseModernTdlib)' == 'true'">
     <Error Condition="'$(Platform)' != 'ARM'" Text="The experimental modern TDLib payload is ARM-only." />

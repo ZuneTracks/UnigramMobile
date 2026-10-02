@@ -229,6 +229,16 @@ String^ Diagnostics::GetBuildInfo() {
         std::wstring(Unigram::Native::Calls::GetFirstSupportedVersion())).c_str());
 }
 
+IVector<String^>^ Diagnostics::GetSupportedVersions() {
+    EnsureUwpTlsSupport();
+
+    auto result = ref new Vector<String^>();
+    for (const auto& version : Unigram::Native::Calls::GetSupportedVersions()) {
+        result->Append(ref new String(version.c_str()));
+    }
+    return result;
+}
+
 }
 }
 }

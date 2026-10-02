@@ -6,6 +6,9 @@ using Unigram.Common;
 using Unigram.Logs;
 using Unigram.Services.ViewService;
 using Unigram.ViewModels;
+#if MODERN_TGCALLS
+using ModernCalls = Unigram.Native.Calls.Proof;
+#endif
 
 namespace Unigram.Services
 {
@@ -1142,6 +1145,21 @@ namespace Unigram.Services
                 LibraryVersions = new List<string>()
             };
 
+#if MODERN_TGCALLS
+            foreach (var version in ModernCalls.Diagnostics.GetSupportedVersions())
+            {
+                if (!string.IsNullOrWhiteSpace(version))
+                {
+                    protocol.LibraryVersions.Add(version);
+                }
+            }
+
+            if (protocol.LibraryVersions.Count == 0)
+            {
+                throw new InvalidOperationException("The enabled modern call bridge did not register a supported version.");
+            }
+#endif
+
             if (System.Threading.Interlocked.Decrement(ref _audioCallDiagnosticBudget) >= 0)
             {
                 PushDiagnostics.Write(
@@ -1150,6 +1168,35 @@ namespace Unigram.Services
             }
 
             return protocol;
+        }
+
+        public static string GetModernAudioCallVersion(IList<string> peerVersions)
+        {
+#if MODERN_TGCALLS
+            if (peerVersions == null || peerVersions.Count == 0)
+            {
+                return null;
+            }
+
+            var localVersions = ModernCalls.Diagnostics.GetSupportedVersions();
+            foreach (var peerVersion in peerVersions)
+            {
+                if (string.IsNullOrWhiteSpace(peerVersion))
+                {
+                    continue;
+                }
+
+                foreach (var localVersion in localVersions)
+                {
+                    if (string.Equals(peerVersion, localVersion, StringComparison.Ordinal))
+                    {
+                        return peerVersion;
+                    }
+                }
+            }
+#endif
+
+            return null;
         }
 
         public static void LogAudioCallRequestResult(string operation, BaseObject response)

@@ -18,10 +18,16 @@ using Windows.Storage;
 using Windows.UI.ViewManagement;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
+#if MODERN_TGCALLS
+using ModernCalls = Unigram.Native.Calls.Proof;
+#endif
 
 namespace Unigram.Services
 {
     public interface IVoIPService : IHandle<UpdateCall>
+#if MODERN_TGCALLS
+        , IHandle<UpdateNewCallSignalingData>
+#endif
     {
         string CurrentAudioInput { get; set; }
         float CurrentVolumeInput { get; set; }
@@ -44,6 +50,10 @@ namespace Unigram.Services
         private Call _call;
         private DateTime _callStarted;
         private VoIPControllerWrapper _controller;
+#if MODERN_TGCALLS
+        private ModernCalls.AudioCallSession _modernController;
+        private int _modernCallId;
+#endif
 
         private VoIPPage _callPage;
         private OverlayPage _callDialog;
@@ -223,6 +233,31 @@ namespace Unigram.Services
 
                 VoIPControllerWrapper.UpdateServerConfig(ready.Config);
 
+#if MODERN_TGCALLS
+                var modernVersion = ModernTdlibCompatibility.GetModernAudioCallVersion(ready.Protocol?.LibraryVersions);
+                if (!string.IsNullOrEmpty(modernVersion))
+                {
+                    if (_modernController != null && _modernCallId == update.Call.Id)
+                    {
+                        return;
+                    }
+
+                    _controller?.Dispose();
+                    _controller = null;
+                    DisposeModernCall();
+                    if (TryStartModernCall(update.Call, ready, modernVersion))
+                    {
+                        WriteAudioCallDiagnostic("voip.ready", "result=starting;transport=modern_tgcalls");
+                        BeginOnUIThread(() => Show(update.Call, null, _callStarted));
+                        return;
+                    }
+
+                    WriteAudioCallDiagnostic("voip.ready", "result=failed;transport=modern_tgcalls");
+                    ProtoService.Send(ModernTdlibCompatibility.CreateDiscardCall(update.Call.Id, true, 0, 0));
+                    return;
+                }
+#endif
+
                 var logFile = Path.Combine(ApplicationData.Current.LocalFolder.Path, $"{SessionId}", $"voip{update.Call.Id}.txt");
                 var statsDumpFile = Path.Combine(ApplicationData.Current.LocalFolder.Path, $"{SessionId}", "tgvoip.statsDump.txt");
 
@@ -334,6 +369,9 @@ namespace Unigram.Services
 
                 _controller?.Dispose();
                 _controller = null;
+#if MODERN_TGCALLS
+                DisposeModernCall();
+#endif
                 _call = null;
             }
 
@@ -366,6 +404,190 @@ namespace Unigram.Services
                 }
             });
         }
+
+#if MODERN_TGCALLS
+        public void Handle(UpdateNewCallSignalingData update)
+        {
+            if (update == null || update.Data == null || _modernController == null || update.CallId != _modernCallId)
+            {
+                WriteAudioCallDiagnostic("voip.signaling", "result=ignored;reason=no_matching_modern_call");
+                return;
+            }
+
+            try
+            {
+                _modernController.ReceiveSignalingData(update.Data.ToList());
+                WriteAudioCallDiagnostic("voip.signaling", "result=received;transport=modern_tgcalls");
+            }
+            catch (ArgumentException)
+            {
+                WriteAudioCallDiagnostic("voip.signaling", "result=rejected;transport=modern_tgcalls");
+            }
+        }
+
+        private bool TryStartModernCall(Call call, CallStateReady ready, string version)
+        {
+            if (ready.Protocol == null || ready.EncryptionKey == null)
+            {
+                return false;
+            }
+
+            var configuration = new ModernCalls.AudioCallConfiguration
+            {
+                Version = version,
+                InitializationTimeout = CacheService.Options.CallPacketTimeoutMs / 1000.0,
+                ReceiveTimeout = CacheService.Options.CallConnectTimeoutMs / 1000.0,
+                EnableP2P = ready.Protocol.UdpP2p && ready.AllowP2p,
+                AllowTcp = true,
+                MaxApiLayer = ready.Protocol.MaxLayer,
+                IsOutgoing = call.IsOutgoing,
+                InitialNetworkType = ModernCalls.NetworkType.Unknown,
+                EncryptionKey = ready.EncryptionKey.ToList()
+            };
+
+            foreach (var server in ready.Servers ?? new CallServer[0])
+            {
+                if (server.Port <= 0 || server.Port > ushort.MaxValue)
+                {
+                    WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=invalid_server_port;transport=modern_tgcalls");
+                    return false;
+                }
+
+                if (server.Type is CallServerTypeTelegramReflector reflector)
+                {
+                    if (string.IsNullOrWhiteSpace(server.IpAddress) || reflector.PeerTag == null)
+                    {
+                        WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=invalid_reflector;transport=modern_tgcalls");
+                        return false;
+                    }
+
+                    configuration.ReflectorEndpoints.Add(new ModernCalls.ReflectorEndpoint
+                    {
+                        Id = server.Id,
+                        Ipv4Address = server.IpAddress,
+                        Ipv6Address = server.Ipv6Address ?? string.Empty,
+                        Port = (ushort)server.Port,
+                        IsTcp = reflector.IsTcp,
+                        PeerTag = reflector.PeerTag.ToList()
+                    });
+                }
+                else if (server.Type is CallServerTypeWebrtc webRtc)
+                {
+                    if (server.Id < byte.MinValue || server.Id > byte.MaxValue ||
+                        string.IsNullOrWhiteSpace(server.IpAddress))
+                    {
+                        WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=invalid_webrtc_server;transport=modern_tgcalls");
+                        return false;
+                    }
+
+                    if (webRtc.SupportsTurn)
+                    {
+                        configuration.RtcServers.Add(CreateModernRtcServer(server, webRtc, true));
+                    }
+                    if (webRtc.SupportsStun)
+                    {
+                        configuration.RtcServers.Add(CreateModernRtcServer(server, webRtc, false));
+                    }
+                }
+            }
+
+            if (configuration.ReflectorEndpoints.Count == 0 && configuration.RtcServers.Count == 0)
+            {
+                WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=no_supported_server;transport=modern_tgcalls");
+                return false;
+            }
+
+            try
+            {
+                var session = ModernCalls.AudioCallSession.Create(configuration);
+                session.StateChanged += (sender, state) => OnModernCallStateChanged(call.Id, state);
+                session.SignalingData += (sender, data) => SendModernSignalingData(call.Id, session, data);
+                session.Stopped += (sender, completed) => OnModernCallStopped(call.Id, session, completed);
+
+                _modernController = session;
+                _modernCallId = call.Id;
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=bridge_configuration;transport=modern_tgcalls");
+                return false;
+            }
+        }
+
+        private static ModernCalls.RtcServer CreateModernRtcServer(CallServer server, CallServerTypeWebrtc webRtc, bool isTurn)
+        {
+            return new ModernCalls.RtcServer
+            {
+                Id = (byte)server.Id,
+                Host = server.IpAddress,
+                Port = (ushort)server.Port,
+                Username = webRtc.Username ?? string.Empty,
+                Password = webRtc.Password ?? string.Empty,
+                IsTurn = isTurn,
+                IsTcp = false
+            };
+        }
+
+        private void OnModernCallStateChanged(int callId, ModernCalls.CallState state)
+        {
+            if (_modernController == null || _modernCallId != callId)
+            {
+                return;
+            }
+
+            WriteAudioCallDiagnostic("voip.transport", $"result=state;transport=modern_tgcalls;state={state}");
+            BeginOnUIThread(() =>
+            {
+                if (state == ModernCalls.CallState.WaitInit || state == ModernCalls.CallState.WaitInitAck)
+                {
+                    PlayTone("voip_connecting.mp3", false);
+                }
+                else if (state == ModernCalls.CallState.Established)
+                {
+                    _callStarted = DateTime.Now;
+                    StopTone();
+                }
+            });
+        }
+
+        private void SendModernSignalingData(int callId, ModernCalls.AudioCallSession session, IList<byte> data)
+        {
+            if (data == null || _modernController != session || _modernCallId != callId)
+            {
+                return;
+            }
+
+            ProtoService.Send(new SendCallSignalingData
+            {
+                CallId = callId,
+                Data = data.ToList()
+            });
+            WriteAudioCallDiagnostic("voip.signaling", "result=sent;transport=modern_tgcalls");
+        }
+
+        private void OnModernCallStopped(int callId, ModernCalls.AudioCallSession session, bool completed)
+        {
+            WriteAudioCallDiagnostic(
+                "voip.transport",
+                $"result=stopped;transport=modern_tgcalls;completed={completed.ToString().ToLowerInvariant()}");
+
+            if (_modernController == session && _modernCallId == callId)
+            {
+                DisposeModernCall();
+            }
+        }
+
+        private void DisposeModernCall()
+        {
+            if (_modernController != null)
+            {
+                _modernController.Dispose();
+                _modernController = null;
+            }
+            _modernCallId = 0;
+        }
+#endif
 
         private static bool CanWriteAudioCallDiagnostic()
         {

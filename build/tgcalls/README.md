@@ -257,10 +257,10 @@ packaged call transport.
 Current verified output hashes from the external proof root:
 
 ```text
-E3E4A5703D440814DB462BD6ABA3E338963C1DDC4F6B5BF62803D86BCD6F2F4C  ModernCallsBridge.dll
-E7A33F9FF3637EC3747C4304BC3EC01AFBCE8DE1933F368193FB527CB22E05C7  Unigram.Native.Calls.Proof.winmd
+AD8289C5008C5530A2330D7F1BC82E56B1750073E1458D1293E25C6AD19926E9  ModernCallsBridge.dll
+9432A7AB2A65C0D7D6A9724691B4155283DAA84BD997D6CA8D5612BAABC3890D  Unigram.Native.Calls.Proof.winmd
 5829394098835DEA8A09811A8DECE1171B348301E426E9B83ACD386CB3E1AF38  Unigram.Native.Calls.Proof.pri
-57B291C0961CE6B182D8CC7A0F2276E92E34331007EEECB41A5ABD3EF0A5E78D  native-engine\TgCallsEngine.lib
+F155A1BB87D63385898124E5642DEC5B7EF29C1A6EFC055D6D47D09E15F0A5FA  native-engine\TgCallsEngine.lib
 ```
 
 The engine's `AudioOnlyPlatform.cpp` deliberately reports empty video encoder
@@ -281,3 +281,75 @@ and TLS directory instead of suppressing either linker dependency.
 Any later app integration must package the resulting bridge conditionally,
 retain `libtgvoip` for validated legacy Windows 10 Mobile calls, and must not
 advertise modern TgCalls versions until device interoperability is verified.
+
+## Experimental app integration
+
+The experimental app project has an explicit `UseModernTgCalls` build property.
+It defaults to `false`, so normal experimental ARM packages continue to
+advertise the legacy empty call-library list and use only `libtgvoip`.
+
+Set it only for the dedicated interoperability package:
+
+```powershell
+$env:SolutionDir = "$PWD\Unigram\"
+& 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe' `
+    .\Unigram\Unigram\Unigram.csproj `
+    /m /t:Build /p:Configuration=Release /p:Platform=ARM `
+    /p:UseModernTgCalls=true /p:GenerateAppxPackageOnBuild=true
+```
+
+When enabled, the project rebuilds the external bridge proof, requires its
+ARM WinMD/DLL/PRI output, references it as a runtime component, and packages:
+
+```text
+Unigram.Native.Calls.Proof.winmd
+ModernCallsBridge.dll
+Unigram.Native.Calls.Proof.pri
+```
+
+The app reads the registered versions from the bridge and advertises only
+those values. It selects the modern transport only when the peer's
+`CallProtocol.LibraryVersions` has an exact intersection with that registry.
+It maps Telegram reflector endpoints and TDLib WebRTC STUN/TURN server roles,
+forwards `UpdateNewCallSignalingData` to the bridge, and sends emitted
+signaling through `SendCallSignalingData`. If a modern version was negotiated
+but server/configuration validation or bridge creation fails, the app records
+a privacy-safe result and discards the call; it does not silently substitute
+legacy `libtgvoip` after modern negotiation.
+
+Legacy peers without a matching library version continue on the existing
+`libtgvoip` route. The existing call page remains the legacy controller UI:
+modern transport state updates the connecting/established tone lifecycle, but
+per-device volume selection and preferred-relay reporting are not yet exposed
+by the modern bridge. They are explicitly outside this audio-only proof and
+must be completed before treating the opt-in package as a general release.
+
+Current verified opt-in package output:
+
+```text
+APPX:
+%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
+    Unigram_26.9.6139.0_ARM_ModernTgCalls_Test.appx
+
+Minimal ARM sideload ZIP:
+%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
+    Unigram_26.9.6139.0_ARM_ModernTgCalls_Test_Sideload.zip
+APPX SHA-256:
+90C95398B04C4C120D9851FF8B7F461534167977E5CAAA380661334A4CB6570C
+ZIP SHA-256:
+7D440D5DEEF2C44BD1CBF722DE00EF29B45F3BA59EE6F413FF4B773D79720D3C
+```
+
+The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
+Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
+or source secret. The APPX was signature-verified and its manifest confirms
+the side-by-side experimental identity
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6139.0`,
+ARM architecture, and the existing native notification background entry point.
+
+This remains a device-test package, not a released call fix. Required
+validation is experimental W10M to/from current Android and iOS audio calls,
+including accept, outgoing signaling, mute, route changes, foreground and
+background behavior, reconnect, rejection, and cleanup. Preserve the
+legacy-W10M call regression test in both `UseModernTgCalls=false` and enabled
+package configurations.
