@@ -1588,3 +1588,66 @@ Packed `ModernCallsBridge.dll` = `4B832C012EDD94760BF514AE2B18F7FC742DC6C65B5B62
   `step=speaker_volume;phase=state;volume=N;max=N` - the state the render endpoint was
   actually in when playout started. A `set_speaker_*` step means we corrected it.
 - `voip.media|result=mute;muted=N;applied=N` - one per toggle press.
+
+## 26.9.6167.0 - measuring the playout stream itself
+
+6166 added speaker and routing telemetry, but all of it describes the *device*. If the
+device is configured correctly and audio is still inaudible, the next question is
+whether WebRTC is handing the device anything to play. Nothing in the pipeline answered
+that, so this adds the one measurement that splits the problem cleanly in two.
+
+### Why the existing levels could not answer it
+
+tgcalls' `audioLevelUpdated` reports the **outgoing** microphone level. Its healthy
+peaks in every log so far only confirm capture, which the Android peer already proved by
+hearing us. `AudioDeviceModule::Playing()` returning true means the render thread is
+running, not that the samples it renders are non-silent.
+
+### The playout probe
+
+`webrtc::AudioTransport` is the interface the device module pulls render data through.
+`DiagnosticAudioDeviceModule::RegisterAudioCallback` now inserts a
+`PlayoutProbeAudioTransport` between WebRTC and the device. It forwards every call
+unchanged and, on `NeedMorePlayData` and `PullRenderData`, scans the buffer that was
+just filled for its peak absolute amplitude.
+
+Peaks are accumulated over roughly two seconds and reported once per window as
+`voip.media|...step=playout_level;phase=window;source=play|pull;peak_permille=N;rate=N`,
+capped at twelve reports per session. Only a peak and a sample rate leave the probe: no
+audio is copied, retained, or reported in any form from which speech could be
+reconstructed.
+
+Interpreting the result is unambiguous:
+
+- **`peak_permille` stays 0** - WebRTC is rendering digital silence. The fault is
+  upstream of the device: decode, the receive stream, the audio track, or the network.
+  Speaker volume and routing are then irrelevant.
+- **`peak_permille` is non-zero and nothing is audible** - WebRTC is producing real
+  audio and the device or the routing is swallowing it. The 6166 speaker and endpoint
+  fields then say which.
+
+### Lifetime
+
+The device module keeps a raw pointer to the probe until a later registration replaces
+it, so the probe is owned by the wrapper rather than the caller. Member destruction runs
+before the base class releases the module, so the destructor explicitly unregisters the
+callback first (`step=unregister_audio_callback`) rather than relying on that ordering.
+A `RegisterAudioCallback(nullptr)` from WebRTC clears the probe as well.
+
+### Artifacts
+
+`%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`
+
+| File | SHA-256 | Bytes |
+| --- | --- | --- |
+| `Unigram_26.9.6167.0_ARM_ModernTgCalls_PlayoutProbe_Sideload.zip` | `974B9966962518998FA8A11D7B40707879BB2A5ED95E323EE996F240B24D0766` | 64,111,991 |
+| `Unigram_26.9.6167.0_ARM_ModernTgCalls_PlayoutProbe.appx` | `E560871146F71F430D33B100024E7D33F25F016638E50A7E4DA928E251DFF8F7` | 57,510,638 |
+| `Unigram_26.9.6167.0_ARM_ModernTgCalls_PlayoutProbe.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6167.0.map` | `47C006DB80DD70F6A8A557E98FB8668A800E8ED11EC4185DF21FD8552BCE74FD` | 14,861,761 |
+
+Packed `ModernCallsBridge.dll` = `145A45A1CBC74D2614C1B695B0B6589BC1AFA11D14F55B591F5316DDF295DEAD`,
+matching the built binary. Signature verified, identity
+`49197Wirdschon.UnigramMobileTdlibExperimental 26.9.6167.0 arm`, background entry point
+present, zero forbidden payload entries, 23 files in the sideload ZIP.
+
+This supersedes 26.9.6166.0, which was never installed; it contains everything 6166 did.

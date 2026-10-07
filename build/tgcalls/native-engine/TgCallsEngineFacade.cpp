@@ -564,6 +564,7 @@ using AdmWindowsDeviceMethod = int32_t (webrtc::AudioDeviceModule::*)(webrtc::Au
 using AdmVolumeOutMethod = int32_t (webrtc::AudioDeviceModule::*)(uint32_t*) const;
 using AdmVolumeInMethod = int32_t (webrtc::AudioDeviceModule::*)(uint32_t);
 using AdmDeviceIndexMethod = int32_t (webrtc::AudioDeviceModule::*)(uint16_t);
+using AdmAudioCallbackMethod = int32_t (webrtc::AudioDeviceModule::*)(webrtc::AudioTransport*);
 
 __declspec(noinline) int32_t InvokeGuarded(
         webrtc::AudioDeviceModule* impl,
@@ -668,6 +669,168 @@ __declspec(noinline) int32_t InvokeGuarded(
     }
 }
 
+__declspec(noinline) int32_t InvokeGuarded(
+        webrtc::AudioDeviceModule* impl,
+        AdmAudioCallbackMethod method,
+        webrtc::AudioTransport* argument,
+        int* faulted) {
+    __try {
+        return (impl->*method)(argument);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+        return -1;
+    }
+}
+
+/// <summary>
+/// Wraps the real audio transport so the playout stream can be measured. Only a peak
+/// amplitude and a frame count are derived; no audio is copied, retained, or reported
+/// in any form that could reconstruct speech.
+///
+/// This is the one measurement that separates the two possible causes of a silent
+/// call: if WebRTC hands the device non-silent samples and nothing is audible, the
+/// fault is in the device or the routing; if the samples are silent, the fault is
+/// upstream in decode, the receive stream, or the network.
+/// </summary>
+class PlayoutProbeAudioTransport : public webrtc::AudioTransport {
+public:
+    PlayoutProbeAudioTransport(
+        webrtc::AudioTransport* inner,
+        std::function<void(const std::string&)> report)
+        : _inner(inner)
+        , _report(std::move(report)) {
+    }
+
+    int32_t RecordedDataIsAvailable(
+            const void* audioSamples,
+            size_t nSamples,
+            size_t nBytesPerSample,
+            size_t nChannels,
+            uint32_t samplesPerSec,
+            uint32_t totalDelayMS,
+            int32_t clockDrift,
+            uint32_t currentMicLevel,
+            bool keyPressed,
+            uint32_t& newMicLevel) override {
+        return _inner->RecordedDataIsAvailable(
+            audioSamples, nSamples, nBytesPerSample, nChannels, samplesPerSec,
+            totalDelayMS, clockDrift, currentMicLevel, keyPressed, newMicLevel);
+    }
+
+    int32_t RecordedDataIsAvailable(
+            const void* audioSamples,
+            size_t nSamples,
+            size_t nBytesPerSample,
+            size_t nChannels,
+            uint32_t samplesPerSec,
+            uint32_t totalDelayMS,
+            int32_t clockDrift,
+            uint32_t currentMicLevel,
+            bool keyPressed,
+            uint32_t& newMicLevel,
+            absl::optional<int64_t> estimatedCaptureTimeNS) override {
+        return _inner->RecordedDataIsAvailable(
+            audioSamples, nSamples, nBytesPerSample, nChannels, samplesPerSec,
+            totalDelayMS, clockDrift, currentMicLevel, keyPressed, newMicLevel,
+            estimatedCaptureTimeNS);
+    }
+
+    int32_t NeedMorePlayData(
+            size_t nSamples,
+            size_t nBytesPerSample,
+            size_t nChannels,
+            uint32_t samplesPerSec,
+            void* audioSamples,
+            size_t& nSamplesOut,
+            int64_t* elapsed_time_ms,
+            int64_t* ntp_time_ms) override {
+        const auto result = _inner->NeedMorePlayData(
+            nSamples, nBytesPerSample, nChannels, samplesPerSec, audioSamples,
+            nSamplesOut, elapsed_time_ms, ntp_time_ms);
+
+        if (result == 0 && nBytesPerSample == sizeof(int16_t) * nChannels) {
+            Measure(
+                static_cast<const int16_t*>(audioSamples),
+                nSamplesOut * nChannels,
+                samplesPerSec,
+                "play");
+        }
+
+        return result;
+    }
+
+    void PullRenderData(
+            int bits_per_sample,
+            int sample_rate,
+            size_t number_of_channels,
+            size_t number_of_frames,
+            void* audio_data,
+            int64_t* elapsed_time_ms,
+            int64_t* ntp_time_ms) override {
+        _inner->PullRenderData(
+            bits_per_sample, sample_rate, number_of_channels, number_of_frames,
+            audio_data, elapsed_time_ms, ntp_time_ms);
+
+        if (bits_per_sample == 16) {
+            Measure(
+                static_cast<const int16_t*>(audio_data),
+                number_of_frames * number_of_channels,
+                static_cast<uint32_t>(sample_rate),
+                "pull");
+        }
+    }
+
+private:
+    /// <summary>
+    /// Accumulates a peak over roughly two seconds of playout and reports it as a
+    /// percentage of full scale, so a silent stream is distinguishable from a quiet
+    /// one without revealing anything about the content.
+    /// </summary>
+    void Measure(const int16_t* samples, size_t count, uint32_t sampleRate, const char* source) {
+        if (samples == nullptr || count == 0 || sampleRate == 0) {
+            return;
+        }
+
+        int32_t peak = 0;
+        for (size_t i = 0; i < count; ++i) {
+            const int32_t value = samples[i] < 0 ? -static_cast<int32_t>(samples[i]) : samples[i];
+            if (value > peak) {
+                peak = value;
+            }
+        }
+
+        if (peak > _windowPeak) {
+            _windowPeak = peak;
+        }
+
+        _windowSamples += count;
+        if (_windowSamples < static_cast<uint64_t>(sampleRate) * 2) {
+            return;
+        }
+
+        const auto windowPeak = _windowPeak;
+        _windowSamples = 0;
+        _windowPeak = 0;
+
+        if (_reportBudget == 0) {
+            return;
+        }
+        --_reportBudget;
+
+        const auto permille = static_cast<int>((static_cast<int64_t>(windowPeak) * 1000) / 32768);
+        _report(
+            std::string("step=playout_level;phase=window;source=") + source +
+            ";peak_permille=" + std::to_string(permille) +
+            ";rate=" + std::to_string(sampleRate));
+    }
+
+    webrtc::AudioTransport* _inner;
+    std::function<void(const std::string&)> _report;
+    uint64_t _windowSamples = 0;
+    int32_t _windowPeak = 0;
+    int _reportBudget = 12;
+};
+
 /// <summary>
 /// Forwards every audio device module call to the real platform module, reporting only
 /// fixed step names and numeric result codes. No device names, identifiers, or audio
@@ -691,6 +854,16 @@ public:
         // platform module is provably idle, so terminating here hands the capture
         // endpoint back deterministically instead of leaving it to a later refcount drop.
         if (_raw != nullptr) {
+            // The platform module still holds a raw pointer to the playout probe, and the
+            // probe is a member that is destroyed before the base class releases the
+            // module. Detach it first so that ordering can never leave a dangling callback.
+            if (_playoutProbe) {
+                Guarded(
+                    "unregister_audio_callback",
+                    static_cast<AdmAudioCallbackMethod>(&webrtc::AudioDeviceModule::RegisterAudioCallback),
+                    nullptr);
+            }
+
             Guarded("terminate_release", &webrtc::AudioDeviceModule::Terminate);
         }
 
@@ -712,6 +885,34 @@ public:
         if (result == 0) {
             EnsureSpeakerAudible();
         }
+        return result;
+    }
+
+    /// <summary>
+    /// Installs the playout probe between WebRTC and the device. The probe outlives the
+    /// registration because the device module keeps calling it until a later
+    /// registration replaces it, so it is owned here rather than by the caller.
+    /// </summary>
+    int32_t RegisterAudioCallback(webrtc::AudioTransport* audioCallback) override {
+        if (audioCallback == nullptr) {
+            const auto cleared = Guarded(
+                "register_audio_callback",
+                static_cast<AdmAudioCallbackMethod>(&webrtc::AudioDeviceModule::RegisterAudioCallback),
+                nullptr);
+            _playoutProbe.reset();
+            return cleared;
+        }
+
+        auto probe = std::make_unique<PlayoutProbeAudioTransport>(audioCallback, _report);
+        const auto result = Guarded(
+            "register_audio_callback",
+            static_cast<AdmAudioCallbackMethod>(&webrtc::AudioDeviceModule::RegisterAudioCallback),
+            probe.get());
+
+        if (result == 0) {
+            _playoutProbe = std::move(probe);
+        }
+
         return result;
     }
     int32_t StopPlayout() override { return Guarded("stop_playout", &webrtc::AudioDeviceModule::StopPlayout); }
@@ -877,6 +1078,7 @@ private:
     webrtc::AudioDeviceModule* _raw;
     std::function<void(const std::string&)> _report;
     std::function<void()> _released;
+    std::unique_ptr<PlayoutProbeAudioTransport> _playoutProbe;
 };
 
 std::string ToUtf8(const std::wstring& value) {
