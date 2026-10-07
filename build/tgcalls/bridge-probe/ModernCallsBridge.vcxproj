@@ -47,6 +47,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
+      <GenerateMapFile>true</GenerateMapFile>
+      <MapExports>true</MapExports>
       <AdditionalDependencies>TgCallsEngine.lib;webrtc.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(TgCallsEngineOutputRoot);$(WebRtcOutputRoot)\obj;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>

@@ -9,7 +9,10 @@
 
 #include <algorithm>
 #include <array>
+#include <csignal>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -17,6 +20,7 @@
 #include <utility>
 
 #include <windows.h>
+#include <stdlib.h>
 
 namespace Unigram {
 namespace Native {
@@ -26,6 +30,11 @@ namespace {
 extern "C" {
 PVOID WINAPI AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler);
 }
+
+// Supplied by the linker at the base of the module this code is linked into, which lets
+// a fault address be classified and turned into a map-file offset without calling any
+// module API from a fault context.
+extern "C" IMAGE_DOS_HEADER __ImageBase;
 
 // A fault handler cannot allocate, take a lock or call into the CRT, so the diagnostics
 // path is captured once up front into a fixed buffer and the report is assembled by hand.
@@ -38,11 +47,20 @@ volatile LONG g_crashDiagnosticsBudget = 8;
 // raises an access violation for each ordinary null dereference, so an ungated handler
 // would spend its budget on benign exceptions long before the fatal one arrives.
 volatile LONG g_audioDeviceLifecycleDepth = 0;
+// Recorded so a report can say whether the fault landed on the thread that is driving
+// the audio device module, or on a pool thread the structured exception guard cannot see.
+volatile LONG g_audioDeviceLifecycleThread = 0;
+const char* volatile g_audioDeviceLifecycleStep = nullptr;
 PVOID g_crashDiagnosticsHandle = nullptr;
 INIT_ONCE g_crashDiagnosticsOnce = INIT_ONCE_STATIC_INIT;
 
 struct AudioDeviceLifecycleScope {
-    AudioDeviceLifecycleScope() { InterlockedIncrement(&g_audioDeviceLifecycleDepth); }
+    explicit AudioDeviceLifecycleScope(const char* step) {
+        g_audioDeviceLifecycleStep = step;
+        InterlockedExchange(&g_audioDeviceLifecycleThread,
+            static_cast<LONG>(GetCurrentThreadId()));
+        InterlockedIncrement(&g_audioDeviceLifecycleDepth);
+    }
     ~AudioDeviceLifecycleScope() { InterlockedDecrement(&g_audioDeviceLifecycleDepth); }
 };
 
@@ -77,30 +95,7 @@ bool IsFatalExceptionCode(DWORD code) {
     }
 }
 
-LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
-    if (pointers == nullptr ||
-        pointers->ExceptionRecord == nullptr ||
-        g_audioDeviceLifecycleDepth <= 0 ||
-        !IsFatalExceptionCode(pointers->ExceptionRecord->ExceptionCode)) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-
-    if (InterlockedDecrement(&g_crashDiagnosticsBudget) < 0) {
-        InterlockedIncrement(&g_crashDiagnosticsBudget);
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-
-    // Only the exception code and whether it was continuable are recorded. A fault
-    // address or module would identify the install, and neither is needed to name the
-    // failing stage once the surrounding breadcrumbs are read alongside it.
-    char line[160];
-    int length = 0;
-    AppendLiteral(line, length, "result=exception;code=");
-    AppendHex32(line, length, static_cast<uint32_t>(pointers->ExceptionRecord->ExceptionCode));
-    AppendLiteral(line, length, ";noncontinuable=");
-    line[length++] = (pointers->ExceptionRecord->ExceptionFlags & EXCEPTION_NONCONTINUABLE) ? '1' : '0';
-    AppendLiteral(line, length, "\r\n");
-
+void WriteFaultLine(const char* line, int length) {
     const HANDLE file = CreateFile2(
         g_crashDiagnosticsPath,
         FILE_APPEND_DATA,
@@ -113,6 +108,109 @@ LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
         FlushFileBuffers(file);
         CloseHandle(file);
     }
+}
+
+bool ClaimFaultReport() {
+    if (InterlockedDecrement(&g_crashDiagnosticsBudget) < 0) {
+        InterlockedIncrement(&g_crashDiagnosticsBudget);
+        return false;
+    }
+    return true;
+}
+
+const char* CurrentLifecycleStep() {
+    const char* step = g_audioDeviceLifecycleStep;
+    return step == nullptr ? "unknown" : step;
+}
+
+// A fatal error that does not travel as a structured exception never reaches a vectored
+// handler. WebRTC's RTC_CHECK failures end in abort(), a pure virtual call or an invalid
+// CRT parameter terminate just as abruptly, and all of them would leave exactly the same
+// evidence as the crash under investigation: a log that simply stops.
+void ReportAbruptTermination(const char* result) {
+    if (g_crashDiagnosticsPath[0] == L'\0' || !ClaimFaultReport()) {
+        return;
+    }
+
+    char line[160];
+    int length = 0;
+    AppendLiteral(line, length, "result=");
+    AppendLiteral(line, length, result);
+    AppendLiteral(line, length, ";step=");
+    AppendLiteral(line, length, CurrentLifecycleStep());
+    AppendLiteral(line, length, ";in_lifecycle=");
+    line[length++] = (g_audioDeviceLifecycleDepth > 0) ? '1' : '0';
+    AppendLiteral(line, length, "\r\n");
+    WriteFaultLine(line, length);
+}
+
+void AbortReporter(int) { ReportAbruptTermination("abort"); }
+void TerminateReporter() { ReportAbruptTermination("terminate"); }
+void PureCallReporter() { ReportAbruptTermination("purecall"); }
+
+void InvalidParameterReporter(
+    const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t) {
+    ReportAbruptTermination("invalid_parameter");
+}
+
+LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
+    if (pointers == nullptr ||
+        pointers->ExceptionRecord == nullptr ||
+        g_audioDeviceLifecycleDepth <= 0 ||
+        !IsFatalExceptionCode(pointers->ExceptionRecord->ExceptionCode)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    if (!ClaimFaultReport()) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const char* step = CurrentLifecycleStep();
+
+    // The exception code alone cannot name the failure, because .NET Native raises an
+    // access violation for every ordinary null dereference and this app has a known
+    // benign one. What separates them is where the fault is: an offset inside this
+    // module is webrtc or tgcalls code and can be resolved against the build's map
+    // file, while anything outside it is another module's problem. An offset within a
+    // module carries no information about the install, so it stays privacy-safe.
+    const auto address = reinterpret_cast<uintptr_t>(pointers->ExceptionRecord->ExceptionAddress);
+    const auto base = reinterpret_cast<uintptr_t>(&__ImageBase);
+    const auto* headers = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+        base + static_cast<uintptr_t>(__ImageBase.e_lfanew));
+    const auto size = static_cast<uintptr_t>(headers->OptionalHeader.SizeOfImage);
+    const bool inModule = address >= base && address < base + size;
+
+    char line[256];
+    int length = 0;
+    AppendLiteral(line, length, "result=exception;code=");
+    AppendHex32(line, length, static_cast<uint32_t>(pointers->ExceptionRecord->ExceptionCode));
+    AppendLiteral(line, length, ";step=");
+    AppendLiteral(line, length, step);
+    AppendLiteral(line, length, ";same_thread=");
+    line[length++] = (static_cast<LONG>(GetCurrentThreadId()) == g_audioDeviceLifecycleThread) ? '1' : '0';
+    AppendLiteral(line, length, ";engine=");
+    line[length++] = inModule ? '1' : '0';
+    if (inModule) {
+        AppendLiteral(line, length, ";offset=");
+        AppendHex32(line, length, static_cast<uint32_t>(address - base));
+    }
+
+    // For an access violation the operation and whether the target was a null page
+    // separate a managed null dereference from genuine memory corruption.
+    if (pointers->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        pointers->ExceptionRecord->NumberParameters >= 2) {
+        const auto operation = pointers->ExceptionRecord->ExceptionInformation[0];
+        AppendLiteral(line, length, ";access=");
+        AppendLiteral(line, length, operation == 0 ? "read" : (operation == 1 ? "write" : "execute"));
+        AppendLiteral(line, length, ";null_page=");
+        line[length++] = (pointers->ExceptionRecord->ExceptionInformation[1] < 0x10000) ? '1' : '0';
+    }
+
+    AppendLiteral(line, length, ";noncontinuable=");
+    line[length++] = (pointers->ExceptionRecord->ExceptionFlags & EXCEPTION_NONCONTINUABLE) ? '1' : '0';
+    AppendLiteral(line, length, "\r\n");
+
+    WriteFaultLine(line, length);
 
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -121,6 +219,10 @@ BOOL CALLBACK InstallFatalExceptionReporter(PINIT_ONCE, PVOID, PVOID*) {
     // The header gates this out of the app partition, but the export exists and is
     // permitted for store apps; declaring it keeps the UWP surface otherwise untouched.
     g_crashDiagnosticsHandle = AddVectoredExceptionHandler(1, FatalExceptionReporter);
+    signal(SIGABRT, AbortReporter);
+    std::set_terminate(TerminateReporter);
+    _set_purecall_handler(PureCallReporter);
+    _set_invalid_parameter_handler(InvalidParameterReporter);
     return TRUE;
 }
 
@@ -273,7 +375,7 @@ public:
 private:
     template <typename Method, typename... Args>
     int32_t Guarded(const char* step, Method method, Args... arguments) const {
-        AudioDeviceLifecycleScope scope;
+        AudioDeviceLifecycleScope scope(step);
         Report(std::string("step=") + step + ";phase=begin");
         int faulted = 0;
         const auto result = InvokeGuarded(_raw, method, arguments..., &faulted);
@@ -284,7 +386,7 @@ private:
 
     template <typename Method, typename... Args>
     int32_t GuardedConst(const char* step, Method method, Args... arguments) const {
-        AudioDeviceLifecycleScope scope;
+        AudioDeviceLifecycleScope scope(step);
         Report(std::string("step=") + step + ";phase=begin");
         int faulted = 0;
         const auto result = InvokeGuarded(

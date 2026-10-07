@@ -666,3 +666,97 @@ makes tgcalls write a native log containing IP addresses, so it cannot be fed
 into the shared diagnostics as-is), and its reflector `server.id` is 0-based
 where ours is 1-based. The transport already reaches `Established`, so the
 latter is not the cause of this crash.
+
+## 26.9.6157.0 — microphone consent was never the problem
+
+The `6156` trace settled it: `result=microphone;acquired=1` on every call, with
+no prompt, because consent had already been granted. The crash is unchanged,
+and the consent hypothesis is dead.
+
+What `6156` did buy is the first direct evidence of the fault. The gated
+vectored handler fired, and its records survived into the main log:
+
+```text
+voip.media|result=audio_device;step=init_recording;phase=begin
+voip.fault|result=exception;code=0xC0000005;noncontinuable=0;deferred=1
+```
+
+An access violation, raised while an audio device lifecycle call was in flight,
+not caught by the structured exception guard around that call.
+
+That is still not conclusive, for two reasons. .NET Native raises every
+ordinary null dereference as `0xC0000005`, and this app has a known benign
+`NullReferenceException` that fires during the same window — so the code alone
+cannot distinguish a real native fault from that. And a fatal error that is not
+a structured exception, such as the `abort()` at the end of a WebRTC
+`RTC_CHECK` failure, never reaches a vectored handler at all and would leave
+exactly the same evidence: a log that simply stops.
+
+`6157` closes both gaps.
+
+### Locating the fault
+
+The handler now reports where the fault is, not just that it happened:
+
+```text
+result=exception;code=0xC0000005;step=init_recording;same_thread=0;engine=1;offset=0x00ABCDEF;access=read;null_page=1;noncontinuable=0
+```
+
+- `step` names the lifecycle call in flight, recorded by the scope that gates
+  the handler.
+- `same_thread` compares the faulting thread against the thread driving the
+  module, which decides whether the structured exception guard could ever have
+  caught it.
+- `engine` is whether the fault address lies inside this module, resolved
+  against the linker-supplied `__ImageBase` and the image size read from the PE
+  header — no module API is called from the fault context. `engine=1` means
+  webrtc or tgcalls code; `engine=0` means the fault belongs to another module
+  and is almost certainly the managed null dereference.
+- `offset` is the module-relative address. It carries nothing about the install
+  and resolves to a function against the build's map file, which is archived
+  next to the artifacts as `ModernCallsBridge_26.9.6157.0.map` and is
+  deliberately not packaged.
+- `access` and `null_page` separate a null dereference from genuine memory
+  corruption.
+
+The project now links with `/MAP` so that offset is resolvable.
+
+### Catching a termination that is not an exception
+
+`signal(SIGABRT)`, `std::set_terminate`, `_set_purecall_handler` and
+`_set_invalid_parameter_handler` each write a line to the same fault file:
+
+```text
+result=abort;step=init_recording;in_lifecycle=1
+```
+
+A WebRTC `RTC_CHECK` failure ends in `abort()` and is live in release builds,
+unlike `RTC_DCHECK`. If that is what kills the process, this names it. Only a
+`__fastfail` would still escape.
+
+Sharing the push log from the diagnostics page now drains the fault file first,
+so the shared file is complete without waiting for the next call to collect it.
+
+### Artifacts
+
+```text
+%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\Unigram_26.9.6157.0_ARM_ModernTgCalls_FaultLocate.appx
+  57497252 bytes  SHA-256 96C511703B84C4CA418014A9C74E4561F216E82120EAE602ED603D28BF392F13
+%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\Unigram_26.9.6157.0_ARM_ModernTgCalls_FaultLocate_Sideload.zip
+  64099016 bytes  SHA-256 2C78EEE43DB8619FC1C6F5CAD014A72DC7291B24A4B439DB51B24E415261B55F
+%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\ModernCallsBridge_26.9.6157.0.map
+  14800124 bytes  SHA-256 AEED2B0A22A59C6F4335BAF36D4A82014AB548A2E43C5BA93FF2ADD235E63D8A
+```
+
+### What the audio device module actually is
+
+Worth recording, because it narrows where the fault can be. The pinned WebRTC
+selects `AudioDeviceWindowsCore` from `win/audio_device_core_win.cc`, and that
+file contains no `WINUWP`, `WINRT` or `WINAPI_FAMILY` conditionals at all: it
+is stock desktop WASAPI code running in an app container. `InitRecording`
+itself is wholly synchronous and starts no threads, which makes a
+`same_thread=0` report significant if it appears. Its one early exit is
+`InitRecordingDMO`, reached only when built-in AEC is enabled; `_dmo` is null
+unless `CLSID_CWMAudioAEC` could be created, and `EnableBuiltInAEC` refuses to
+enable the flag in that case, so the DMO path should be unreachable here. The
+`RTC_DCHECK(_dmo)` guarding it is compiled out in release.

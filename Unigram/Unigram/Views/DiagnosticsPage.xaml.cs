@@ -53,6 +53,10 @@ namespace Unigram.Views
 
         private async void PushLog_Click(object sender, RoutedEventArgs e)
         {
+            // Native fault records are appended to a separate file, so fold them in
+            // before sharing rather than leaving them for the next call to collect.
+            Logs.PushDiagnostics.DrainFaultFile();
+
             var folder = await ApplicationData.Current.LocalFolder.TryGetItemAsync(Logs.PushDiagnostics.DirectoryName) as StorageFolder;
             var log = folder == null ? null : await folder.TryGetItemAsync(Logs.PushDiagnostics.FileName) as StorageFile;
             if (log != null)
