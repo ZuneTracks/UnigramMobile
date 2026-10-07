@@ -114,6 +114,14 @@ void ReceiveSignalingData(const CallSessionPtr& session, std::vector<uint8_t> da
 void SetMuted(const CallSessionPtr& session, bool value);
 void SetNetworkType(const CallSessionPtr& session, NetworkType value);
 void StopCallSession(const CallSessionPtr& session);
+/// <summary>
+/// Stops the session and waits until tgcalls has destroyed the audio device, returning a
+/// fixed outcome token: <c>drained</c>, <c>timeout</c>, <c>reentrant</c> when called from
+/// the stop completion itself, or <c>inactive</c> when the session never started. The
+/// capture endpoint has a single owner on Windows 10 Mobile, so the next call must not
+/// activate it until this reports <c>drained</c>.
+/// </summary>
+std::string StopCallSessionAndWait(const CallSessionPtr& session, int timeoutMilliseconds);
 
 }
 }

@@ -237,6 +237,7 @@ namespace Unigram.Services
             if (update.Call.State is CallStatePending pending)
             {
 #if MODERN_TGCALLS
+                DisposeStaleModernCall(update.Call.Id);
                 BeginAcquireMicrophone();
 #endif
                 if (update.Call.IsOutgoing && pending.IsCreated && pending.IsReceived)
@@ -1085,10 +1086,13 @@ namespace Unigram.Services
                 "voip.transport",
                 $"result=stopped;transport=modern_tgcalls;completed={completed.ToString().ToLowerInvariant()}");
 
-            if (_modernController == session && _modernCallId == callId)
-            {
-                DisposeModernCall();
-            }
+            // Deliberately no disposal here. This runs on the tgcalls completion thread,
+            // inside the native event raise, so disposing would destroy the object whose
+            // event is still being raised. The audio device no longer depends on it
+            // either: the native session releases its reference before this callback, and
+            // tgcalls destroys the device on its own threads. Disposal happens on the
+            // TDLib path through CallStateDiscarded, or through DisposeStaleModernCall
+            // when the next call arrives.
         }
 
         /// <summary>
@@ -1109,13 +1113,73 @@ namespace Unigram.Services
 
             try
             {
-                controller?.Dispose();
+                if (controller == null)
+                {
+                    return;
+                }
+
+                var elapsed = System.Diagnostics.Stopwatch.StartNew();
+                string teardown;
+                try
+                {
+                    // Teardown returns the outcome, so nothing is read back off the
+                    // instance after Dispose has destroyed its members.
+                    teardown = controller.Teardown();
+                }
+                catch (Exception error)
+                {
+                    teardown = $"unreadable_0x{error.HResult:X8}";
+                }
+
+                controller.Dispose();
+                elapsed.Stop();
+
+                // Teardown blocks until tgcalls has destroyed the audio device, so a
+                // "timeout" here means the next call would start against a microphone
+                // this session still owns.
+                WriteAudioCallDiagnostic(
+                    "voip.teardown",
+                    $"result={teardown};transport=modern_tgcalls;elapsed_ms={QuantizeTeardownElapsed(elapsed.ElapsedMilliseconds)}");
             }
             finally
             {
                 ResetModernMediaDiagnostics();
                 ClearPendingModernSignalingData(callId);
             }
+        }
+
+        /// <summary>
+        /// A previous call can still own the capture endpoint when the next one arrives, because
+        /// TDLib does not always deliver <c>CallStateDiscarded</c> for the old call before the new
+        /// call's first update. Releasing the stale session here keeps the microphone
+        /// single-owner: Windows 10 Mobile faults inside the audio stack when a second engine
+        /// activates capture while the first still holds it.
+        /// </summary>
+        private void DisposeStaleModernCall(int incomingCallId)
+        {
+            if (_modernController == null || _modernCallId == incomingCallId)
+            {
+                return;
+            }
+
+            WriteAudioCallDiagnostic("voip.teardown", "result=stale;transport=modern_tgcalls");
+            DisposeModernCall();
+        }
+
+        /// <summary>
+        /// Rounds the teardown duration into coarse buckets so the diagnostic shows whether the
+        /// release was prompt without turning the log into a timing fingerprint.
+        /// </summary>
+        private static long QuantizeTeardownElapsed(long milliseconds)
+        {
+            if (milliseconds < 100)
+            {
+                return 0;
+            }
+
+            return milliseconds < 1000
+                ? milliseconds / 100 * 100
+                : milliseconds / 500 * 500;
         }
 
         private bool TryQueueModernSignalingData(int callId, IList<byte> data)

@@ -91,6 +91,16 @@ public:
     Platform::String^ GetAudioDeviceStatus();
     void Stop();
 
+    /// <summary>
+    /// Stops the native session and blocks until tgcalls has destroyed the audio device,
+    /// returning a fixed outcome token: "drained", "timeout", "reentrant" when called
+    /// from the stopped callback itself, "faulted" when teardown threw, or "empty" when
+    /// there was no native session. Call this before Dispose: the capture endpoint has a
+    /// single owner on Windows 10 Mobile, so the next call must not start until this
+    /// reports "drained".
+    /// </summary>
+    Platform::String^ Teardown();
+
     event Windows::Foundation::EventHandler<CallState>^ StateChanged;
     event Windows::Foundation::EventHandler<Windows::Foundation::Collections::IVector<unsigned char>^>^ SignalingData;
     event Windows::Foundation::EventHandler<bool>^ Stopped;
@@ -101,6 +111,7 @@ public:
 
 private:
     AudioCallSession(AudioCallConfiguration^ configuration);
+    Platform::String^ DrainSession();
     void* _holder;
 };
 

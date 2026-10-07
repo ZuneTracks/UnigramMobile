@@ -859,3 +859,111 @@ A null dereference recurs on every invocation, and audio levels arrive ten times
 a second, so reporting each one would have drained the process-wide call
 diagnostic budget within seconds and silenced the rest of the log on exactly the
 run being read.
+
+## 26.9.6160.0 — the second call, and who owns the microphone
+
+The callback guard in 6158 paid off, but not in the way it was meant to. No
+`voip.callback` line appeared anywhere in the device log, so the fatal fault was
+never a managed exception in the seven tgcalls callbacks. What the log showed
+instead settles the question the previous five builds were circling:
+
+    19:17:06.722  init_recording;phase=begin
+    19:17:06.907  init_recording;phase=end;faulted=0;code=0
+    19:17:06.915  start_recording;phase=begin
+    19:17:06.947  start_recording;phase=end;faulted=0;code=0
+
+The first call of the process completed the entire audio pipeline, reached
+`Established`, saw `remote_audio Active`, and ran for thirteen seconds. The audio
+device module, `InitRecording`, and the WASAPI capture path are not broken, and
+never were. The crash came from a *second* call, accepted twelve seconds later,
+which died at `init_recording;phase=begin`. The first call had no
+`CallStateDiscarded` and no `stopped` event anywhere in the log: it was never
+torn down.
+
+### Stop is asynchronous, and nothing downstream of it is synchronous either
+
+`CallSession::Stop` called `_instance->stop(completion)` and the C++/CX
+destructor then freed its holder and returned. Reading the pinned tgcalls source
+shows how little of the teardown that actually performs:
+
+* `InstanceImpl::stop` posts to the manager thread, which posts to the network
+  thread, which posts back to the manager thread, which finally runs the
+  completion inside `_mediaManager->perform`. It never stops the media pipeline.
+* `~ThreadLocalObject` does not block. It `PostTask`s the held object's reset to
+  its thread and returns, so `_instance.reset()` only *queues* `~Manager`, which
+  in turn only queues `~MediaManager`.
+* `~MediaManager` is the thing that does the real work: it drops the channels to
+  `kNetworkDown`, calls `SetSend(false)` and `SetPlayout(false)`, and only then
+  releases the audio device module.
+
+So the capture endpoint stays owned across two further thread hops after the
+destructor has returned. Windows 10 Mobile allows a single capture owner, and
+the stock desktop WASAPI code has no handling for contention, so the second
+call's `InitRecording` activated an endpoint the first call still held. That is
+an access violation inside the audio stack, on a tgcalls thread, outside this
+module — which is exactly the `engine=0`, `same_thread=0`, no-managed-frame
+signature every one of these crashes has carried.
+
+### What 6160 does
+
+Teardown is now synchronous from the caller's point of view, but the shutdown
+itself is left where tgcalls already does it correctly:
+
+* The session retains the *wrapper* it hands to tgcalls rather than the platform
+  module underneath it, and drops that reference inside the stop completion. The
+  last reference is then `~MediaManager`'s, so tgcalls tears the device down in
+  its own order, with the channels already stopped.
+* `DiagnosticAudioDeviceModule`'s destructor terminates the platform module and
+  signals the session. Because it runs only once every tgcalls owner has let go,
+  it is the first provably-idle moment, and it is the honest answer to "is the
+  microphone free".
+* `StopCallSessionAndWait` blocks until the session has stopped *and* that signal
+  has arrived, so the next call cannot start against a device the previous one
+  owns.
+* A stop completion that never arrives is now survivable. tgcalls drops it
+  silently when the manager has already gone, which would pin the device for the
+  life of the process, so a timeout forces the instance reset and waits out a
+  short grace period.
+
+An earlier revision of this fix stopped and terminated the device directly in the
+stop completion. That was wrong for an instructive reason: the completion runs
+*inside* a live `MediaManager::perform` callback, on the media thread, while
+`webrtc::Call` and the send channel are still streaming into that device. It
+would have moved the access violation from the second call's `InitRecording` to
+the first call's teardown and looked like progress.
+
+### Two lifetime bugs the blocking teardown exposed
+
+Making the caller wait turned two latent races into near-deterministic ones.
+
+The outcome used to be stored on the session and read back through a
+`TeardownResult` property *after* `Dispose`. A C++/CX destructor is `Dispose`, and
+reading a member of an instance whose destructor has run is undefined — the
+handle is dangling, and a managed `catch` does not help, because C++/CX generates
+no `RO_E_CLOSED` guard unless the class writes one. Worse for a diagnostic that
+must never leak, a reused `String^` buffer would have put arbitrary heap bytes in
+`result=`. Teardown is now an explicit `Teardown()` call that *returns* the token,
+so nothing is read off a disposed instance.
+
+The stop completion also published the stop and woke the waiter *before* raising
+the `stopped` callback, so the disposing thread could destroy the owning object
+while the native event was still being raised on its stack. The callback is now
+raised first and the stop published after. For the same reason the managed
+`stopped` handler no longer disposes the call: it runs on the completion thread,
+inside the event raise, and disposal there would tear down the object mid-raise.
+It does not need to any more — the device is released by the native side before
+that callback runs, so disposal can wait for `CallStateDiscarded` or for the
+stale-session sweep when the next call arrives.
+
+### Reading the result
+
+`voip.teardown` reports a fixed token and a coarse duration bucket:
+
+    voip.teardown|result=drained;transport=modern_tgcalls;elapsed_ms=0
+    voip.teardown|result=stale;transport=modern_tgcalls
+
+`drained` means the device was confirmed destroyed before the next call could
+start. `timeout` means it was not, and the next call is at risk. `stale` is the
+sweep releasing a previous session that TDLib never discarded. A
+`voip.transport|result=stopped` line should now appear for every call that ends,
+which it never did before.

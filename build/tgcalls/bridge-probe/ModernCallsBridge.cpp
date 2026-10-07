@@ -1,7 +1,6 @@
 #include "ModernCallsBridge.h"
-
 #include "TgCallsEngineFacade.h"
-
+#include <windows.h>
 #include <exception>
 #include <cstring>
 #include <memory>
@@ -25,6 +24,10 @@ struct SessionHolder {
     Unigram::Native::Calls::CallSessionPtr session;
     WeakReference owner;
 };
+
+// Teardown normally drains in well under a second; the bound only exists so a wedged
+// tgcalls stop cannot hang the thread that disposes the call.
+constexpr int kTeardownTimeoutMilliseconds = 3000;
 
 String^ ToPlatformString(const std::exception& error) {
     return ref new String(std::wstring(error.what(), error.what() + strlen(error.what())).c_str());
@@ -207,18 +210,46 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
     _holder = new std::shared_ptr<SessionHolder>(std::move(holder));
 }
 
-AudioCallSession::~AudioCallSession() {
-    if (_holder == nullptr) {
-        return;
+/// <summary>
+/// Claims the holder atomically and drains the native session. Dispose can be reached
+/// from the TDLib update thread and the tgcalls worker thread at the same time, so only
+/// one caller may tear down and free it.
+/// </summary>
+Platform::String^ AudioCallSession::DrainSession() {
+    auto holder = static_cast<std::shared_ptr<SessionHolder>*>(
+        InterlockedExchangePointer(reinterpret_cast<void* volatile*>(&_holder), nullptr));
+    if (holder == nullptr) {
+        return L"empty";
     }
 
-    auto holder = static_cast<std::shared_ptr<SessionHolder>*>(_holder);
+    String^ result = L"empty";
     if (*holder && (*holder)->session) {
-        Unigram::Native::Calls::StopCallSession((*holder)->session);
+        try {
+            // Blocking matters here: tgcalls stops asynchronously and destroys the audio
+            // device on its own threads, so returning early would let the next call
+            // activate a microphone this session still owned.
+            result = ToPlatformString(Unigram::Native::Calls::StopCallSessionAndWait(
+                (*holder)->session,
+                kTeardownTimeoutMilliseconds));
+        }
+        catch (...) {
+            result = L"faulted";
+        }
     }
 
     delete holder;
-    _holder = nullptr;
+    return result;
+}
+
+Platform::String^ AudioCallSession::Teardown() {
+    return DrainSession();
+}
+
+AudioCallSession::~AudioCallSession() {
+    // Managed code calls Teardown first and reads the outcome from its return value, so
+    // nothing has to be stored on the instance and read back after the destructor has
+    // run. This stays as a safety net for a Dispose that skipped Teardown.
+    DrainSession();
 }
 
 void AudioCallSession::Start() {

@@ -9,6 +9,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -314,10 +317,26 @@ class DiagnosticAudioDeviceModule : public tgcalls::DefaultWrappedAudioDeviceMod
 public:
     DiagnosticAudioDeviceModule(
         webrtc::scoped_refptr<webrtc::AudioDeviceModule> impl,
-        std::function<void(const std::string&)> report)
+        std::function<void(const std::string&)> report,
+        std::function<void()> released)
         : tgcalls::DefaultWrappedAudioDeviceModule(impl)
         , _raw(impl.get())
-        , _report(std::move(report)) {
+        , _report(std::move(report))
+        , _released(std::move(released)) {
+    }
+
+    ~DiagnosticAudioDeviceModule() {
+        // This runs only once every tgcalls owner has released the wrapper, which on the
+        // normal path is MediaManager's destructor. That makes it the first moment the
+        // platform module is provably idle, so terminating here hands the capture
+        // endpoint back deterministically instead of leaving it to a later refcount drop.
+        if (_raw != nullptr) {
+            Guarded("terminate_release", &webrtc::AudioDeviceModule::Terminate);
+        }
+
+        if (_released) {
+            _released();
+        }
     }
 
     int32_t Init() override { return Guarded("init", &webrtc::AudioDeviceModule::Init); }
@@ -404,6 +423,7 @@ private:
 
     webrtc::AudioDeviceModule* _raw;
     std::function<void(const std::string&)> _report;
+    std::function<void()> _released;
 };
 
 std::string ToUtf8(const std::wstring& value) {
@@ -455,6 +475,12 @@ RemoteAudioState ToFacadeAudioState(tgcalls::AudioState value) {
 }
 
 }
+
+enum class StopWaitResult {
+    Drained,
+    Timeout,
+    Reentrant,
+};
 
 class CallSession final : public std::enable_shared_from_this<CallSession> {
 public:
@@ -586,11 +612,20 @@ public:
                             if (const auto strong = weak.lock()) {
                                 strong->AudioDeviceReport(step);
                             }
+                        },
+                        [weak]() {
+                            if (const auto strong = weak.lock()) {
+                                strong->NotifyAudioDeviceReleased();
+                            }
                         });
                 }
 
                 if (const auto strong = weak.lock()) {
-                    strong->RetainAudioDeviceModule(module);
+                    // Retain the wrapper, not the platform module underneath it: the
+                    // wrapper is the reference tgcalls holds too, so dropping ours lets
+                    // MediaManager's destructor own the last one, and the wrapper's own
+                    // destruction is what signals that the capture endpoint is free.
+                    strong->RetainAudioDeviceModule(result);
                     strong->AudioDeviceReport(report);
                 }
                 return result;
@@ -643,27 +678,115 @@ public:
     }
 
     void Stop() {
-        std::unique_lock<std::mutex> lock(_mutex);
-        if (!_started) {
+        tgcalls::Instance* instance = nullptr;
+        {
+            std::unique_lock<std::mutex> lock(_mutex);
+            if (_stopping) {
+                return;
+            }
+            _stopping = true;
+            instance = _started ? _instance.get() : nullptr;
+            if (instance == nullptr) {
+                _stopped = true;
+            }
+        }
+
+        if (instance == nullptr) {
+            DropAudioDeviceModule();
+            _stoppedCondition.notify_all();
             return;
         }
-        if (_stopping) {
-            return;
-        }
-        EnsureActive();
-        _stopping = true;
+
         const auto self = shared_from_this();
-        _instance->stop([self](tgcalls::FinalState) {
+        instance->stop([self](tgcalls::FinalState) {
+            self->_completionThreadId.store(::GetCurrentThreadId());
+
             CallCallbacks callbacks;
             {
                 std::lock_guard<std::mutex> completionLock(self->_mutex);
+                // This only queues the tgcalls teardown. ~Manager and then ~MediaManager
+                // run later on their own threads, and ~MediaManager is what actually
+                // stops the audio channels and releases the device.
                 self->_instance.reset();
                 callbacks = self->_callbacks;
             }
+
+            // Drop this session's reference so tgcalls' own teardown holds the last one.
+            // Stopping or terminating the device here would race MediaManager, which is
+            // still streaming into it from inside this very callback.
+            self->DropAudioDeviceModule();
+
+            // Raised before the stop is published so a handler cannot wake the disposing
+            // thread and have it destroy the owning object while this callback is still
+            // on its stack.
             if (callbacks.stopped) {
                 callbacks.stopped(true);
             }
+
+            {
+                std::lock_guard<std::mutex> completionLock(self->_mutex);
+                self->_stopped = true;
+            }
+            self->_completionThreadId.store(0);
+            self->_stoppedCondition.notify_all();
         });
+    }
+
+    /// <summary>
+    /// Waits until the session has stopped and, when one was created, the audio device
+    /// has actually been destroyed. The device is the resource the next call contends
+    /// for, so waiting on the stop alone would still let the two overlap.
+    /// </summary>
+    StopWaitResult WaitForStop(int timeoutMilliseconds) {
+        // The stop completion raises the stopped callback, so a handler that disposes the
+        // call re-enters here on the completion thread. Waiting there would block the one
+        // thread that still has to publish the result.
+        if (_completionThreadId.load() == ::GetCurrentThreadId()) {
+            return StopWaitResult::Reentrant;
+        }
+
+        std::unique_lock<std::mutex> lock(_mutex);
+        const auto settled = [this] {
+            return _stopped && (!_audioDeviceCreated.load() || _audioDeviceReleased.load());
+        };
+
+        if (settled()) {
+            return StopWaitResult::Drained;
+        }
+        if (timeoutMilliseconds <= 0) {
+            return StopWaitResult::Timeout;
+        }
+
+        const auto drained = _stoppedCondition.wait_for(
+            lock,
+            std::chrono::milliseconds(timeoutMilliseconds),
+            settled);
+        return drained ? StopWaitResult::Drained : StopWaitResult::Timeout;
+    }
+
+    /// <summary>
+    /// Last resort for a stop completion that never arrives: tgcalls drops it silently
+    /// when the manager is already gone. Resetting the instance here starts the same
+    /// deferred teardown the completion would have started, so the audio device is not
+    /// pinned for the lifetime of the process.
+    /// </summary>
+    void ForceRelease() {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _instance.reset();
+            _stopped = true;
+        }
+
+        DropAudioDeviceModule();
+        _stoppedCondition.notify_all();
+    }
+
+    void NotifyAudioDeviceReleased() {
+        _audioDeviceReleased.store(true);
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+        }
+        _stoppedCondition.notify_all();
     }
 
 private:
@@ -716,18 +839,38 @@ private:
     }
 
     void RetainAudioDeviceModule(webrtc::scoped_refptr<webrtc::AudioDeviceModule> module) {
+        _audioDeviceCreated.store(module != nullptr);
         std::lock_guard<std::mutex> lock(_audioDeviceMutex);
         _audioDeviceModule = std::move(module);
     }
 
+    /// <summary>
+    /// Releases only this session's reference. The device is deliberately not stopped or
+    /// terminated here: tgcalls still owns a reference and is streaming into it, so the
+    /// shutdown has to stay with MediaManager's destructor.
+    /// </summary>
+    void DropAudioDeviceModule() {
+        webrtc::scoped_refptr<webrtc::AudioDeviceModule> module;
+        {
+            std::lock_guard<std::mutex> lock(_audioDeviceMutex);
+            module = std::move(_audioDeviceModule);
+            _audioDeviceModule = nullptr;
+        }
+    }
+
     std::mutex _mutex;
     std::mutex _audioDeviceMutex;
+    std::condition_variable _stoppedCondition;
+    std::atomic<unsigned long> _completionThreadId{0};
+    std::atomic<bool> _audioDeviceCreated{false};
+    std::atomic<bool> _audioDeviceReleased{false};
     webrtc::scoped_refptr<webrtc::AudioDeviceModule> _audioDeviceModule;
     CallConfiguration _configuration;
     std::unique_ptr<tgcalls::Instance> _instance;
     CallCallbacks _callbacks;
     bool _started = false;
     bool _stopping = false;
+    bool _stopped = false;
 };
 
 const wchar_t* GetFirstSupportedVersion() {
@@ -808,6 +951,35 @@ void StopCallSession(const CallSessionPtr& session) {
         throw std::invalid_argument("The TgCalls session is unavailable.");
     }
     session->Stop();
+}
+
+std::string StopCallSessionAndWait(const CallSessionPtr& session, int timeoutMilliseconds) {
+    if (!session) {
+        throw std::invalid_argument("The TgCalls session is unavailable.");
+    }
+
+    session->Stop();
+    auto result = session->WaitForStop(timeoutMilliseconds);
+    if (result == StopWaitResult::Timeout) {
+        // tgcalls drops its stop completion silently when the manager has already gone,
+        // which would otherwise pin the audio device for the lifetime of the process and
+        // hand the next call a microphone this session still owns.
+        session->ForceRelease();
+
+        // Only a short grace period: the teardown has already overrun its budget, so the
+        // point here is to confirm the forced release landed, not to wait again.
+        constexpr int kForcedReleaseGraceMilliseconds = 500;
+        result = session->WaitForStop(kForcedReleaseGraceMilliseconds);
+    }
+
+    switch (result) {
+    case StopWaitResult::Drained:
+        return "drained";
+    case StopWaitResult::Reentrant:
+        return "reentrant";
+    default:
+        return "timeout";
+    }
 }
 
 }
