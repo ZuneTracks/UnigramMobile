@@ -45,7 +45,9 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 // It writes to its own file rather than the managed diagnostics log, because the managed
 // writer tracks its own end-of-file offset and would write back over an appended record.
 wchar_t g_crashDiagnosticsPath[MAX_PATH] = {};
-volatile LONG g_crashDiagnosticsBudget = 24;
+constexpr LONG kFaultBudgetPerCall = 24;
+volatile LONG g_crashDiagnosticsBudget = kFaultBudgetPerCall;
+volatile LONG g_budgetExhaustedReported = 0;
 // Only faults raised while the audio device module is being driven are recorded. A
 // vectored handler sees every first-chance exception in the process, and .NET Native
 // raises an access violation for each ordinary null dereference, so an ungated handler
@@ -55,6 +57,12 @@ volatile LONG g_audioDeviceLifecycleDepth = 0;
 // the audio device module, or on a pool thread the structured exception guard cannot see.
 volatile LONG g_audioDeviceLifecycleThread = 0;
 const char* volatile g_audioDeviceLifecycleStep = nullptr;
+// Armed for the whole duration of a call rather than just the audio device steps. The
+// narrower gate above was why the fatal fault stayed invisible: the call engine runs its
+// media on threads of its own, and those outlive the device calls the main thread makes,
+// so a death between two steps produced no record at all. Benign managed access
+// violations still land here, which is what the fault budget is for.
+volatile LONG g_callActiveDepth = 0;
 PVOID g_crashDiagnosticsHandle = nullptr;
 INIT_ONCE g_crashDiagnosticsOnce = INIT_ONCE_STATIC_INIT;
 
@@ -67,17 +75,23 @@ INIT_ONCE g_crashDiagnosticsOnce = INIT_ONCE_STATIC_INIT;
 // A mapped write costs no system call, which keeps the per-step cost low enough not to
 // perturb the timing of the fault under investigation.
 constexpr SIZE_T kInflightMarkerSize = 64;
+// A second slot in the same section holds the most recent fault seen during a call. The
+// whole-call reporting window admits the benign managed access violations this app raises
+// on every call, so writing each one to the log would spend the budget long before the
+// fatal fault arrives and would run blocking file I/O on WebRTC's real-time threads. A
+// fixed slot has neither problem: each fault overwrites the last, costs no system call,
+// and the value that survives the process is by construction the last fault before death.
+constexpr SIZE_T kFaultSlotSize = 192;
+constexpr SIZE_T kMarkerSectionSize = kInflightMarkerSize + kFaultSlotSize;
 wchar_t g_inflightMarkerPath[MAX_PATH] = {};
 HANDLE g_inflightMarkerFile = INVALID_HANDLE_VALUE;
 HANDLE g_inflightMarkerMapping = nullptr;
 volatile char* g_inflightMarker = nullptr;
+volatile char* g_faultSlot = nullptr;
+volatile LONG g_faultSlotWriter = 0;
 char g_inflightRecovered[kInflightMarkerSize] = {};
+char g_faultRecovered[kFaultSlotSize] = {};
 volatile LONG g_inflightThread = 0;
-
-// Set when the previous process died inside a capture step. The next call then runs the
-// device module with capture skipped, which turns the crash into a one-way call and
-// settles whether the capture path is the cause instead of costing another build.
-bool g_skipCaptureAfterFault = false;
 
 // Captured once, away from any fault context, so classifying a fault address is pure
 // arithmetic. An offset within a module names the faulting code without revealing
@@ -154,7 +168,7 @@ void OpenInflightMarker() {
     // A mapping larger than the file extends it, which avoids needing the desktop-only
     // file sizing calls that are unavailable to an app container.
     g_inflightMarkerMapping = CreateFileMappingFromApp(
-        g_inflightMarkerFile, nullptr, PAGE_READWRITE, kInflightMarkerSize, nullptr);
+        g_inflightMarkerFile, nullptr, PAGE_READWRITE, kMarkerSectionSize, nullptr);
     if (g_inflightMarkerMapping == nullptr) {
         CloseHandle(g_inflightMarkerFile);
         g_inflightMarkerFile = INVALID_HANDLE_VALUE;
@@ -162,7 +176,7 @@ void OpenInflightMarker() {
     }
 
     auto* view = static_cast<char*>(
-        MapViewOfFileFromApp(g_inflightMarkerMapping, FILE_MAP_WRITE, 0, kInflightMarkerSize));
+        MapViewOfFileFromApp(g_inflightMarkerMapping, FILE_MAP_WRITE, 0, kMarkerSectionSize));
     if (view == nullptr) {
         CloseHandle(g_inflightMarkerMapping);
         CloseHandle(g_inflightMarkerFile);
@@ -173,15 +187,11 @@ void OpenInflightMarker() {
 
     std::memcpy(g_inflightRecovered, view, kInflightMarkerSize);
     g_inflightRecovered[kInflightMarkerSize - 1] = '\0';
-    std::memset(view, 0, kInflightMarkerSize);
+    std::memcpy(g_faultRecovered, view + kInflightMarkerSize, kFaultSlotSize);
+    g_faultRecovered[kFaultSlotSize - 1] = '\0';
+    std::memset(view, 0, kMarkerSectionSize);
     g_inflightMarker = view;
-
-    // Only a capture step arms the fallback. A death anywhere else leaves the device
-    // module untouched, so the recovered value stays purely diagnostic.
-    const char* recovered = g_inflightRecovered;
-    g_skipCaptureAfterFault =
-        (std::strncmp(recovered, "init_recording:", 15) == 0) ||
-        (std::strncmp(recovered, "start_recording:", 16) == 0);
+    g_faultSlot = view + kInflightMarkerSize;
 }
 
 struct AudioDeviceLifecycleScope {
@@ -209,6 +219,26 @@ void AppendLiteral(char* buffer, int& length, const char* text) {
     }
 }
 
+// Codes that are only ever raised by a deliberate, fatal abort path, so they are worth a
+// blocking write wherever they occur because nothing continues after them. WebRTC's
+// RTC_CHECK - which stays live even with NDEBUG - and RTC_DCHECK both reach
+// webrtc_checks_impl::FatalLog, which calls DebugBreak() and then abort(). On a retail
+// device with no debugger attached a breakpoint is therefore a failed check, and its
+// absence from this list is why a failed check has so far killed the process leaving
+// nothing behind but a log that stops.
+bool IsAlwaysFatalExceptionCode(DWORD code) {
+    switch (code) {
+    case EXCEPTION_BREAKPOINT:  // RTC_CHECK / RTC_DCHECK via DebugBreak()
+    case 0xC0000409:            // STATUS_STACK_BUFFER_OVERRUN, also __fastfail
+    case 0xC0000417:            // STATUS_INVALID_CRUNTIME_PARAMETER
+    case 0xC0000374:            // STATUS_HEAP_CORRUPTION
+    case 0xC0000420:            // STATUS_ASSERTION_FAILURE
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool IsFatalExceptionCode(DWORD code) {
     switch (code) {
     case EXCEPTION_ACCESS_VIOLATION:
@@ -219,9 +249,13 @@ bool IsFatalExceptionCode(DWORD code) {
     case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
         return true;
     default:
+        // C++ exceptions (0xE06D7363) are deliberately absent despite being catchable
+        // here: this facade throws std::invalid_argument as ordinary argument validation,
+        // so admitting them would bury a real fault under routine traffic.
+        //
         // A stack overflow is deliberately absent: the handler would run on the
         // exhausted stack and fault again before writing anything.
-        return false;
+        return IsAlwaysFatalExceptionCode(code);
     }
 }
 
@@ -243,14 +277,71 @@ void WriteFaultLine(const char* line, int length) {
 bool ClaimFaultReport() {
     if (InterlockedDecrement(&g_crashDiagnosticsBudget) < 0) {
         InterlockedIncrement(&g_crashDiagnosticsBudget);
+        // Says once that reports are being dropped, so an empty log is never mistaken for
+        // a clean run. The notice itself is outside the budget it is reporting on, and it
+        // lives here so that every caller is covered, including the abrupt termination
+        // handlers whose reports would otherwise disappear without trace.
+        if (InterlockedExchange(&g_budgetExhaustedReported, 1) == 0) {
+            char notice[64];
+            int noticeLength = 0;
+            AppendLiteral(notice, noticeLength, "result=budget_exhausted\r\n");
+            WriteFaultLine(notice, noticeLength);
+        }
         return false;
     }
     return true;
 }
 
+// The budget is what stops a repeating fault from filling the log, but it is spent for
+// the lifetime of the process, so a call late in a session could find it already empty
+// and drop the very report the build exists to capture. A silent drop is indistinguishable
+// from no fault at all, so each call restores the allowance and the first drop within a
+// call says so explicitly.
+void RenewFaultBudget() {
+    InterlockedExchange(&g_crashDiagnosticsBudget, kFaultBudgetPerCall);
+    InterlockedExchange(&g_budgetExhaustedReported, 0);
+}
+
 const char* CurrentLifecycleStep() {
     const char* step = g_audioDeviceLifecycleStep;
     return step == nullptr ? "unknown" : step;
+}
+
+// Two faults racing each other, or a death part way through the copy, would otherwise
+// splice two records into a line that is still syntactically valid but names the wrong
+// code - the worst possible outcome for a slot whose entire purpose is to name the last
+// thing that happened. Admitting one writer at a time removes the splice, and writing the
+// terminator before the body means a record cut short by the death reads as empty rather
+// than as a different fault. The first byte is written last, so the record only becomes
+// visible to the next process once all of it is there.
+void PublishFaultSlot(const char* text, int length) {
+    volatile char* const slot = g_faultSlot;
+    if (slot == nullptr || length <= 0) {
+        return;
+    }
+    if (InterlockedCompareExchange(&g_faultSlotWriter, 1, 0) != 0) {
+        return;
+    }
+
+    slot[0] = '\0';
+    const int limit = static_cast<int>(kFaultSlotSize) - 1;
+    const int count = length < limit ? length : limit;
+    for (int index = 1; index < count; ++index) {
+        slot[index] = text[index];
+    }
+    slot[count] = '\0';
+    slot[0] = text[0];
+
+    InterlockedExchange(&g_faultSlotWriter, 0);
+}
+
+// Nothing else empties the slot, so without this a single out-of-step fault would be
+// reported as the last fault before exit on every subsequent launch, long after the call
+// that produced it ended cleanly.
+void ClearFaultSlot() {
+    if (volatile char* const slot = g_faultSlot) {
+        slot[0] = '\0';
+    }
 }
 
 // A fatal error that does not travel as a structured exception never reaches a vectored
@@ -286,16 +377,27 @@ void InvalidParameterReporter(
 LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
     if (pointers == nullptr ||
         pointers->ExceptionRecord == nullptr ||
-        g_audioDeviceLifecycleDepth <= 0 ||
+        (g_audioDeviceLifecycleDepth <= 0 && g_callActiveDepth <= 0) ||
         !IsFatalExceptionCode(pointers->ExceptionRecord->ExceptionCode)) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    if (!ClaimFaultReport()) {
+    const bool inStep = g_audioDeviceLifecycleDepth > 0;
+    const bool alwaysFatal = IsAlwaysFatalExceptionCode(pointers->ExceptionRecord->ExceptionCode);
+
+    // Only a fault raised while a device step is on the stack, or one of the codes that is
+    // fatal by construction, is written to the log. Anything else goes to the mapped slot
+    // instead, which neither claims budget nor performs file I/O on the engine's
+    // real-time threads.
+    if ((inStep || alwaysFatal) && !ClaimFaultReport()) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    const char* step = CurrentLifecycleStep();
+    // The scope only tracks depth, so the step and thread it recorded outlive it. Reading
+    // them when no step is live would name a device call that finished long ago and
+    // compare against the thread that made it, which reads as a strong signal pointing at
+    // a path that is not involved at all.
+    const char* step = inStep ? CurrentLifecycleStep() : "none";
 
     // The exception code alone cannot name the failure, because .NET Native raises an
     // access violation for every ordinary null dereference and this app has a known
@@ -323,7 +425,10 @@ LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
     AppendLiteral(line, length, ";step=");
     AppendLiteral(line, length, step);
     AppendLiteral(line, length, ";same_thread=");
-    line[length++] = (static_cast<LONG>(GetCurrentThreadId()) == g_audioDeviceLifecycleThread) ? '1' : '0';
+    line[length++] =
+        (inStep && static_cast<LONG>(GetCurrentThreadId()) == g_audioDeviceLifecycleThread) ? '1' : '0';
+    AppendLiteral(line, length, ";in_step=");
+    line[length++] = inStep ? '1' : '0';
     AppendLiteral(line, length, ";engine=");
     line[length++] = inModule ? '1' : '0';
     AppendLiteral(line, length, ";app=");
@@ -349,10 +454,21 @@ LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
 
     AppendLiteral(line, length, ";noncontinuable=");
     line[length++] = (pointers->ExceptionRecord->ExceptionFlags & EXCEPTION_NONCONTINUABLE) ? '1' : '0';
-    AppendLiteral(line, length, "\r\n");
 
-    WriteFaultLine(line, length);
+    // A code that is fatal by construction is recorded in both places: the log gets it
+    // immediately, and the mapped slot keeps it even if the process dies before the write
+    // reaches disk.
+    if (alwaysFatal) {
+        PublishFaultSlot(line, length);
+    }
 
+    if (inStep || alwaysFatal) {
+        AppendLiteral(line, length, "\r\n");
+        WriteFaultLine(line, length);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    PublishFaultSlot(line, length);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -377,12 +493,32 @@ BOOL CALLBACK InstallFatalExceptionReporter(PINIT_ONCE, PVOID, PVOID*) {
         int length = 0;
         AppendLiteral(line, length, "result=inflight_at_exit;step=");
         for (const char* text = g_inflightRecovered;
-             *text != '\0' && length < static_cast<int>(sizeof(line)) - 32;
+             *text != '\0' && length < static_cast<int>(sizeof(line)) - 8;
              ++text) {
             line[length++] = *text;
         }
-        AppendLiteral(line, length, ";capture_skipped=");
-        line[length++] = g_skipCaptureAfterFault ? '1' : '0';
+        AppendLiteral(line, length, "\r\n");
+        WriteFaultLine(line, length);
+    }
+
+    // The last fault the previous process saw. Each fault overwrote the one before it, so
+    // what survived is the closest observed event to the death.
+    if (g_faultRecovered[0] != '\0' && g_crashDiagnosticsPath[0] != L'\0') {
+        char line[kFaultSlotSize + 32];
+        int length = 0;
+        AppendLiteral(line, length, "result=last_fault_before_exit;fault=");
+
+        // The stored record opens with its own result= key, which would make the emitted
+        // line carry two of them and leave any reader to guess which one it means.
+        const char* text = g_faultRecovered;
+        constexpr char kResultKey[] = "result=";
+        if (std::strncmp(text, kResultKey, sizeof(kResultKey) - 1) == 0) {
+            text += sizeof(kResultKey) - 1;
+        }
+
+        for (; *text != '\0' && length < static_cast<int>(sizeof(line)) - 8; ++text) {
+            line[length++] = *text;
+        }
         AppendLiteral(line, length, "\r\n");
         WriteFaultLine(line, length);
     }
@@ -513,23 +649,14 @@ public:
     int32_t InitMicrophone() override { return Guarded("init_microphone", &webrtc::AudioDeviceModule::InitMicrophone); }
     int32_t InitPlayout() override { return Guarded("init_playout", &webrtc::AudioDeviceModule::InitPlayout); }
     int32_t InitRecording() override {
-        if (g_skipCaptureAfterFault) {
-            return SkipCapture("init_recording");
-        }
         return Guarded("init_recording", &webrtc::AudioDeviceModule::InitRecording);
     }
     int32_t StartPlayout() override { return Guarded("start_playout", &webrtc::AudioDeviceModule::StartPlayout); }
     int32_t StopPlayout() override { return Guarded("stop_playout", &webrtc::AudioDeviceModule::StopPlayout); }
     int32_t StartRecording() override {
-        if (g_skipCaptureAfterFault) {
-            return SkipCapture("start_recording");
-        }
         return Guarded("start_recording", &webrtc::AudioDeviceModule::StartRecording);
     }
     int32_t StopRecording() override {
-        if (g_skipCaptureAfterFault) {
-            return SkipCapture("stop_recording");
-        }
         return Guarded("stop_recording", &webrtc::AudioDeviceModule::StopRecording);
     }
 
@@ -575,20 +702,6 @@ public:
     }
 
 private:
-    // Reports success without touching the platform module. The engine then runs the call
-    // with playout only, so a build that survives here has proved the capture path is what
-    // ends the process, and the user still gets audio in one direction meanwhile.
-    int32_t SkipCapture(const char* step) const {
-        // The report below is the managed marshalling path, which is itself one of the
-        // things under investigation, so it keeps the same instrumentation a real step
-        // gets. Without the scopes a death here would record nothing and the experiment
-        // would read as "the bypass did not help" rather than naming the report.
-        AudioDeviceLifecycleScope scope(step);
-        InflightStepScope inflight(step, "report_skipped");
-        Report(std::string("step=") + step + ";phase=skipped;reason=prior_fault");
-        return 0;
-    }
-
     template <typename Method, typename... Args>
     int32_t Guarded(const char* step, Method method, Args... arguments) const {
         AudioDeviceLifecycleScope scope(step);
@@ -698,6 +811,14 @@ public:
         }
 
         return CallSessionPtr(new CallSession(configuration, std::move(callbacks)));
+    }
+
+    ~CallSession() {
+        // Backstop for a session abandoned without a stop ever being requested. The
+        // normal paths disarm in Stop()/ForceRelease(), because tgcalls holds a strong
+        // reference in its stop completion and destruction can therefore happen an
+        // unspecified time later on one of its own threads.
+        DisarmFaultReporting();
     }
 
     void Start() {
@@ -841,6 +962,11 @@ public:
         }
 
         _started = true;
+        // From here the engine owns live media threads, so the fault reporter stays armed
+        // until teardown rather than only while an audio device call is on the stack.
+        RenewFaultBudget();
+        InterlockedIncrement(&g_callActiveDepth);
+        _faultReportingArmed = true;
     }
 
     void ReceiveSignalingData(std::vector<uint8_t> data) {
@@ -896,6 +1022,7 @@ public:
 
         if (instance == nullptr) {
             DropAudioDeviceModule();
+            DisarmFaultReporting();
             _stoppedCondition.notify_all();
             return;
         }
@@ -931,6 +1058,11 @@ public:
                 self->_stopped = true;
             }
             self->_completionThreadId.store(0);
+            // Closes the fault reporting window at a defined point. Waiting for the
+            // session to be destroyed would leave it open until tgcalls released the
+            // strong reference captured here, which happens at an unspecified later
+            // time on one of its own threads.
+            self->DisarmFaultReporting();
             self->_stoppedCondition.notify_all();
         });
     }
@@ -981,6 +1113,7 @@ public:
         }
 
         DropAudioDeviceModule();
+        DisarmFaultReporting();
         _stoppedCondition.notify_all();
     }
 
@@ -1061,12 +1194,22 @@ private:
         }
     }
 
+    // Closes the whole-call fault reporting window exactly once, whichever teardown path
+    // reaches it first.
+    void DisarmFaultReporting() {
+        if (_faultReportingArmed.exchange(false)) {
+            InterlockedDecrement(&g_callActiveDepth);
+            ClearFaultSlot();
+        }
+    }
+
     std::mutex _mutex;
     std::mutex _audioDeviceMutex;
     std::condition_variable _stoppedCondition;
     std::atomic<unsigned long> _completionThreadId{0};
     std::atomic<bool> _audioDeviceCreated{false};
     std::atomic<bool> _audioDeviceReleased{false};
+    std::atomic<bool> _faultReportingArmed{false};
     webrtc::scoped_refptr<webrtc::AudioDeviceModule> _audioDeviceModule;
     CallConfiguration _configuration;
     std::unique_ptr<tgcalls::Instance> _instance;

@@ -1063,3 +1063,276 @@ plus a fallback that only a crash can switch on.
   that does not exist on Windows 10 Mobile. That branch is ruled out.
 * Diagnostic budget exhaustion is ruled out as a cause of the log stopping: the crashing
   segments wrote 31 and 32 media lines against a budget of 192.
+
+## 26.9.6161.0 result — the recording path is not the cause
+
+The in-flight marker worked and returned a clear answer on the first device test.
+
+### What the device reported
+
+```
+voip.media|step=init_recording;phase=begin        20:59:38.1336
+voip.media|step=init_recording;phase=end;faulted=0;code=0   20:59:39.1893
+voip.media|step=init_recording;phase=begin/end  (the duplicate init)
+voip.media|step=start_recording;phase=begin      20:59:39.2013
+<process death>
+voip.fault|result=inflight_at_exit;step=start_recording:native;capture_skipped=1
+```
+
+Three conclusions follow directly, and they retire a theory each earlier build was
+built on.
+
+1. **`InitRecording` succeeds.** It returns `code=0`, taking 1.05 seconds. Every
+   previous build concluded the process died inside it purely because the log stopped
+   after `phase=begin`. It did not. The 1-second duration is why that line was so often
+   the last one written.
+2. **The process died with `start_recording` in flight, in the `native` stage** — not in
+   the managed reporting path. That rules out the managed reverse-callback theory for
+   this death.
+3. **But `StartRecording` is almost certainly a bystander.** It does very little: it
+   creates the capture thread and then blocks in
+   `WaitForSingleObject(_hCaptureStartedEvent, 1000)`. A step is marked in flight for the
+   whole of that wait, so any death on any thread during that second is attributed to it.
+
+### The bypass experiment settled it
+
+The same build armed a capture bypass on the next launch. The following call ran with
+`init_recording` and `start_recording` skipped entirely, reached
+`voip.transport|state=Established` — **and the process still died**, this time leaving
+no marker at all, because no audio device step was in flight.
+
+So:
+
+* Skipping the entire recording path does not keep the call alive. The recording path is
+  not the cause.
+* A death with no step in flight is invisible to the fault reporter, because the vectored
+  handler was gated on `g_audioDeviceLifecycleDepth > 0`. That gate is the reason the
+  fatal event has never been captured.
+
+The capture bypass is retired in 26.9.6162.0. It cannot help, and leaving it armed would
+remove the microphone from every subsequent call and make a surviving call impossible to
+recognise.
+
+### What this leaves
+
+The killer runs on a thread the instrumentation does not cover, during a window the fault
+reporter was not armed for. Playout is started and the transport is established in every
+failing run, so the engine's own media threads are live in both the capture and the
+no-capture case.
+
+## 26.9.6163.0 — arming the instrumentation where the death actually happens
+
+Four changes, in order of expected value. (Built as 6162 first; that build was never
+released, because review found its wider reporting window could spend the log budget on
+benign faults and drop the fatal one. 6163 is 6162 plus the corrections below.)
+
+### 1. `CoreApplication.UnhandledErrorDetected` (diagnostic *and* candidate fix)
+
+The app subscribed to `Application.UnhandledException` only, which observes the UI thread
+and nothing else. The call engine raises its failures on WebRTC's threads, so a managed
+failure there was never going to appear — on .NET Native it fail-fasts the process
+outright, writing nothing.
+
+`CoreApplication.UnhandledErrorDetected` is the one managed hook that sees those.
+`Propagate()` rethrows the error on the handler's thread so it can be recorded, and
+catching it marks the error handled. If the crash is a managed exception escaping a
+native callback, this both names it and stops it being fatal.
+
+The handler records every error but only *absorbs* a `NullReferenceException`, the shape
+this app is already known to raise once per call and survive. Anything else is logged and
+then rethrown, leaving it unhandled. Suppressing an arbitrary failure inside a native
+callback would resume the caller with half-applied invariants and convert a crash that
+names its cause into a later one that does not. Log lines are
+`app.unhandled.core.suppressed` and `app.unhandled.core.fatal`.
+
+### 2. Fault reporting armed for the whole call
+
+`g_callActiveDepth` is incremented once the tgcalls instance exists and is decremented at
+teardown (`Stop()`'s completion and `ForceRelease()`, with `~CallSession` as a backstop —
+tgcalls holds a strong reference in its stop completion, so destruction alone would close
+the window at an unspecified later time). The vectored handler now reports while either an
+audio device step is on the stack **or** a call is live. A new `in_step=` field preserves
+the old distinction, and when no step is live the report says `step=none;same_thread=0`
+rather than naming a device call that finished long ago.
+
+### 3. A mapped fault slot, so a fault outside a device step costs nothing
+
+Widening the window admits the benign managed access violation this app raises on every
+call. Writing each one to the log would spend the 24-entry budget long before the fatal
+fault arrived — and an empty log is indistinguishable from a clean run — and would run
+blocking file I/O on WebRTC's real-time threads, which the fault handler is explicitly not
+allowed to do.
+
+So faults raised outside a device step are written to a fixed 192-byte slot in the same
+file-backed section as the in-flight marker. Each fault overwrites the last, costs no
+system call and claims no budget, and because the memory manager writes dirty pages back
+regardless of how the process ends, the value that survives is by construction the last
+fault before the death. The next launch emits it as
+`voip.fault|result=last_fault_before_exit;...`.
+
+Faults *inside* a device step still go straight to the log as before. Their budget is now
+restored at the start of every call, and the first drop within a call emits
+`result=budget_exhausted` so a truncated record is never read as a clean one.
+
+### 4. App lifecycle logging
+
+`Suspending`, `Resuming`, `EnteredBackground`, `LeavingBackground`. Windows 10 Mobile
+terminates an app that holds audio across a suspend, and in the log that is
+indistinguishable from a crash. These lines separate "we faulted" from "the OS took us
+out" — a theory that is still open and that nothing so far excludes.
+
+### How to read the next log
+
+Read these in order; the first that matches names the layer the death happens in.
+
+* `app.unhandled.core.fatal` or `app.unhandled.core.suppressed` present → the crash is a
+  managed failure off the UI thread, now named by type and stack. `suppressed` means the
+  process was allowed to continue, so if the call also survives, this was the cause. This
+  is the best case.
+* `voip.fault|result=last_fault_before_exit;...` → the last fault the dead process saw
+  while a call was live, recovered from the mapped slot. `engine=1` is bridge/WebRTC code
+  and `offset=` resolves against the archived map file via `Resolve-FaultOffset.ps1`;
+  `app=1` is .NET Native compiled managed code; `null_page=1` with `app=1` is a managed
+  null dereference.
+* `voip.fault|result=exception;...;in_step=1` → a fault raised while an audio device call
+  was actually on the stack.
+* `app.lifecycle|event=suspending` just before the death → the OS is suspending the app
+  during the call and this was never a crash.
+* `result=budget_exhausted` → reports were dropped; the record is incomplete rather than
+  clean.
+* Still nothing → the death is not an exception, not managed, and not a suspend, which
+  points at an OS-level kill of the app container.
+
+The capture bypass is retired: it was tested on device and the process died anyway, so it
+only removed the microphone and made a surviving call impossible to recognise. The mic is
+live again in this build.
+
+### 26.9.6163.0 artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`.
+
+| File | SHA-256 |
+| --- | --- |
+| `Unigram_26.9.6163.0_ARM_ModernTgCalls_FaultSlot_Sideload.zip` | `D25092C1D702A6B11311A9D6A8371F0AC59CAFEC455E0544B156D15051CBB047` |
+| `Unigram_26.9.6163.0_ARM_ModernTgCalls_FaultSlot.appx` | `FA290B13E7E97293F977B308177DAE452BAE66450B5072CC5B5F6F17CCB2B7BE` |
+| `Unigram_26.9.6163.0_ARM_ModernTgCalls_FaultSlot.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` |
+| `ModernCallsBridge_26.9.6163.0.map` | `4B6D2DA99ECA13C09F184B05D79CE18235CF7B70A696773D111D6E6E80DAE67C` |
+
+Packed `ModernCallsBridge.dll` `07A573AF8341252D61E9DCD6D0EA4F41354E60C31759454A6E9C8C06FE23A30F`,
+identical to the freshly built binary. The map file is kept out of the package and is only
+needed to resolve an `offset=` from this exact build.
+
+## 26.9.6164.0 - the ABI mismatch, and why nothing was ever logged
+
+This build stops adding observers. The 6163 log finally said something decisive, and what
+it pointed at is a build configuration defect rather than a bug in the call code.
+
+### What 6163 proved
+
+Two separate results, both useful:
+
+* The per-call managed exception is named at last: a `NullReferenceException` in
+  `VoIPPage.OnSizeChanged`. It was suppressed, the process survived it by roughly 2.3
+  seconds, and the call carried on normally through `AcceptCall`, `CallStateReady`,
+  transport setup and the whole audio device sequence. It is a real bug, fixed in this
+  build, but it was never the crash.
+* The fatal death raises **no exception at all** within the filter we were using, and no
+  `app.lifecycle|event=suspending` precedes it. The mapped fault slot was empty, so there
+  was not even an out-of-step fault to recover. The log simply stops between
+  `start_playout;phase=begin` and the relaunch.
+
+### Root cause
+
+`TgCallsEngine.vcxproj` compiled the tgcalls sources and this facade with a **different
+ABI than the `webrtc.lib` they link against**. Comparing the project's defines against
+`C:\wrtcar\src\out\msvc\uwp\Release\arm\obj\modules\audio_device\audio_device_api.ninja`
+(the library was configured `is_debug = false`):
+
+| Define | webrtc.lib | bridge, before | Effect of the mismatch |
+| --- | --- | --- | --- |
+| `NDEBUG` | set | **missing** | `RTC_DCHECK_IS_ON` 0 vs **1** |
+| `_HAS_EXCEPTIONS=0` | set | missing | MSVC STL ODR mismatch |
+| `ABSL_ALLOCATOR_NOTHROW=1` | set | missing | abseil container ABI |
+| `WEBRTC_LIBRARY_IMPL` | set | missing | export and trace linkage |
+| `WEBRTC_NON_STATIC_TRACE_EVENT_HANDLERS=0` | set | missing | trace handler indirection |
+| `WEBRTC_INCLUDE_INTERNAL_AUDIO_DEVICE` | set | missing | gates the real ADM in headers |
+
+`NDEBUG` is not cosmetic here. It selects `RTC_DCHECK_IS_ON`, and `webrtc::SequenceChecker`
+is a full mutex-and-thread-reference object when that is on and an **empty stub** when it
+is off. Every WebRTC type embedding one - `AudioDeviceBuffer`, `cricket::BaseChannel`,
+`TaskQueueBase`, `Mutex` - therefore has a different `sizeof` and different member offsets
+on each side of the boundary. We were constructing and driving exactly those objects
+across it.
+
+That explains every symptom that previously had no explanation: a death with no exception,
+no suspend and no stable location; `start_recording` in 6161 and `start_playout` in 6163;
+and why bypassing the capture path never helped. It was never a step. It was memory
+corruption, and the step on the marker was only whatever happened to be in flight.
+
+### Why a failed check was invisible
+
+`rtc_base/checks.cc` ends `FatalLog` with:
+
+```cpp
+#if defined(WEBRTC_WIN)
+  DebugBreak();
+#endif
+  abort();
+```
+
+`DebugBreak()` raises `EXCEPTION_BREAKPOINT` (`0x80000003`). `IsFatalExceptionCode` did not
+accept that code, so the handler returned `EXCEPTION_CONTINUE_SEARCH`, nothing else
+handled it, and the process died leaving no record whatsoever. With DCHECKs wrongly
+enabled in our translation units, any thread-affinity assertion - and `AudioDeviceBuffer`
+is covered in them - would kill the process exactly this silently.
+
+### Changes
+
+1. **`TgCallsEngine.vcxproj`** now defines `NDEBUG`, `WEBRTC_INCLUDE_INTERNAL_AUDIO_DEVICE`,
+   `WEBRTC_LIBRARY_IMPL`, `WEBRTC_NON_STATIC_TRACE_EVENT_HANDLERS=0` and
+   `ABSL_ALLOCATOR_NOTHROW=1`, matching the library.
+2. **`IsFatalExceptionCode`** gained `IsAlwaysFatalExceptionCode`, covering
+   `EXCEPTION_BREAKPOINT`, `STATUS_STACK_BUFFER_OVERRUN`, `STATUS_INVALID_CRUNTIME_PARAMETER`,
+   `STATUS_HEAP_CORRUPTION` and `STATUS_ASSERTION_FAILURE`. These are fatal by construction,
+   so they are written to the log wherever they occur and mirrored into the mapped slot.
+   `RTC_CHECK` stays live even with `NDEBUG`, so this remains necessary.
+   C++ exceptions (`0xE06D7363`) are still excluded: this facade throws
+   `std::invalid_argument` as ordinary argument validation.
+3. **`VoIPPage.OnSizeChanged`** returns early when disposed or before the composition
+   visuals exist, and null-checks the named elements it transforms.
+4. **Review fixes.** The fault slot is cleared in `DisarmFaultReporting` so a clean call
+   cannot leave a stale record to be reported as `last_fault_before_exit` on the next
+   launch; `PublishFaultSlot` takes a single-writer claim and publishes its first byte last
+   so a torn record reads as empty rather than as a different fault; the
+   `budget_exhausted` notice moved into `ClaimFaultReport` so the abrupt termination
+   handlers are covered too; and the recovered line no longer carries two `result=` keys.
+
+### Residual risk
+
+`_HAS_EXCEPTIONS=0` is still **not** matched, because this facade throws `std::invalid_argument`
+and `std::logic_error` as part of its contract with the managed layer. Mixing the two
+settings is formally unsupported. If calls still fail after this build, converting those
+throws to status returns and matching the flag is the next step. `NTDDI_VERSION=NTDDI_WIN10_RS2`
+is also ours alone, deliberately, to keep the Windows 10 Mobile API surface.
+
+### How to read the next log
+
+1. `voip.fault|result=exception;code=0x80000003` → a WebRTC `RTC_CHECK` failed, and the
+   `offset=` now resolves to the exact function through `ModernCallsBridge_26.9.6164.0.map`.
+2. No crash, call connects → the ABI mismatch was the whole story.
+3. A crash with still nothing logged → `_HAS_EXCEPTIONS` is the remaining mismatch; see
+   residual risk above.
+
+### 26.9.6164.0 artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`.
+
+| File | SHA-256 |
+| --- | --- |
+| `Unigram_26.9.6164.0_ARM_ModernTgCalls_AbiFix_Sideload.zip` | `DA0519CD872049AB4373B1EE3D254E5B59112158320760C0B9754943F660A965` |
+| `Unigram_26.9.6164.0_ARM_ModernTgCalls_AbiFix.appx` | `5BF4999A3323566FAF74A610C38A48BCED20C255A6987AEFCC251DD6EA4456A0` |
+| `Unigram_26.9.6164.0_ARM_ModernTgCalls_AbiFix.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` |
+| `ModernCallsBridge_26.9.6164.0.map` | `4832B120B62014C3511E00F360CBF86DB88813D41BE1FA4BD3D72C27569AA7DC` |
+
+Packed `ModernCallsBridge.dll` `1AF6A2AE57EAC31970C1A487841267566E1C027864C14572ED08E3A43BB65D45`,
+identical to the freshly built binary.

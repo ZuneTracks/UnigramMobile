@@ -126,6 +126,26 @@ namespace Unigram
             // production App Center app. Unhandled exceptions go to the local diagnostics log.
             TaskScheduler.UnobservedTaskException += OnUnobservedException;
             UnhandledException += OnUnhandledException;
+
+            // Application.UnhandledException only ever observes the UI thread, which is why
+            // every call crash so far has been invisible: the call engine raises its failures
+            // on WebRTC's own threads. CoreApplication.UnhandledErrorDetected is the one
+            // managed hook that sees those, and Propagate() rethrows the error here so it can
+            // be recorded. Catching it also marks the error handled, so a managed failure on a
+            // background thread no longer fail-fasts the process without leaving a trace.
+            Windows.ApplicationModel.Core.CoreApplication.UnhandledErrorDetected += OnUnhandledErrorDetected;
+
+            // Windows 10 Mobile terminates an app that holds audio while it is being suspended,
+            // and that death is indistinguishable from a crash in the log. Recording the
+            // lifecycle transitions is what separates "we faulted" from "the OS took us out".
+            Windows.ApplicationModel.Core.CoreApplication.Suspending += (s, e) =>
+                Logs.PushDiagnostics.Write("app.lifecycle", "event=suspending");
+            Windows.ApplicationModel.Core.CoreApplication.Resuming += (s, e) =>
+                Logs.PushDiagnostics.Write("app.lifecycle", "event=resuming");
+            EnteredBackground += (s, e) =>
+                Logs.PushDiagnostics.Write("app.lifecycle", "event=entered_background");
+            LeavingBackground += (s, e) =>
+                Logs.PushDiagnostics.Write("app.lifecycle", "event=leaving_background");
 #elif !DEBUG
             Microsoft.AppCenter.AppCenter.Start(Constants.AppCenterId,
                 typeof(Microsoft.AppCenter.Analytics.Analytics),
@@ -598,6 +618,65 @@ namespace Unigram
             Logs.PushDiagnostics.WriteException("app.unhandled.handler", e.Exception, null, e.Message);
             e.Handled = true;
         }
+
+        private void OnUnhandledErrorDetected(object sender, Windows.ApplicationModel.Core.UnhandledErrorDetectedEventArgs e)
+        {
+            // Reached while the process is already ending because this handler rethrew.
+            // Returning without calling Propagate leaves the error unhandled, which is
+            // what keeps that termination on course instead of looping back in here.
+            if (System.Threading.Volatile.Read(ref _unhandledErrorFatal) != 0)
+            {
+                return;
+            }
+
+            // Propagate() is the only way to obtain the underlying exception; it rethrows on
+            // this thread, and catching it is what marks the error handled. The handler is
+            // reached from arbitrary threads, so it must not touch UI state.
+            Exception error = null;
+            try
+            {
+                e.UnhandledError.Propagate();
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+            }
+
+            if (error == null)
+            {
+                return;
+            }
+
+            // A null dereference on the call UI path happens on every call and has been
+            // observed to be survivable, so that is the one shape this handler absorbs.
+            // Anything else stays unhandled on purpose: a managed failure inside a native
+            // callback leaves the caller's invariants half applied, and resuming it would
+            // trade a crash that names its cause for a later one that does not.
+            var survivable = error is NullReferenceException;
+
+            try
+            {
+                Logs.PushDiagnostics.WriteException(
+                    survivable ? "app.unhandled.core.suppressed" : "app.unhandled.core.fatal",
+                    error,
+                    null,
+                    null);
+            }
+            catch
+            {
+                // Losing the record is survivable; failing to record is not a reason to
+                // change what happens to the error itself.
+            }
+
+            if (!survivable)
+            {
+                // The record above is already on disk, so ending here costs no diagnostics.
+                System.Threading.Volatile.Write(ref _unhandledErrorFatal, 1);
+                throw error;
+            }
+        }
+
+        private static int _unhandledErrorFatal;
 #elif !DEBUG
         private void OnUnobservedException(object sender, UnobservedTaskExceptionEventArgs e)
         {

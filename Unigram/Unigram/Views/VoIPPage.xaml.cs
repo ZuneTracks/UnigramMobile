@@ -227,9 +227,18 @@ namespace Unigram.Views
 
         private void OnSizeChanged(object sender, SizeChangedEventArgs e)
         {
+            // The page raises its first SizeChanged as soon as it is measured, which can be
+            // before the composition visuals have been created and again after Dispose has
+            // torn them down. Both are ordinary, and neither justifies faulting the UI
+            // thread over work that is purely decorative.
+            if (_disposed || _blurVisual == null || _blurBrush == null)
+            {
+                return;
+            }
+
             _blurVisual.Size = e.NewSize.ToVector2();
 
-            if (_collapsed)
+            if (_collapsed && SmallPanel != null && LargeEmojiLabel != null)
             {
                 var transform = SmallPanel.TransformToVisual(LargeEmojiLabel);
                 var position = transform.TransformPoint(new Point());
