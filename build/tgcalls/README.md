@@ -782,3 +782,80 @@ Object   webrtc:audio_device_core_win.obj
 
 Use the map archived for the build that produced the log; a map from any other
 build resolves to the wrong function.
+
+## 26.9.6158.0 — the crash was managed all along
+
+The 26.9.6157.0 run reported this, and it ends the search for a native fault:
+
+```text
+result=exception;code=0xC0000005;step=init_playout;same_thread=0;engine=0;access=read;null_page=1
+result=exception;code=0xC0000005;step=init_recording;same_thread=0;engine=0;access=write;null_page=1
+```
+
+`engine=0` means the faulting address is outside `ModernCallsBridge.dll`, which
+is where all of WebRTC and tgcalls live, so neither of these is a native audio
+fault. `null_page=1` on both, and the first one fired while `init_playout` was
+in flight — a step that went on to complete with `faulted=0;code=0`. A fault the
+process survives is not the fault that kills it.
+
+What these actually are is how .NET Native raises a `NullReferenceException`:
+a hardware access violation against the null page. The main log carries the
+matching `hresult=0x80004003` entries. So the crash is a managed exception, and
+the reason nothing was ever recorded is that it never reached a handler:
+`Application.UnhandledException` only observes the UI thread, and the log shows
+no `app.unhandled` line for the fatal one, unlike the benign ones a few seconds
+earlier.
+
+That leaves exactly one mechanism. TDLib's own native callbacks were contained
+long ago — `ProtoService.OnResult`, `TdHandler.OnResult` and
+`TdCompletionSource.OnResult` each catch and record, precisely because a managed
+exception escaping a reverse P/Invoke reaches
+`RhpFailFastForPInvokeExceptionPreemp` and terminates the process with no
+managed stack. The tgcalls events were the last boundary of that shape left
+unguarded: `StateChanged`, `SignalingData`, `Stopped`, `AudioDeviceReport`,
+`SignalBarsChanged`, `AudioLevelChanged` and `RemoteAudioStateChanged` are all
+raised on native worker threads, and every one of them ran straight into
+application code.
+
+`GuardModernCallback` now wraps all seven. It contains the exception and records
+`voip.callback|result=error;name=<callback>;type=<exception>`, which both stops
+the fail-fast and names the offending callback on the next run. The callback
+name and exception type are API surface, not user data.
+
+Note that the truncation at `init_recording` was always a coincidence of
+timing rather than a cause: the ADM call is simply the last thing written
+before an unrelated thread takes the process down.
+
+### Artifacts
+
+```text
+%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\Unigram_26.9.6158.0_ARM_ModernTgCalls_CallbackGuard.appx
+  57500419 bytes  SHA-256 9ADABB9366BA071731722DC5697C3EAB3D57131E173E23D431B9CD9A4AA03E38
+%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\Unigram_26.9.6158.0_ARM_ModernTgCalls_CallbackGuard_Sideload.zip
+  64105253 bytes  SHA-256 4B180124F62F8A01F1829626664D8BBF88DE9E7D478FA5401614AA3B7F02A867
+%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\ModernCallsBridge_26.9.6158.0.map
+  14800124 bytes  SHA-256 7B20BA631CCF66A9A707D406A21D3EF774E9FCB8AD3C5DC7EFAC252DA978819E
+```
+
+### Two defects the guard exposed
+
+Containing the callbacks made two pre-existing races matter, so both were fixed
+in the same change.
+
+`DisposeModernCall` is reached from the tgcalls worker thread through the
+session's stopped event and from the TDLib update thread when the call is
+discarded, and it previously null-checked `_modernController`, disposed it, and
+only then cleared the field. Two unsynchronised callers could each pass that
+check and dispose the same native session twice; `AudioCallSession`'s destructor
+blocks in `StopCallSession` before `delete holder`, so a double close is a heap
+corruption rather than a no-op. The field is now claimed with
+`Interlocked.Exchange` and the call id and starting flag are cleared before
+`Dispose` runs, so a throwing dispose can no longer leave a dead call installed
+— which, with the exception now swallowed, would otherwise have made the service
+reject every later call until the app was restarted.
+
+The callback failure line is also recorded only once per callback name per call.
+A null dereference recurs on every invocation, and audio levels arrive ten times
+a second, so reporting each one would have drained the process-wide call
+diagnostic budget within seconds and silenced the rest of the log on exactly the
+run being read.

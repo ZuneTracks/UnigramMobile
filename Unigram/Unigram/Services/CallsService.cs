@@ -72,6 +72,8 @@ namespace Unigram.Services
         private static readonly object _microphoneLock = new object();
         private static Task<int> _microphoneTask;
         private readonly object _modernAudioLevelLock = new object();
+        private readonly object _modernCallbackFaultLock = new object();
+        private readonly HashSet<string> _modernCallbackFaults = new HashSet<string>();
         private int _modernMediaDiagnosticBudget = ModernMediaDiagnosticBudget;
         private int _modernAudioLevelSamples;
         private int _modernAudioLevelActive;
@@ -794,13 +796,20 @@ namespace Unigram.Services
 
             try
             {
-                session.StateChanged += (sender, state) => OnModernCallStateChanged(call.Id, state);
-                session.SignalingData += (sender, data) => SendModernSignalingData(call.Id, session, data);
-                session.Stopped += (sender, completed) => OnModernCallStopped(call.Id, session, completed);
-                session.AudioDeviceReport += (sender, report) => OnModernAudioDeviceReport(call.Id, report);
-                session.SignalBarsChanged += (sender, bars) => OnModernSignalBarsChanged(call.Id, bars);
-                session.AudioLevelChanged += (sender, level) => OnModernAudioLevelChanged(call.Id, level);
-                session.RemoteAudioStateChanged += (sender, state) => OnModernRemoteAudioStateChanged(call.Id, state);
+                session.StateChanged += (sender, state) =>
+                    GuardModernCallback("state_changed", () => OnModernCallStateChanged(call.Id, state));
+                session.SignalingData += (sender, data) =>
+                    GuardModernCallback("signaling_data", () => SendModernSignalingData(call.Id, session, data));
+                session.Stopped += (sender, completed) =>
+                    GuardModernCallback("stopped", () => OnModernCallStopped(call.Id, session, completed));
+                session.AudioDeviceReport += (sender, report) =>
+                    GuardModernCallback("audio_device_report", () => OnModernAudioDeviceReport(call.Id, report));
+                session.SignalBarsChanged += (sender, bars) =>
+                    GuardModernCallback("signal_bars", () => OnModernSignalBarsChanged(call.Id, bars));
+                session.AudioLevelChanged += (sender, level) =>
+                    GuardModernCallback("audio_level", () => OnModernAudioLevelChanged(call.Id, level));
+                session.RemoteAudioStateChanged += (sender, state) =>
+                    GuardModernCallback("remote_audio_state", () => OnModernRemoteAudioStateChanged(call.Id, state));
 
                 _modernController = session;
                 _modernCallId = call.Id;
@@ -852,6 +861,47 @@ namespace Unigram.Services
                 IsTurn = isTurn,
                 IsTcp = false
             };
+        }
+
+        /// <summary>
+        /// tgcalls raises these events on its own native worker threads. A managed exception that
+        /// escapes back into native code there is never routed to <see cref="Application.UnhandledException"/>,
+        /// so .NET Native fail-fasts the process instead of reporting it. Every callback is therefore
+        /// contained here, and the failure is recorded as a diagnostic naming only the callback and
+        /// the exception type so a fault can be attributed without ending the call.
+        /// </summary>
+        private void GuardModernCallback(string name, Action body)
+        {
+            try
+            {
+                body();
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    // A null dereference in a callback recurs on every invocation, and audio levels
+                    // alone arrive ten times a second, so reporting each one would exhaust the
+                    // process-wide call diagnostic budget within seconds and silence the rest of
+                    // the log. One line per callback is enough to name the offender.
+                    bool first;
+                    lock (_modernCallbackFaultLock)
+                    {
+                        first = _modernCallbackFaults.Add(name);
+                    }
+
+                    if (first)
+                    {
+                        WriteAudioCallDiagnostic(
+                            "voip.callback",
+                            $"result=error;transport=modern_tgcalls;name={name};type={ex.GetType().Name};hresult=0x{ex.HResult:X8}");
+                    }
+                }
+                catch
+                {
+                    // A diagnostic must never be the reason a callback escapes into native code.
+                }
+            }
         }
 
         /// <summary>
@@ -982,6 +1032,11 @@ namespace Unigram.Services
                 _modernAudioLevelReported = DateTime.MinValue;
             }
 
+            lock (_modernCallbackFaultLock)
+            {
+                _modernCallbackFaults.Clear();
+            }
+
             _modernSignalBars = -1;
             _modernRemoteAudioState = null;
             _modernMediaDiagnosticBudget = ModernMediaDiagnosticBudget;
@@ -1036,18 +1091,31 @@ namespace Unigram.Services
             }
         }
 
+        /// <summary>
+        /// Reached from both the tgcalls worker thread, through the session's stopped event, and
+        /// the TDLib update thread when the call is discarded, so the session has to be claimed
+        /// atomically: two unsynchronised callers would otherwise each pass a null check and
+        /// dispose the same native session twice. Clearing the fields before disposing also keeps
+        /// a throwing <see cref="IDisposable.Dispose"/> from leaving a dead call installed, which
+        /// would make the service reject every later call for the lifetime of the process.
+        /// </summary>
         private void DisposeModernCall()
         {
             var callId = _modernCallId;
-            if (_modernController != null)
-            {
-                _modernController.Dispose();
-                _modernController = null;
-            }
+            var controller = System.Threading.Interlocked.Exchange(ref _modernController, null);
+
             _modernCallId = 0;
             _modernCallStarting = false;
-            ResetModernMediaDiagnostics();
-            ClearPendingModernSignalingData(callId);
+
+            try
+            {
+                controller?.Dispose();
+            }
+            finally
+            {
+                ResetModernMediaDiagnostics();
+                ClearPendingModernSignalingData(callId);
+            }
         }
 
         private bool TryQueueModernSignalingData(int callId, IList<byte> data)
