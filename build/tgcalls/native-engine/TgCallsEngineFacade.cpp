@@ -682,6 +682,13 @@ __declspec(noinline) int32_t InvokeGuarded(
     }
 }
 
+// Published by the playout probe on WebRTC's render thread and read by
+// AudioDeviceStatus() on a normal thread. Only one call is active at a time, so a flat
+// set of atomics is sufficient and avoids any lock on the realtime path.
+std::atomic<int> g_playoutPeakPermille{0};
+std::atomic<uint32_t> g_playoutSampleRate{0};
+std::atomic<uint64_t> g_playoutWindows{0};
+
 /// <summary>
 /// Wraps the real audio transport so the playout stream can be measured. Only a peak
 /// amplitude and a frame count are derived; no audio is copied, retained, or reported
@@ -694,11 +701,11 @@ __declspec(noinline) int32_t InvokeGuarded(
 /// </summary>
 class PlayoutProbeAudioTransport : public webrtc::AudioTransport {
 public:
-    PlayoutProbeAudioTransport(
-        webrtc::AudioTransport* inner,
-        std::function<void(const std::string&)> report)
-        : _inner(inner)
-        , _report(std::move(report)) {
+    PlayoutProbeAudioTransport(webrtc::AudioTransport* inner)
+        : _inner(inner) {
+        g_playoutPeakPermille.store(0, std::memory_order_relaxed);
+        g_playoutSampleRate.store(0, std::memory_order_relaxed);
+        g_playoutWindows.store(0, std::memory_order_release);
     }
 
     int32_t RecordedDataIsAvailable(
@@ -749,11 +756,13 @@ public:
             nSamplesOut, elapsed_time_ms, ntp_time_ms);
 
         if (result == 0 && nBytesPerSample == sizeof(int16_t) * nChannels) {
+            // nSamplesOut is already the interleaved total (frames * channels), not a
+            // per-channel count, so it must not be multiplied by nChannels again.
             Measure(
                 static_cast<const int16_t*>(audioSamples),
-                nSamplesOut * nChannels,
-                samplesPerSec,
-                "play");
+                nSamplesOut,
+                nChannels,
+                samplesPerSec);
         }
 
         return result;
@@ -772,22 +781,46 @@ public:
             audio_data, elapsed_time_ms, ntp_time_ms);
 
         if (bits_per_sample == 16) {
+            // Here number_of_frames really is per-channel, so the interleaved total is
+            // the product.
             Measure(
                 static_cast<const int16_t*>(audio_data),
                 number_of_frames * number_of_channels,
-                static_cast<uint32_t>(sample_rate),
-                "pull");
+                number_of_channels,
+                static_cast<uint32_t>(sample_rate));
         }
+    }
+
+    /// <summary>
+    /// Reads the most recent completed window. Safe to call from any thread; returns
+    /// false until the first window has closed.
+    /// </summary>
+    static bool TryReadLevel(int* permille, uint32_t* sampleRate, uint64_t* windows) {
+        const auto completed = g_playoutWindows.load(std::memory_order_acquire);
+        if (completed == 0) {
+            return false;
+        }
+
+        *permille = g_playoutPeakPermille.load(std::memory_order_relaxed);
+        *sampleRate = g_playoutSampleRate.load(std::memory_order_relaxed);
+        *windows = completed;
+        return true;
     }
 
 private:
     /// <summary>
-    /// Accumulates a peak over roughly two seconds of playout and reports it as a
-    /// percentage of full scale, so a silent stream is distinguishable from a quiet
-    /// one without revealing anything about the content.
+    /// Accumulates a peak over roughly two seconds of playout and publishes it as a
+    /// permille of full scale, so a silent stream is distinguishable from a quiet one
+    /// without revealing anything about the content.
+    ///
+    /// This runs on WebRTC's render thread, inside the device module's critical section
+    /// and against a 10 ms deadline, so it only ever touches atomics. Emitting the
+    /// diagnostic would mean file I/O here, which would stall playout and could itself
+    /// cause the glitching the probe exists to characterise; the value is read out
+    /// instead by AudioDeviceStatus() on a normal thread.
     /// </summary>
-    void Measure(const int16_t* samples, size_t count, uint32_t sampleRate, const char* source) {
-        if (samples == nullptr || count == 0 || sampleRate == 0) {
+    void Measure(const int16_t* samples, size_t count, size_t channels, uint32_t sampleRate) {
+        if (samples == nullptr || count == 0 || sampleRate == 0 || channels == 0) {
             return;
         }
 
@@ -803,34 +836,27 @@ private:
             _windowPeak = peak;
         }
 
-        _windowSamples += count;
-        if (_windowSamples < static_cast<uint64_t>(sampleRate) * 2) {
+        _windowFrames += count / channels;
+        if (_windowFrames < static_cast<uint64_t>(sampleRate) * 2) {
             return;
         }
 
-        const auto windowPeak = _windowPeak;
-        _windowSamples = 0;
+        g_playoutPeakPermille.store(
+            static_cast<int>((static_cast<int64_t>(_windowPeak) * 1000) / 32768),
+            std::memory_order_relaxed);
+        g_playoutSampleRate.store(sampleRate, std::memory_order_relaxed);
+        g_playoutWindows.fetch_add(1, std::memory_order_release);
+
+        _windowFrames = 0;
         _windowPeak = 0;
-
-        if (_reportBudget == 0) {
-            return;
-        }
-        --_reportBudget;
-
-        const auto permille = static_cast<int>((static_cast<int64_t>(windowPeak) * 1000) / 32768);
-        _report(
-            std::string("step=playout_level;phase=window;source=") + source +
-            ";peak_permille=" + std::to_string(permille) +
-            ";rate=" + std::to_string(sampleRate));
     }
 
     webrtc::AudioTransport* _inner;
-    std::function<void(const std::string&)> _report;
-    uint64_t _windowSamples = 0;
-    int32_t _windowPeak = 0;
-    int _reportBudget = 12;
-};
 
+    // Only ever touched on the render thread.
+    uint64_t _windowFrames = 0;
+    int32_t _windowPeak = 0;
+};
 /// <summary>
 /// Forwards every audio device module call to the real platform module, reporting only
 /// fixed step names and numeric result codes. No device names, identifiers, or audio
@@ -858,10 +884,11 @@ public:
             // probe is a member that is destroyed before the base class releases the
             // module. Detach it first so that ordering can never leave a dangling callback.
             if (_playoutProbe) {
-                Guarded(
+                const auto cleared = Guarded(
                     "unregister_audio_callback",
                     static_cast<AdmAudioCallbackMethod>(&webrtc::AudioDeviceModule::RegisterAudioCallback),
                     nullptr);
+                ReleaseProbe(cleared == 0);
             }
 
             Guarded("terminate_release", &webrtc::AudioDeviceModule::Terminate);
@@ -899,17 +926,20 @@ public:
                 "register_audio_callback",
                 static_cast<AdmAudioCallbackMethod>(&webrtc::AudioDeviceModule::RegisterAudioCallback),
                 nullptr);
-            _playoutProbe.reset();
+            ReleaseProbe(cleared == 0);
             return cleared;
         }
 
-        auto probe = std::make_unique<PlayoutProbeAudioTransport>(audioCallback, _report);
+        auto probe = std::make_unique<PlayoutProbeAudioTransport>(audioCallback);
         const auto result = Guarded(
             "register_audio_callback",
             static_cast<AdmAudioCallbackMethod>(&webrtc::AudioDeviceModule::RegisterAudioCallback),
             probe.get());
 
         if (result == 0) {
+            // The module only drops the previous pointer once it accepts a new one, so
+            // the old probe is safe to free exactly here.
+            ReleaseProbe(true);
             _playoutProbe = std::move(probe);
         }
 
@@ -983,14 +1013,38 @@ public:
 
 private:
     /// <summary>
+    /// Frees the probe only when the device module has provably stopped pointing at it.
+    /// A refused or faulted unregister leaves the module holding the address, so the
+    /// object is deliberately leaked rather than freed under a live render thread. The
+    /// leak is bounded by one small object per abnormal teardown.
+    /// </summary>
+    void ReleaseProbe(bool detached) {
+        if (!_playoutProbe) {
+            return;
+        }
+
+        if (detached) {
+            _playoutProbe.reset();
+            return;
+        }
+
+        _report("step=release_audio_probe;phase=leaked");
+        _playoutProbe.release();
+    }
+
+    /// <summary>
     /// Playout can report success at every step and still be inaudible, because the
     /// endpoint gain and mute state belong to the platform module and tgcalls never
-    /// touches them. This reads them once after playout starts and lifts a muted or
-    /// zero-gain speaker. Only numeric levels are reported, never device names.
+    /// touches them. This reads them and lifts a muted or zero-gain speaker. Only
+    /// numeric gain is reported, never device names.
+    ///
+    /// The correction is deliberately conservative: it runs at most once per module, it
+    /// only ever acts on a reading of exactly zero, and it raises to half scale rather
+    /// than maximum, so a deliberate user setting is neither repeatedly overridden nor
+    /// forced to full volume into an earpiece.
     /// </summary>
     void EnsureSpeakerAudible() {
-        bool muteAvailable = false;
-        if (Guarded("speaker_mute_available", &webrtc::AudioDeviceModule::SpeakerMuteIsAvailable, &muteAvailable) == 0 &&
+        bool muteAvailable = false;        if (Guarded("speaker_mute_available", &webrtc::AudioDeviceModule::SpeakerMuteIsAvailable, &muteAvailable) == 0 &&
                 muteAvailable) {
             bool muted = false;
             if (GuardedConst(
@@ -1032,11 +1086,12 @@ private:
         Report("step=speaker_volume;phase=state;volume=" + std::to_string(volume) +
             ";max=" + std::to_string(maxVolume));
 
-        if (volume == 0 && maxVolume > 0) {
+        if (volume == 0 && maxVolume > 0 && !_speakerVolumeCorrected) {
+            _speakerVolumeCorrected = true;
             Guarded(
                 "set_speaker_volume",
                 static_cast<AdmVolumeInMethod>(&webrtc::AudioDeviceModule::SetSpeakerVolume),
-                maxVolume);
+                maxVolume / 2);
         }
     }
 
@@ -1079,8 +1134,8 @@ private:
     std::function<void(const std::string&)> _report;
     std::function<void()> _released;
     std::unique_ptr<PlayoutProbeAudioTransport> _playoutProbe;
+    bool _speakerVolumeCorrected = false;
 };
-
 std::string ToUtf8(const std::wstring& value) {
     if (value.empty()) {
         return {};
@@ -1366,6 +1421,20 @@ public:
             }
         } else {
             status += ";speaker_mute=unavailable";
+        }
+
+        // The decisive field: whether WebRTC is handing the device non-silent samples.
+        // A zero peak with a healthy device points upstream, at decode or the network;
+        // a non-zero peak with nothing audible points at the device or the routing.
+        int permille = 0;
+        uint32_t rate = 0;
+        uint64_t windows = 0;
+        if (PlayoutProbeAudioTransport::TryReadLevel(&permille, &rate, &windows)) {
+            status += ";playout_peak_permille=" + std::to_string(permille) +
+                ";playout_rate=" + std::to_string(rate) +
+                ";playout_windows=" + std::to_string(windows);
+        } else {
+            status += ";playout_peak_permille=pending";
         }
 
         return status;

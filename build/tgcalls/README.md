@@ -1651,3 +1651,73 @@ matching the built binary. Signature verified, identity
 present, zero forbidden payload entries, 23 files in the sideload ZIP.
 
 This supersedes 26.9.6166.0, which was never installed; it contains everything 6166 did.
+
+## 26.9.6168.0 — corrected playout probe (supersedes 6166 and 6167)
+
+Neither 26.9.6166.0 nor 26.9.6167.0 was ever installed on the device. Their
+artifacts have been deleted, because the 6167 probe contained a critical buffer
+overread. 6168 carries the full 6166 + 6167 feature set with four review fixes
+applied on top, and is the build to install.
+
+### Review fixes folded in
+
+1. **Critical: stereo playout buffer overread.** `NeedMorePlayData`'s `nSamplesOut`
+   is already the *interleaved* total (frames x channels), not a per-channel count —
+   see `audio/audio_transport_impl.cc` (`RTC_DCHECK_EQ(nSamplesOut, nChannels * nSamples)`)
+   and `modules/audio_device/audio_device_buffer.cc:359-360`, which divides it by
+   `play_channels_`. The probe multiplied it by `nChannels` again and read up to twice
+   the buffer length. Playout is stereo by default on this ADM
+   (`audio_device_core_win.cc:481`), so this was a live 2x overread on every render
+   callback. `Measure()` now takes an explicit interleaved `count` plus `channels`;
+   `NeedMorePlayData` passes `nSamplesOut` unmodified and `PullRenderData` passes
+   `number_of_frames * number_of_channels`.
+2. **Realtime safety.** The probe no longer does file I/O. `AudioDeviceWindowsCore`'s
+   render loop holds `_critSect` for the whole iteration and aborts playout if the
+   render event wait exceeds 0.5 s (`audio_device_core_win.cc:1551-1587`), so blocking
+   on `PushDiagnostics` there could itself have stopped audio. `Measure()` now only
+   writes three file-scope atomics (`g_playoutPeakPermille`, `g_playoutSampleRate`,
+   `g_playoutWindows`); `AudioDeviceStatus()` reads them on a normal thread.
+3. **Dangling probe on refused unregister.** `AudioDeviceBuffer::RegisterAudioCallback`
+   refuses with `-1` and keeps the old pointer while `playing_ || recording_`
+   (`audio_device_buffer.cc:87-90`). Freeing the probe after a refused unregister would
+   leave WebRTC holding a dangling `AudioTransport*`. `ReleaseProbe(bool detached)` now
+   frees it only when the detach was accepted; otherwise it logs
+   `step=release_audio_probe;phase=leaked` and deliberately leaks the object.
+4. **Speaker volume correction made conservative.** `SetSpeakerVolume` maps to
+   `ISimpleAudioVolume::SetMasterVolume` on the app's render session, which Windows
+   **persists per application**. Forcing it to maximum on every `StartPlayout` was a
+   real user-facing defect. The zero-volume correction now runs at most once per module
+   and targets half scale.
+
+### What to look for in the next `push-diagnostics.txt`
+
+- `voip.media|result=audio_device;...playout_peak_permille=N` — **the decisive field.**
+  `0` means WebRTC is rendering digital silence and the fault is upstream (decode,
+  receive stream, audio track, network); speaker volume and routing are then irrelevant.
+  Non-zero with nothing audible means the device or routing is swallowing real audio.
+- `voip.ui|result=routing_ready;endpoint=...;available=...` (or `routing_skipped` /
+  `routing_unavailable`) — exactly one per call page.
+- `voip.media|...step=set_playout_device;phase=select;index=` or `;type=`.
+- `step=speaker_volume;phase=state;volume=N;max=N` and `step=speaker_mute;phase=state;muted=`.
+- `voip.media|result=mute;muted=N;applied=N` — one per mute-button press.
+- `step=release_audio_probe;phase=leaked` — abnormal teardown; unregister was refused.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | --- |
+| `Unigram_26.9.6168.0_ARM_ModernTgCalls_PlayoutProbe_Sideload.zip` | `C97E576F1140CAC0B22F3C56404204B6142D05F1BBA392CCCEE74BCD33067895` | 64,110,253 |
+| `Unigram_26.9.6168.0_ARM_ModernTgCalls_PlayoutProbe.appx` | `830A5879B91E59D0424815C1F52631F21F3C8A0506DD81418C2A7BFAB2771D45` | 57,508,330 |
+| `Unigram_26.9.6168.0_ARM_ModernTgCalls_PlayoutProbe.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6168.0.map` | `94B59CBD142CDFED474CA37DE21B993AFDDF6DB1726CAB24339F118718C11A5A` | 14,862,341 |
+
+Packed `ModernCallsBridge.dll`: `CC43B50A25881D8D110A189DF6963BF34A57E6463082E03E9A3F4B201063257C`
+(4,258,304 bytes), hash-identical to the built binary in `bridge-probe\`.
+
+Verified: `signtool verify /pa` OK; identity `49197Wirdschon.UnigramMobileTdlibExperimental`,
+version `26.9.6168.0`, `ProcessorArchitecture="arm"`; background entry point
+`Unigram.Native.Tasks.NotificationTask` present; `Telegram.Td.dll`, `Telegram.Td.winmd`
+and `ModernCallsBridge.dll` all present; zero `.pfx` / `Constants.Secret.cs` / `.pdb`
+entries; 23-file sideload ZIP (`.appxsym` and `TelemetryDependencies` excluded).
