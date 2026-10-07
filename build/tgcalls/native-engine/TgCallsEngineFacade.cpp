@@ -32,6 +32,7 @@ namespace {
 
 extern "C" {
 PVOID WINAPI AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler);
+HMODULE WINAPI GetModuleHandleW(LPCWSTR lpModuleName);
 }
 
 // Supplied by the linker at the base of the module this code is linked into, which lets
@@ -44,7 +45,7 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 // It writes to its own file rather than the managed diagnostics log, because the managed
 // writer tracks its own end-of-file offset and would write back over an appended record.
 wchar_t g_crashDiagnosticsPath[MAX_PATH] = {};
-volatile LONG g_crashDiagnosticsBudget = 8;
+volatile LONG g_crashDiagnosticsBudget = 24;
 // Only faults raised while the audio device module is being driven are recorded. A
 // vectored handler sees every first-chance exception in the process, and .NET Native
 // raises an access violation for each ordinary null dereference, so an ungated handler
@@ -56,6 +57,132 @@ volatile LONG g_audioDeviceLifecycleThread = 0;
 const char* volatile g_audioDeviceLifecycleStep = nullptr;
 PVOID g_crashDiagnosticsHandle = nullptr;
 INIT_ONCE g_crashDiagnosticsOnce = INIT_ONCE_STATIC_INIT;
+
+// A vectored handler only sees failures that travel as structured exceptions. The runtime
+// ends the process with a fail-fast when a managed exception escapes a reverse call, and a
+// fail-fast bypasses every handler, so a death there would leave no record at all. The
+// marker below closes that gap without relying on any handler running: it is a file-backed
+// section holding the step currently in flight, so whatever ends the process, the memory
+// manager still writes the last value back to disk and the next launch can read it.
+// A mapped write costs no system call, which keeps the per-step cost low enough not to
+// perturb the timing of the fault under investigation.
+constexpr SIZE_T kInflightMarkerSize = 64;
+wchar_t g_inflightMarkerPath[MAX_PATH] = {};
+HANDLE g_inflightMarkerFile = INVALID_HANDLE_VALUE;
+HANDLE g_inflightMarkerMapping = nullptr;
+volatile char* g_inflightMarker = nullptr;
+char g_inflightRecovered[kInflightMarkerSize] = {};
+volatile LONG g_inflightThread = 0;
+
+// Set when the previous process died inside a capture step. The next call then runs the
+// device module with capture skipped, which turns the crash into a one-way call and
+// settles whether the capture path is the cause instead of costing another build.
+bool g_skipCaptureAfterFault = false;
+
+// Captured once, away from any fault context, so classifying a fault address is pure
+// arithmetic. An offset within a module names the faulting code without revealing
+// anything about the install.
+uintptr_t g_appModuleBase = 0;
+uintptr_t g_appModuleSize = 0;
+
+void SetInflightStep(const char* step, const char* stage) {
+    volatile char* marker = g_inflightMarker;
+    if (marker == nullptr) {
+        return;
+    }
+
+    char buffer[kInflightMarkerSize] = {};
+    SIZE_T length = 0;
+    while (*step != '\0' && length < kInflightMarkerSize - 2) {
+        buffer[length++] = *step++;
+    }
+    buffer[length++] = ':';
+    while (*stage != '\0' && length < kInflightMarkerSize - 1) {
+        buffer[length++] = *stage++;
+    }
+
+    InterlockedExchange(&g_inflightThread, static_cast<LONG>(GetCurrentThreadId()));
+    for (SIZE_T index = 0; index < kInflightMarkerSize; ++index) {
+        marker[index] = buffer[index];
+    }
+}
+
+void ClearInflightStep() {
+    volatile char* marker = g_inflightMarker;
+    if (marker == nullptr) {
+        return;
+    }
+
+    // Only the thread whose breadcrumb is still in the slot may erase it. There is one
+    // marker for the process, so clearing unconditionally would let a device module call
+    // completing on another thread wipe the record for the step actually in flight —
+    // which is the one case this marker exists to capture.
+    if (g_inflightThread != static_cast<LONG>(GetCurrentThreadId())) {
+        return;
+    }
+
+    for (SIZE_T index = 0; index < kInflightMarkerSize; ++index) {
+        marker[index] = '\0';
+    }
+}
+
+struct InflightStepScope {
+    InflightStepScope(const char* step, const char* stage) { SetInflightStep(step, stage); }
+    ~InflightStepScope() { ClearInflightStep(); }
+};
+
+// Runs inside the one-time initialisation that installs the reporter, so it needs no
+// guard of its own and cannot race a second call-setup thread.
+void OpenInflightMarker() {
+    const std::wstring path = std::wstring(g_crashDiagnosticsPath) + L".inflight";
+    if (path.size() >= MAX_PATH) {
+        return;
+    }
+
+    std::memcpy(g_inflightMarkerPath, path.c_str(), (path.size() + 1) * sizeof(wchar_t));
+
+    g_inflightMarkerFile = CreateFile2(
+        g_inflightMarkerPath,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        OPEN_ALWAYS,
+        nullptr);
+    if (g_inflightMarkerFile == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    // A mapping larger than the file extends it, which avoids needing the desktop-only
+    // file sizing calls that are unavailable to an app container.
+    g_inflightMarkerMapping = CreateFileMappingFromApp(
+        g_inflightMarkerFile, nullptr, PAGE_READWRITE, kInflightMarkerSize, nullptr);
+    if (g_inflightMarkerMapping == nullptr) {
+        CloseHandle(g_inflightMarkerFile);
+        g_inflightMarkerFile = INVALID_HANDLE_VALUE;
+        return;
+    }
+
+    auto* view = static_cast<char*>(
+        MapViewOfFileFromApp(g_inflightMarkerMapping, FILE_MAP_WRITE, 0, kInflightMarkerSize));
+    if (view == nullptr) {
+        CloseHandle(g_inflightMarkerMapping);
+        CloseHandle(g_inflightMarkerFile);
+        g_inflightMarkerMapping = nullptr;
+        g_inflightMarkerFile = INVALID_HANDLE_VALUE;
+        return;
+    }
+
+    std::memcpy(g_inflightRecovered, view, kInflightMarkerSize);
+    g_inflightRecovered[kInflightMarkerSize - 1] = '\0';
+    std::memset(view, 0, kInflightMarkerSize);
+    g_inflightMarker = view;
+
+    // Only a capture step arms the fallback. A death anywhere else leaves the device
+    // module untouched, so the recovered value stays purely diagnostic.
+    const char* recovered = g_inflightRecovered;
+    g_skipCaptureAfterFault =
+        (std::strncmp(recovered, "init_recording:", 15) == 0) ||
+        (std::strncmp(recovered, "start_recording:", 16) == 0);
+}
 
 struct AudioDeviceLifecycleScope {
     explicit AudioDeviceLifecycleScope(const char* step) {
@@ -182,6 +309,12 @@ LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
         base + static_cast<uintptr_t>(__ImageBase.e_lfanew));
     const auto size = static_cast<uintptr_t>(headers->OptionalHeader.SizeOfImage);
     const bool inModule = address >= base && address < base + size;
+    // The app binary is where the runtime compiles managed code to, so a fault inside it
+    // is a managed null dereference rather than a failure in the platform audio stack.
+    // The two need completely different fixes and are otherwise indistinguishable.
+    const bool inApp = g_appModuleSize != 0 &&
+        address >= g_appModuleBase &&
+        address < g_appModuleBase + g_appModuleSize;
 
     char line[256];
     int length = 0;
@@ -193,9 +326,14 @@ LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
     line[length++] = (static_cast<LONG>(GetCurrentThreadId()) == g_audioDeviceLifecycleThread) ? '1' : '0';
     AppendLiteral(line, length, ";engine=");
     line[length++] = inModule ? '1' : '0';
+    AppendLiteral(line, length, ";app=");
+    line[length++] = inApp ? '1' : '0';
     if (inModule) {
         AppendLiteral(line, length, ";offset=");
         AppendHex32(line, length, static_cast<uint32_t>(address - base));
+    } else if (inApp) {
+        AppendLiteral(line, length, ";offset=");
+        AppendHex32(line, length, static_cast<uint32_t>(address - g_appModuleBase));
     }
 
     // For an access violation the operation and whether the target was a null page
@@ -219,6 +357,36 @@ LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
 }
 
 BOOL CALLBACK InstallFatalExceptionReporter(PINIT_ONCE, PVOID, PVOID*) {
+    OpenInflightMarker();
+
+    // Captured here rather than in the handler, because resolving a module from a fault
+    // context would take the loader lock the faulting thread may already hold.
+    if (const auto app = GetModuleHandleW(nullptr)) {
+        const auto appBase = reinterpret_cast<uintptr_t>(app);
+        const auto* appDos = reinterpret_cast<const IMAGE_DOS_HEADER*>(appBase);
+        const auto* appHeaders = reinterpret_cast<const IMAGE_NT_HEADERS*>(
+            appBase + static_cast<uintptr_t>(appDos->e_lfanew));
+        g_appModuleBase = appBase;
+        g_appModuleSize = static_cast<uintptr_t>(appHeaders->OptionalHeader.SizeOfImage);
+    }
+
+    // A step left in flight by the previous process names what was running when it died,
+    // including the fail-fast and abrupt termination cases no handler can observe.
+    if (g_inflightRecovered[0] != '\0' && g_crashDiagnosticsPath[0] != L'\0') {
+        char line[160];
+        int length = 0;
+        AppendLiteral(line, length, "result=inflight_at_exit;step=");
+        for (const char* text = g_inflightRecovered;
+             *text != '\0' && length < static_cast<int>(sizeof(line)) - 32;
+             ++text) {
+            line[length++] = *text;
+        }
+        AppendLiteral(line, length, ";capture_skipped=");
+        line[length++] = g_skipCaptureAfterFault ? '1' : '0';
+        AppendLiteral(line, length, "\r\n");
+        WriteFaultLine(line, length);
+    }
+
     // The header gates this out of the app partition, but the export exists and is
     // permitted for store apps; declaring it keeps the UWP surface otherwise untouched.
     g_crashDiagnosticsHandle = AddVectoredExceptionHandler(1, FatalExceptionReporter);
@@ -344,11 +512,26 @@ public:
     int32_t InitSpeaker() override { return Guarded("init_speaker", &webrtc::AudioDeviceModule::InitSpeaker); }
     int32_t InitMicrophone() override { return Guarded("init_microphone", &webrtc::AudioDeviceModule::InitMicrophone); }
     int32_t InitPlayout() override { return Guarded("init_playout", &webrtc::AudioDeviceModule::InitPlayout); }
-    int32_t InitRecording() override { return Guarded("init_recording", &webrtc::AudioDeviceModule::InitRecording); }
+    int32_t InitRecording() override {
+        if (g_skipCaptureAfterFault) {
+            return SkipCapture("init_recording");
+        }
+        return Guarded("init_recording", &webrtc::AudioDeviceModule::InitRecording);
+    }
     int32_t StartPlayout() override { return Guarded("start_playout", &webrtc::AudioDeviceModule::StartPlayout); }
     int32_t StopPlayout() override { return Guarded("stop_playout", &webrtc::AudioDeviceModule::StopPlayout); }
-    int32_t StartRecording() override { return Guarded("start_recording", &webrtc::AudioDeviceModule::StartRecording); }
-    int32_t StopRecording() override { return Guarded("stop_recording", &webrtc::AudioDeviceModule::StopRecording); }
+    int32_t StartRecording() override {
+        if (g_skipCaptureAfterFault) {
+            return SkipCapture("start_recording");
+        }
+        return Guarded("start_recording", &webrtc::AudioDeviceModule::StartRecording);
+    }
+    int32_t StopRecording() override {
+        if (g_skipCaptureAfterFault) {
+            return SkipCapture("stop_recording");
+        }
+        return Guarded("stop_recording", &webrtc::AudioDeviceModule::StopRecording);
+    }
 
     int32_t PlayoutIsAvailable(bool* available) override {
         return Guarded("playout_available", &webrtc::AudioDeviceModule::PlayoutIsAvailable, available);
@@ -392,12 +575,29 @@ public:
     }
 
 private:
+    // Reports success without touching the platform module. The engine then runs the call
+    // with playout only, so a build that survives here has proved the capture path is what
+    // ends the process, and the user still gets audio in one direction meanwhile.
+    int32_t SkipCapture(const char* step) const {
+        // The report below is the managed marshalling path, which is itself one of the
+        // things under investigation, so it keeps the same instrumentation a real step
+        // gets. Without the scopes a death here would record nothing and the experiment
+        // would read as "the bypass did not help" rather than naming the report.
+        AudioDeviceLifecycleScope scope(step);
+        InflightStepScope inflight(step, "report_skipped");
+        Report(std::string("step=") + step + ";phase=skipped;reason=prior_fault");
+        return 0;
+    }
+
     template <typename Method, typename... Args>
     int32_t Guarded(const char* step, Method method, Args... arguments) const {
         AudioDeviceLifecycleScope scope(step);
+        InflightStepScope inflight(step, "report_begin");
         Report(std::string("step=") + step + ";phase=begin");
         int faulted = 0;
+        SetInflightStep(step, "native");
         const auto result = InvokeGuarded(_raw, method, arguments..., &faulted);
+        SetInflightStep(step, "report_end");
         Report(std::string("step=") + step + ";phase=end;faulted=" + std::to_string(faulted) +
             ";code=" + std::to_string(result));
         return result;
@@ -406,10 +606,13 @@ private:
     template <typename Method, typename... Args>
     int32_t GuardedConst(const char* step, Method method, Args... arguments) const {
         AudioDeviceLifecycleScope scope(step);
+        InflightStepScope inflight(step, "report_begin");
         Report(std::string("step=") + step + ";phase=begin");
         int faulted = 0;
+        SetInflightStep(step, "native");
         const auto result = InvokeGuarded(
             static_cast<const webrtc::AudioDeviceModule*>(_raw), method, arguments..., &faulted);
+        SetInflightStep(step, "report_end");
         Report(std::string("step=") + step + ";phase=end;faulted=" + std::to_string(faulted) +
             ";code=" + std::to_string(result));
         return result;

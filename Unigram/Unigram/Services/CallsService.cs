@@ -650,6 +650,12 @@ namespace Unigram.Services
                 if (!string.IsNullOrEmpty(path))
                 {
                     ModernCalls.Diagnostics.EnableCrashDiagnostics(path);
+
+                    // Enabling the native reporter is what recovers the step left in flight by a
+                    // previous process, and it appends that record to the file the drain above
+                    // has already consumed. Draining a second time is what makes the record
+                    // visible in this launch instead of the one after it.
+                    Logs.PushDiagnostics.DrainFaultFile();
                 }
             }
             catch (Exception error)

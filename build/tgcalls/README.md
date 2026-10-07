@@ -967,3 +967,99 @@ start. `timeout` means it was not, and the next call is at risk. `stale` is the
 sweep releasing a previous session that TDLib never discarded. A
 `voip.transport|result=stopped` line should now appear for every call that ends,
 which it never did before.
+
+### Correction after device testing
+
+The heading above frames the fault as a second-call problem. Device testing of
+26.9.6160.0 disproved that framing and it is left in place only so the reasoning
+history stays honest.
+
+Both crashes in the 26.9.6160.0 log happen on the **first** call of a freshly started
+process, in both directions, with no second session anywhere in the segment. The
+overlapping-call reading explained the 26.9.6158.0 log but is not the general cause,
+and the 26.9.6158.0 call that survived now looks like a timing fluke rather than
+evidence that the capture path is sound.
+
+The teardown defects 26.9.6160.0 fixed were real and were verified against the pinned
+upstream source, so the change is kept. It is unfalsified rather than confirmed: the
+log contains no `voip.teardown` and no `voip.transport|result=stopped`, so the process
+died before any of the new code ran.
+
+## 26.9.6161.0 — proving where the process actually dies
+
+Every build so far concluded "the process dies inside `InitRecording`" from the absence
+of a `step=init_recording;phase=end` line. That inference does not hold.
+
+`phase=begin` and `phase=end` are both written by **managed** code: the device module
+wrapper raises a report, the bridge marshals it across the WinMD boundary, and
+`CallsService` writes the line. A death anywhere in that window produces exactly the
+same evidence, so the missing `phase=end` is equally consistent with
+
+* a fault inside the native `InitRecording`,
+* a fault inside the managed report that follows it, and
+* an unrelated death on another thread that merely happened to land in the window.
+
+The 26.9.6160.0 log actively argues against the first reading. The process survived
+65 ms past `step=init_recording;phase=begin` and answered a TDLib request in that time
+(`tdlib.result|type=Ok`), which is not the shape of an instantaneous fault inside a
+WASAPI call.
+
+Two gaps made this impossible to settle:
+
+1. **The vectored handler cannot see the death.** It only observes structured
+   exceptions. When a managed exception escapes a reverse call the runtime ends the
+   process with a fail-fast, which bypasses every handler, so that death writes nothing
+   at all. `result=abort`, `terminate`, `purecall` and `invalid_parameter` are all
+   absent from the log and the fault budget was never exhausted, so whatever ends the
+   process is not something the existing instrumentation can record.
+2. **A fault address was classified only against this module.** `engine=0` says the
+   faulting instruction is not in `ModernCallsBridge.dll`, which does not distinguish
+   the platform audio stack from managed code — and those need opposite fixes.
+
+### What this build adds
+
+**A crash-proof in-flight marker.** A 64-byte file-backed section holds the step
+currently in flight. Updating it is a memory write, not a system call, so it is cheap
+enough not to perturb the timing of the fault, and because the section is file-backed
+the memory manager still writes the last value to disk no matter how the process ends —
+fail-fast, stack overflow or outright termination included. The next launch reports it
+as `result=inflight_at_exit;step=<step>:<stage>` where the stage is one of
+
+| stage | meaning |
+| --- | --- |
+| `report_begin` | died in the managed `phase=begin` report |
+| `native` | died inside the real audio device module call |
+| `report_end` | died in the managed `phase=end` report |
+
+This separates the three readings above in a single device test.
+
+**Fault address classification against the app binary.** The runtime compiles managed
+code into the app executable, so a faulting instruction inside it is a managed null
+dereference rather than a platform failure. Faults now carry `app=0|1`, plus an
+`offset=` when the address falls in either known module. The module ranges are captured
+once at install time, away from any fault context, because resolving a module from a
+handler would take the loader lock the faulting thread may already hold. The fault
+budget rises from 8 to 24 so a repeating fault no longer hides later ones.
+
+**A self-arming capture bypass.** If the recovered marker names a capture step, the next
+call runs the device module with `InitRecording`, `StartRecording` and `StopRecording`
+reporting success without touching the platform module, logged as
+`phase=skipped;reason=prior_fault`. A call that then survives proves the capture path is
+what ends the process, and the user gets audio in one direction while we find out. It
+arms only after a death inside a capture step, so a death anywhere else leaves the
+device module completely untouched and adds no noise.
+
+Nothing here changes the call path on a healthy first call. This build is instrumentation
+plus a fallback that only a crash can switch on.
+
+### Also established this round
+
+* The build links WebRTC's **desktop** Core Audio module, `audio_device_core_win.cc`,
+  inside an app container. This is worth noting as a structural risk, but it is not yet
+  implicated: device enumeration, speaker and microphone init, both stereo queries,
+  `init_playout` and `start_playout` all return `code=0`.
+* `_builtInAecEnabled` is false — nothing in WebRTC or tgcalls calls `EnableBuiltInAEC`,
+  so `InitRecording` takes the plain WASAPI path and never touches the voice-capture DSP
+  that does not exist on Windows 10 Mobile. That branch is ruled out.
+* Diagnostic budget exhaustion is ruled out as a cause of the log stopping: the crashing
+  segments wrote 31 and 32 media lines against a budget of 192.
