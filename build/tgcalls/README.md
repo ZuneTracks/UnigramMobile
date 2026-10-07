@@ -353,22 +353,22 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6153.0_ARM_ModernTgCalls_MediaDiagnostics.appx
+    Unigram_26.9.6154.0_ARM_ModernTgCalls_AudioDeviceTrace.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6153.0_ARM_ModernTgCalls_MediaDiagnostics_Sideload.zip
+    Unigram_26.9.6154.0_ARM_ModernTgCalls_AudioDeviceTrace_Sideload.zip
 APPX SHA-256:
-78D249C2ABB34592CC39620F4824EDCFE563C402425C1EFD3C703F4CF76B6B10
+FF3825C36D49F2C44AC2D4F80E28807895C1A2B12845688DD3184C56EA6B3322
 ZIP SHA-256:
-2E7A118EB70AA0FAF3B1B23B0A36CA3F121EA15421129EDA2126B8CFD160777B
+23D76538501AB4CACA9EBBBBE03D736395145E18033A3FAB3973975EE4AF348A
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6153.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6154.0`,
 ARM architecture, and the existing native notification background entry point.
 
 This remains a device-test package, not a released call fix. The 26.9.6148.0
@@ -495,3 +495,71 @@ one `voip.media result=audio_device` line per call and, once the transport is
 established, recurring `voip.media result=audio_level` summaries carrying
 `recording=` and `playing=` flags. This is not a claim that Android/iOS audio
 is established; `6153` is a diagnostic build and is not expected to fix calls.
+
+## 26.9.6154.0 — the crash is inside the platform audio stack
+
+The `6153` trace from an outgoing W10M to Android call answered the question
+`6153` was built to ask, and it cleared the audio device module of suspicion:
+
+```text
+voip.media|result=audio_device;created=1;init=0;playout_devices=2;recording_devices=3
+voip.transport|result=state;state=Established
+voip.media|result=remote_audio;state=Active
+```
+
+The module is created, initializes with code `0`, and enumerates two playout
+and three recording devices, so device discovery works on Windows 10 Mobile.
+The transport reaches `Established` and the peer reports its audio as active.
+
+The decisive detail is how the log ends. `PushDiagnostics` opens, appends, and
+closes the file on every single line, so the log is a flushed breadcrumb trail
+and its last line is the last thing the process did. The trace stops mid-call
+roughly 360 ms after `Established`, on an ordinary `voip.signaling` line, with
+no `CallStateDiscarded`, no error, and no teardown. The process was killed
+rather than the call being ended, which matches every earlier report that the
+app closes immediately once a call is answered.
+
+That window is exactly where `MediaManager::setIsConnected(true)` starts the
+audio send and receive channels, which is what drives the audio device module
+into `InitPlayout`, `StartPlayout`, `InitRecording`, and `StartRecording`. A
+structured exception there terminates the process before managed code can log
+anything, which is why every previous build produced a truncated trace.
+
+`6154` instruments precisely that region. The bridge now returns a wrapper
+around the platform module, derived from the upstream
+`DefaultWrappedAudioDeviceModule` so that every method it does not override is
+forwarded unchanged. The wrapper brackets each once-per-call lifecycle call
+with a `phase=begin` and a `phase=end` breadcrumb carrying only a fixed step
+name and the numeric result:
+
+```text
+voip.media|result=audio_device;step=start_playout;phase=begin
+voip.media|result=audio_device;step=start_playout;phase=end;faulted=0;code=0
+```
+
+Each forwarded call also runs inside a structured exception guard. If the
+platform audio stack raises an access violation, the guard reports
+`faulted=1;code=-1` and returns instead of letting the process die. This names
+the faulting step and, because the process survives, the remaining diagnostics
+for that call are still written. A `phase=begin` with no matching `phase=end`
+would instead mean the fault escaped the guard.
+
+Catching an access violation and continuing can leave the audio stack in an
+undefined state, so this is a diagnostic build only. The guard exists to
+identify the faulting call, not to ship as a fix.
+
+Because the wrapper is a forwarding subclass of the upstream wrapper rather
+than a hand-written implementation of the interface, it cannot silently drop a
+method. The media diagnostic allowance is raised to cover the extra breadcrumbs
+for a whole call, and remains separate from the shared call budget.
+
+The residual non-fatal `NullReferenceException` is still unattributed: .NET
+Native reports both its message and its platform description as the resource
+key `Arg_NullReferenceException`, with no stack and no inner exception, so the
+`6153` description change could not name the throw site. It fires about 31 ms
+after `CreateCall` returns and remains non-fatal.
+
+Expected `6154` evidence from one call: a `step=`/`phase=` pair for each audio
+device lifecycle call, and either a `faulted=1` line naming the faulting step,
+or a complete set of `faulted=0` pairs proving the audio device stack is not
+where the process dies.

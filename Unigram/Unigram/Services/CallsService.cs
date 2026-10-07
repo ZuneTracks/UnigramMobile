@@ -67,7 +67,7 @@ namespace Unigram.Services
         private volatile bool _modernCallStarting;
         private readonly Dictionary<int, List<List<byte>>> _pendingModernSignalingData = new Dictionary<int, List<List<byte>>>();
         private const float ModernAudibleLevel = 0.01f;
-        private const int ModernMediaDiagnosticBudget = 48;
+        private const int ModernMediaDiagnosticBudget = 192;
         private readonly object _modernAudioLevelLock = new object();
         private int _modernMediaDiagnosticBudget = ModernMediaDiagnosticBudget;
         private int _modernAudioLevelSamples;

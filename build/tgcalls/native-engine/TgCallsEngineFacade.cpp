@@ -5,9 +5,11 @@
 
 #include "api/task_queue/task_queue_factory.h"
 #include "modules/audio_device/include/audio_device.h"
+#include "platform/PlatformInterface.h"
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <stdexcept>
@@ -19,6 +21,184 @@ namespace Unigram {
 namespace Native {
 namespace Calls {
 namespace {
+
+// The audio device module lifecycle calls below run once per call and are the last
+// thing to execute before the process has been observed to die mid-call, so each one
+// is bracketed by a breadcrumb and executed under a structured exception guard. The
+// guard converts an access violation inside the platform audio stack into a reported
+// failure code instead of terminating the app, which both names the faulting step and
+// lets the rest of the call continue so the remaining diagnostics can still be
+// collected. These helpers take no objects requiring unwinding, which is what allows
+// __try to be used here.
+
+using AdmPlainMethod = int32_t (webrtc::AudioDeviceModule::*)();
+using AdmBoolOutMethod = int32_t (webrtc::AudioDeviceModule::*)(bool*);
+using AdmConstBoolOutMethod = int32_t (webrtc::AudioDeviceModule::*)(bool*) const;
+using AdmBoolInMethod = int32_t (webrtc::AudioDeviceModule::*)(bool);
+using AdmWindowsDeviceMethod = int32_t (webrtc::AudioDeviceModule::*)(webrtc::AudioDeviceModule::WindowsDeviceType);
+
+__declspec(noinline) int32_t InvokeGuarded(
+        webrtc::AudioDeviceModule* impl,
+        AdmPlainMethod method,
+        int* faulted) {
+    __try {
+        return (impl->*method)();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+        return -1;
+    }
+}
+
+__declspec(noinline) int32_t InvokeGuarded(
+        webrtc::AudioDeviceModule* impl,
+        AdmBoolOutMethod method,
+        bool* argument,
+        int* faulted) {
+    __try {
+        return (impl->*method)(argument);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+        return -1;
+    }
+}
+
+__declspec(noinline) int32_t InvokeGuarded(
+        const webrtc::AudioDeviceModule* impl,
+        AdmConstBoolOutMethod method,
+        bool* argument,
+        int* faulted) {
+    __try {
+        return (impl->*method)(argument);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+        return -1;
+    }
+}
+
+__declspec(noinline) int32_t InvokeGuarded(
+        webrtc::AudioDeviceModule* impl,
+        AdmBoolInMethod method,
+        bool argument,
+        int* faulted) {
+    __try {
+        return (impl->*method)(argument);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+        return -1;
+    }
+}
+
+__declspec(noinline) int32_t InvokeGuarded(
+        webrtc::AudioDeviceModule* impl,
+        AdmWindowsDeviceMethod method,
+        webrtc::AudioDeviceModule::WindowsDeviceType argument,
+        int* faulted) {
+    __try {
+        return (impl->*method)(argument);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+        return -1;
+    }
+}
+
+/// <summary>
+/// Forwards every audio device module call to the real platform module, reporting only
+/// fixed step names and numeric result codes. No device names, identifiers, or audio
+/// content are read or reported.
+/// </summary>
+class DiagnosticAudioDeviceModule : public tgcalls::DefaultWrappedAudioDeviceModule {
+public:
+    DiagnosticAudioDeviceModule(
+        webrtc::scoped_refptr<webrtc::AudioDeviceModule> impl,
+        std::function<void(const std::string&)> report)
+        : tgcalls::DefaultWrappedAudioDeviceModule(impl)
+        , _raw(impl.get())
+        , _report(std::move(report)) {
+    }
+
+    int32_t Init() override { return Guarded("init", &webrtc::AudioDeviceModule::Init); }
+    int32_t Terminate() override { return Guarded("terminate", &webrtc::AudioDeviceModule::Terminate); }
+    int32_t InitSpeaker() override { return Guarded("init_speaker", &webrtc::AudioDeviceModule::InitSpeaker); }
+    int32_t InitMicrophone() override { return Guarded("init_microphone", &webrtc::AudioDeviceModule::InitMicrophone); }
+    int32_t InitPlayout() override { return Guarded("init_playout", &webrtc::AudioDeviceModule::InitPlayout); }
+    int32_t InitRecording() override { return Guarded("init_recording", &webrtc::AudioDeviceModule::InitRecording); }
+    int32_t StartPlayout() override { return Guarded("start_playout", &webrtc::AudioDeviceModule::StartPlayout); }
+    int32_t StopPlayout() override { return Guarded("stop_playout", &webrtc::AudioDeviceModule::StopPlayout); }
+    int32_t StartRecording() override { return Guarded("start_recording", &webrtc::AudioDeviceModule::StartRecording); }
+    int32_t StopRecording() override { return Guarded("stop_recording", &webrtc::AudioDeviceModule::StopRecording); }
+
+    int32_t PlayoutIsAvailable(bool* available) override {
+        return Guarded("playout_available", &webrtc::AudioDeviceModule::PlayoutIsAvailable, available);
+    }
+
+    int32_t RecordingIsAvailable(bool* available) override {
+        return Guarded("recording_available", &webrtc::AudioDeviceModule::RecordingIsAvailable, available);
+    }
+
+    using tgcalls::DefaultWrappedAudioDeviceModule::SetPlayoutDevice;
+    using tgcalls::DefaultWrappedAudioDeviceModule::SetRecordingDevice;
+
+    int32_t SetPlayoutDevice(WindowsDeviceType device) override {
+        return Guarded(
+            "set_playout_device",
+            static_cast<AdmWindowsDeviceMethod>(&webrtc::AudioDeviceModule::SetPlayoutDevice),
+            device);
+    }
+
+    int32_t SetRecordingDevice(WindowsDeviceType device) override {
+        return Guarded(
+            "set_recording_device",
+            static_cast<AdmWindowsDeviceMethod>(&webrtc::AudioDeviceModule::SetRecordingDevice),
+            device);
+    }
+
+    int32_t StereoPlayoutIsAvailable(bool* available) const override {
+        return GuardedConst("stereo_playout_available", &webrtc::AudioDeviceModule::StereoPlayoutIsAvailable, available);
+    }
+
+    int32_t StereoRecordingIsAvailable(bool* available) const override {
+        return GuardedConst("stereo_recording_available", &webrtc::AudioDeviceModule::StereoRecordingIsAvailable, available);
+    }
+
+    int32_t SetStereoPlayout(bool enable) override {
+        return Guarded("set_stereo_playout", &webrtc::AudioDeviceModule::SetStereoPlayout, enable);
+    }
+
+    int32_t SetStereoRecording(bool enable) override {
+        return Guarded("set_stereo_recording", &webrtc::AudioDeviceModule::SetStereoRecording, enable);
+    }
+
+private:
+    template <typename Method, typename... Args>
+    int32_t Guarded(const char* step, Method method, Args... arguments) const {
+        Report(std::string("step=") + step + ";phase=begin");
+        int faulted = 0;
+        const auto result = InvokeGuarded(_raw, method, arguments..., &faulted);
+        Report(std::string("step=") + step + ";phase=end;faulted=" + std::to_string(faulted) +
+            ";code=" + std::to_string(result));
+        return result;
+    }
+
+    template <typename Method, typename... Args>
+    int32_t GuardedConst(const char* step, Method method, Args... arguments) const {
+        Report(std::string("step=") + step + ";phase=begin");
+        int faulted = 0;
+        const auto result = InvokeGuarded(
+            static_cast<const webrtc::AudioDeviceModule*>(_raw), method, arguments..., &faulted);
+        Report(std::string("step=") + step + ";phase=end;faulted=" + std::to_string(faulted) +
+            ";code=" + std::to_string(result));
+        return result;
+    }
+
+    void Report(const std::string& value) const {
+        if (_report) {
+            _report(value);
+        }
+    }
+
+    webrtc::AudioDeviceModule* _raw;
+    std::function<void(const std::string&)> _report;
+};
 
 std::string ToUtf8(const std::wstring& value) {
     if (value.empty()) {
@@ -192,11 +372,22 @@ public:
                     }
                 }
 
+                webrtc::scoped_refptr<webrtc::AudioDeviceModule> result = module;
+                if (module) {
+                    result = rtc::make_ref_counted<DiagnosticAudioDeviceModule>(
+                        module,
+                        [weak](const std::string& step) {
+                            if (const auto strong = weak.lock()) {
+                                strong->AudioDeviceReport(step);
+                            }
+                        });
+                }
+
                 if (const auto strong = weak.lock()) {
                     strong->RetainAudioDeviceModule(module);
                     strong->AudioDeviceReport(report);
                 }
-                return module;
+                return result;
             },
         };
 
