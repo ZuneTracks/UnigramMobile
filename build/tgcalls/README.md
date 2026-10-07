@@ -760,3 +760,25 @@ itself is wholly synchronous and starts no threads, which makes a
 unless `CLSID_CWMAudioAEC` could be created, and `EnableBuiltInAEC` refuses to
 enable the flag in that case, so the DMO path should be unreachable here. The
 `RTC_DCHECK(_dmo)` guarding it is compiled out in release.
+
+### Resolving a reported offset
+
+`Resolve-FaultOffset.ps1` turns an `offset=` value from a `voip.fault` line into
+the function it landed in. The offset is a relative virtual address, and a
+linker map lists every function by absolute address next to the preferred load
+address, so the answer is the last entry at or below the offset.
+
+```powershell
+cd build\tgcalls
+.\Resolve-FaultOffset.ps1 -Offset 0x000afbe0 `
+    -MapPath "$env:LOCALAPPDATA\UnigramTdlibExperiment\artifacts\ModernCallsBridge_26.9.6157.0.map"
+```
+
+```text
+Function ?InitRecording@AudioDeviceWindowsCore@webrtc@@UAAHXZ
+Starts   0x000AFBDC  (+0x4 into the function)
+Object   webrtc:audio_device_core_win.obj
+```
+
+Use the map archived for the build that produced the log; a map from any other
+build resolves to the wrong function.
