@@ -30,6 +30,10 @@ String^ ToPlatformString(const std::exception& error) {
     return ref new String(std::wstring(error.what(), error.what() + strlen(error.what())).c_str());
 }
 
+String^ ToPlatformString(const std::string& value) {
+    return ref new String(std::wstring(value.begin(), value.end()).c_str());
+}
+
 std::vector<uint8_t> ToNativeBytes(IVector<unsigned char>^ values) {
     if (values == nullptr) {
         throw ref new InvalidArgumentException(L"A byte vector is required.");
@@ -165,6 +169,34 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
             }
         }
     };
+    callbacks.signalBarsChanged = [weakHolder](int bars) {
+        if (const auto holder = weakHolder.lock()) {
+            if (const auto owner = ResolveOwner(holder)) {
+                owner->SignalBarsChanged(owner, bars);
+            }
+        }
+    };
+    callbacks.audioLevelChanged = [weakHolder](float level) {
+        if (const auto holder = weakHolder.lock()) {
+            if (const auto owner = ResolveOwner(holder)) {
+                owner->AudioLevelChanged(owner, level);
+            }
+        }
+    };
+    callbacks.remoteAudioStateChanged = [weakHolder](Unigram::Native::Calls::RemoteAudioState state) {
+        if (const auto holder = weakHolder.lock()) {
+            if (const auto owner = ResolveOwner(holder)) {
+                owner->RemoteAudioStateChanged(owner, static_cast<RemoteAudioState>(state));
+            }
+        }
+    };
+    callbacks.audioDeviceReport = [weakHolder](std::string report) {
+        if (const auto holder = weakHolder.lock()) {
+            if (const auto owner = ResolveOwner(holder)) {
+                owner->AudioDeviceReport(owner, ToPlatformString(report));
+            }
+        }
+    };
 
     try {
         holder->session = Unigram::Native::Calls::CreateCallSession(native, std::move(callbacks));
@@ -222,6 +254,19 @@ void AudioCallSession::SetNetworkType(NetworkType value) {
         Unigram::Native::Calls::SetNetworkType(holder->session, ToNativeNetworkType(value));
     } catch (const std::exception& error) {
         throw ref new InvalidArgumentException(ToPlatformString(error));
+    }
+}
+
+String^ AudioCallSession::GetAudioDeviceStatus() {
+    if (_holder == nullptr) {
+        return ref new String(L"created=0");
+    }
+
+    try {
+        const auto holder = GetSessionHolder(_holder);
+        return ToPlatformString(Unigram::Native::Calls::GetAudioDeviceStatus(holder->session));
+    } catch (const std::exception&) {
+        return ref new String(L"created=0");
     }
 }
 

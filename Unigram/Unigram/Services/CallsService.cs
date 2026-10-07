@@ -1,6 +1,7 @@
 ﻿using libtgvoip;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -65,6 +66,16 @@ namespace Unigram.Services
         private int _modernCallId;
         private volatile bool _modernCallStarting;
         private readonly Dictionary<int, List<List<byte>>> _pendingModernSignalingData = new Dictionary<int, List<List<byte>>>();
+        private const float ModernAudibleLevel = 0.01f;
+        private const int ModernMediaDiagnosticBudget = 48;
+        private readonly object _modernAudioLevelLock = new object();
+        private int _modernMediaDiagnosticBudget = ModernMediaDiagnosticBudget;
+        private int _modernAudioLevelSamples;
+        private int _modernAudioLevelActive;
+        private float _modernAudioLevelPeak;
+        private DateTime _modernAudioLevelReported = DateTime.MinValue;
+        private int _modernSignalBars = -1;
+        private ModernCalls.RemoteAudioState? _modernRemoteAudioState;
 #endif
 
         private VoIPPage _callPage;
@@ -515,11 +526,17 @@ namespace Unigram.Services
                 return false;
             }
 
+            // tgcalls maps callConnectTimeoutMs to initializationTimeout and callPacketTimeoutMs
+            // to receiveTimeout; both server options are reported as 0 on this account, so fall
+            // back to the upstream defaults rather than handing the engine a zero timeout.
+            var connectTimeout = CacheService.Options.CallConnectTimeoutMs;
+            var packetTimeout = CacheService.Options.CallPacketTimeoutMs;
+
             var configuration = new ModernCalls.AudioCallConfiguration
             {
                 Version = version,
-                InitializationTimeout = CacheService.Options.CallPacketTimeoutMs / 1000.0,
-                ReceiveTimeout = CacheService.Options.CallConnectTimeoutMs / 1000.0,
+                InitializationTimeout = (connectTimeout > 0 ? connectTimeout : 30000) / 1000.0,
+                ReceiveTimeout = (packetTimeout > 0 ? packetTimeout : 10000) / 1000.0,
                 EnableP2P = ready.Protocol.UdpP2p && ready.AllowP2p,
                 AllowTcp = true,
                 MaxApiLayer = ready.Protocol.MaxLayer,
@@ -619,6 +636,10 @@ namespace Unigram.Services
                 session.StateChanged += (sender, state) => OnModernCallStateChanged(call.Id, state);
                 session.SignalingData += (sender, data) => SendModernSignalingData(call.Id, session, data);
                 session.Stopped += (sender, completed) => OnModernCallStopped(call.Id, session, completed);
+                session.AudioDeviceReport += (sender, report) => OnModernAudioDeviceReport(call.Id, report);
+                session.SignalBarsChanged += (sender, bars) => OnModernSignalBarsChanged(call.Id, bars);
+                session.AudioLevelChanged += (sender, level) => OnModernAudioLevelChanged(call.Id, level);
+                session.RemoteAudioStateChanged += (sender, state) => OnModernRemoteAudioStateChanged(call.Id, state);
 
                 _modernController = session;
                 _modernCallId = call.Id;
@@ -670,6 +691,139 @@ namespace Unigram.Services
                 IsTurn = isTurn,
                 IsTcp = false
             };
+        }
+
+        /// <summary>
+        /// Reports the platform audio device module outcome once per call. A null or
+        /// uninitialised module mutes the call without failing the transport, so this is the
+        /// only signal that distinguishes an audio device fault from a network fault.
+        /// </summary>
+        private void OnModernAudioDeviceReport(int callId, string report)
+        {
+            if (_modernCallId != callId)
+            {
+                return;
+            }
+
+            WriteModernMediaDiagnostic(
+                $"result=audio_device;transport=modern_tgcalls;{Logs.PushDiagnostics.SanitizeErrorMessage(report)}");
+        }
+
+        private void OnModernSignalBarsChanged(int callId, int bars)
+        {
+            if (_modernCallId != callId || _modernSignalBars == bars)
+            {
+                return;
+            }
+
+            _modernSignalBars = bars;
+            WriteModernMediaDiagnostic($"result=signal_bars;transport=modern_tgcalls;bars={bars}");
+        }
+
+        private void OnModernRemoteAudioStateChanged(int callId, ModernCalls.RemoteAudioState state)
+        {
+            if (_modernCallId != callId || _modernRemoteAudioState == state)
+            {
+                return;
+            }
+
+            _modernRemoteAudioState = state;
+            WriteModernMediaDiagnostic($"result=remote_audio;transport=modern_tgcalls;state={state}");
+        }
+
+        /// <summary>
+        /// tgcalls raises an audio level ten times a second, so the samples are accumulated
+        /// and summarised instead of logged individually. The engine reports the larger of the
+        /// local capture level and the decoded remote level, so this value alone cannot tell
+        /// the two directions apart; the audio device recording and playout flags recorded
+        /// alongside it are what distinguish a capture fault from a playout fault. Only the
+        /// sample count and a quantised peak amplitude are recorded; neither describes the audio.
+        /// </summary>
+        private void OnModernAudioLevelChanged(int callId, float level)
+        {
+            if (_modernCallId != callId)
+            {
+                return;
+            }
+
+            string summary = null;
+
+            lock (_modernAudioLevelLock)
+            {
+                _modernAudioLevelSamples++;
+                if (level > _modernAudioLevelPeak)
+                {
+                    _modernAudioLevelPeak = level;
+                }
+
+                if (level > ModernAudibleLevel)
+                {
+                    _modernAudioLevelActive++;
+                }
+
+                var now = DateTime.Now;
+                if (_modernAudioLevelReported == DateTime.MinValue)
+                {
+                    _modernAudioLevelReported = now;
+                }
+                else if (now - _modernAudioLevelReported >= TimeSpan.FromSeconds(5))
+                {
+                    summary = $"result=audio_level;transport=modern_tgcalls;samples={_modernAudioLevelSamples}" +
+                        $";active={_modernAudioLevelActive};peak={_modernAudioLevelPeak.ToString("F2", CultureInfo.InvariantCulture)}";
+                    _modernAudioLevelReported = now;
+                    _modernAudioLevelSamples = 0;
+                    _modernAudioLevelActive = 0;
+                    _modernAudioLevelPeak = 0f;
+                }
+            }
+
+            if (summary == null)
+            {
+                return;
+            }
+
+            var session = _modernController;
+            if (session != null)
+            {
+                try
+                {
+                    summary += ";" + Logs.PushDiagnostics.SanitizeErrorMessage(session.GetAudioDeviceStatus());
+                }
+                catch (Exception error)
+                {
+                    summary += $";audio_device_error=0x{error.HResult:X8}";
+                }
+            }
+
+            WriteModernMediaDiagnostic(summary);
+        }
+
+        /// <summary>
+        /// Media diagnostics are sampled for the whole duration of a call, so they are given
+        /// their own per-call allowance. Charging them to the shared call diagnostic budget
+        /// would let one long call silence the lifecycle diagnostics of every later call.
+        /// </summary>
+        private void WriteModernMediaDiagnostic(string details)
+        {
+            if (System.Threading.Interlocked.Decrement(ref _modernMediaDiagnosticBudget) >= 0)
+            {
+                Logs.PushDiagnostics.Write("voip.media", details);
+            }
+        }
+
+        private void ResetModernMediaDiagnostics()
+        {
+            lock (_modernAudioLevelLock)
+            {
+                _modernAudioLevelSamples = 0;
+                _modernAudioLevelActive = 0;
+                _modernAudioLevelPeak = 0f;
+                _modernAudioLevelReported = DateTime.MinValue;
+            }
+
+            _modernSignalBars = -1;
+            _modernRemoteAudioState = null;
+            _modernMediaDiagnosticBudget = ModernMediaDiagnosticBudget;
         }
 
         private void OnModernCallStateChanged(int callId, ModernCalls.CallState state)
@@ -731,6 +885,7 @@ namespace Unigram.Services
             }
             _modernCallId = 0;
             _modernCallStarting = false;
+            ResetModernMediaDiagnostics();
             ClearPendingModernSignalingData(callId);
         }
 

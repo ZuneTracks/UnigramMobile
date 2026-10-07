@@ -353,22 +353,22 @@ Current verified opt-in package output:
 ```text
 APPX:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6152.0_ARM_ModernTgCalls_CompactViewCrashFix.appx
+    Unigram_26.9.6153.0_ARM_ModernTgCalls_MediaDiagnostics.appx
 
 Minimal ARM sideload ZIP:
 %LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\
-    Unigram_26.9.6152.0_ARM_ModernTgCalls_CompactViewCrashFix_Sideload.zip
+    Unigram_26.9.6153.0_ARM_ModernTgCalls_MediaDiagnostics_Sideload.zip
 APPX SHA-256:
-957E4E1CD11BA5DD16FA4AFBA247A07695E7CF18A0F3B58C352037962620EDEB
+78D249C2ABB34592CC39620F4824EDCFE563C402425C1EFD3C703F4CF76B6B10
 ZIP SHA-256:
-644C3AFBB1B1AB28D9C5A7E06A223A791BAF6655B5AC93CDBC0C3AA220501AF7
+2E7A118EB70AA0FAF3B1B23B0A36CA3F121EA15421129EDA2126B8CFD160777B
 ```
 
 The ZIP contains the signed APPX, its public `.cer`, and only the ARM NET
 Native, XAML, and VCLibs dependency APPXs. It contains no PFX, private key,
 or source secret. The APPX was signature-verified and its manifest confirms
 the side-by-side experimental identity
-`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6152.0`,
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6153.0`,
 ARM architecture, and the existing native notification background entry point.
 
 This remains a device-test package, not a released call fix. The 26.9.6148.0
@@ -420,6 +420,65 @@ Chat Folders is now device-verified: after registering `FoldersViewModel` and
 with two group chats synchronized successfully with the regular Telegram
 client.
 
+Version 26.9.6153.0 makes the media layer observable. The `6152` trace proved
+the app no longer restarts during a call and that the modern transport reaches
+`Established` with bidirectional signaling, yet neither side had audio. Every
+diagnostic up to that point described signaling and transport only, so an
+audio-device failure and a media-routing failure were indistinguishable. The
+bridge now reports four media facts to managed code:
+
+- `voip.media result=audio_device` — whether the platform audio device module
+  was created, its `Init` result, and the playout and recording device counts.
+  TgCalls silently continues without audio when this module is null or fails to
+  initialize, so this distinguishes an audio fault from a network fault.
+- `voip.media result=audio_level` — a five-second summary of the engine's audio
+  level callback: sample count, how many samples exceeded an audible threshold,
+  and a quantised peak amplitude. TgCalls only runs its level timer when this
+  callback is supplied, so it had never been active before. This value is
+  deliberately labelled `active` and not `incoming`: the engine reports the
+  larger of the local capture level and the decoded remote level, so room noise
+  on the microphone alone can raise it and it cannot by itself separate the two
+  directions.
+- `voip.media result=remote_audio` — the peer's reported audio state.
+- `voip.media result=signal_bars` — the engine's network quality estimate. This
+  is derived purely from the outgoing send bandwidth estimate, so it is an
+  upstream signal and is not evidence that media is being received.
+
+Because the engine's own level callback is non-directional, each audio level
+summary also carries the live state of the audio device module the bridge
+supplies, as `created`, `recording`, and `playing` booleans. These are the
+unambiguous answer to "the transport is established but nobody can hear
+anything": `playing=0` means no playout is running regardless of what arrives
+on the wire, and `recording=0` means nothing is being captured to send.
+
+Media diagnostics are sampled for the entire duration of a call, so they draw
+on a separate per-call allowance that is reset when a call is disposed. They
+deliberately do not charge the shared call diagnostic budget, because a single
+long call would otherwise exhaust it and silence the lifecycle diagnostics of
+every later call in the same app session.
+
+None of these carry audio content, device names, identifiers, hosts, or
+credentials; only fixed keys, enum names, counts, booleans, and a quantised
+amplitude. The audio device module the bridge now supplies is the same platform
+default TgCalls would otherwise create for itself, so this adds visibility
+without changing which device is used.
+
+The same version records the platform description of an unhandled exception.
+.NET Native discards a managed stack before it reaches the app's handler, and
+the diagnostics sanitizer additionally redacted framework resource keys such as
+`Arg_NullReferenceException` because they are long enough to look like opaque
+tokens. Exception-shaped identifiers built only from letters and underscores
+are now preserved, while anything bearing digits or hyphens still redacts. The
+residual non-fatal null reference raised once per call in `6152` was therefore
+unattributable and should now name its throw site.
+
+`CallsService` also no longer swaps the two TgCalls timeouts: the connect
+timeout maps to `initializationTimeout` and the packet timeout to
+`receiveTimeout`, with non-zero fallbacks because the server reports both
+options as zero. This is a correctness fix only. The pinned TgCalls tree never
+reads either field — every implementation hard-codes a 20 second timeout — so
+it cannot by itself change call behaviour and is not claimed as a call fix.
+
 Required validation is experimental W10M to/from current Android and iOS audio
 calls, including accept, outgoing signaling, mute, route changes, foreground
 and background behavior, reconnect, rejection, and cleanup. Preserve the
@@ -431,5 +490,8 @@ startup result. It should not emit an unhandled `CallStatePending`
 null-reference error or restart when audio routing is unavailable; that state
 is recorded as `voip.ui result=routing_unavailable` and route selection is
 hidden. `6152` should log `view.title_bar result=unavailable` or complete the
-`voip.ui` construction stages without crashing. This is not a claim that
-Android/iOS audio is established.
+`voip.ui` construction stages without crashing. `6153` should additionally log
+one `voip.media result=audio_device` line per call and, once the transport is
+established, recurring `voip.media result=audio_level` summaries carrying
+`recording=` and `playing=` flags. This is not a claim that Android/iOS audio
+is established; `6153` is a diagnostic build and is not expected to fix calls.

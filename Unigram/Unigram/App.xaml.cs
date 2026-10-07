@@ -104,7 +104,7 @@ namespace Unigram
                 }
 
 #if MODERN_TDLIB
-                Logs.PushDiagnostics.WriteException("app.unhandled", args.Exception);
+                Logs.PushDiagnostics.WriteException("app.unhandled", args.Exception, null, args.Message);
 #elif !DEBUG
                 Microsoft.AppCenter.Crashes.Crashes.TrackError(args.Exception);
 #endif
@@ -595,7 +595,7 @@ namespace Unigram
 
         private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
         {
-            Logs.PushDiagnostics.WriteException("app.unhandled.handler", e.Exception);
+            Logs.PushDiagnostics.WriteException("app.unhandled.handler", e.Exception, null, e.Message);
             e.Handled = true;
         }
 #elif !DEBUG

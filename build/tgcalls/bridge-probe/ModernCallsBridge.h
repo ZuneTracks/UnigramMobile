@@ -31,6 +31,11 @@ public enum class CallState {
     Reconnecting,
 };
 
+public enum class RemoteAudioState {
+    Muted,
+    Active,
+};
+
 public ref class ReflectorEndpoint sealed {
 public:
     ReflectorEndpoint();
@@ -83,11 +88,16 @@ public:
     void ReceiveSignalingData(Windows::Foundation::Collections::IVector<unsigned char>^ data);
     void SetMuted(bool value);
     void SetNetworkType(NetworkType value);
+    Platform::String^ GetAudioDeviceStatus();
     void Stop();
 
     event Windows::Foundation::EventHandler<CallState>^ StateChanged;
     event Windows::Foundation::EventHandler<Windows::Foundation::Collections::IVector<unsigned char>^>^ SignalingData;
     event Windows::Foundation::EventHandler<bool>^ Stopped;
+    event Windows::Foundation::EventHandler<int>^ SignalBarsChanged;
+    event Windows::Foundation::EventHandler<float>^ AudioLevelChanged;
+    event Windows::Foundation::EventHandler<RemoteAudioState>^ RemoteAudioStateChanged;
+    event Windows::Foundation::EventHandler<Platform::String^>^ AudioDeviceReport;
 
 private:
     AudioCallSession(AudioCallConfiguration^ configuration);

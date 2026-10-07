@@ -3,6 +3,9 @@
 #include "Instance.h"
 #include "InstanceImpl.h"
 
+#include "api/task_queue/task_queue_factory.h"
+#include "modules/audio_device/include/audio_device.h"
+
 #include <algorithm>
 #include <array>
 #include <mutex>
@@ -57,6 +60,12 @@ tgcalls::NetworkType ToTgCallsNetworkType(NetworkType value) {
 
 CallState ToFacadeState(tgcalls::State value) {
     return static_cast<CallState>(value);
+}
+
+RemoteAudioState ToFacadeAudioState(tgcalls::AudioState value) {
+    return value == tgcalls::AudioState::Active
+        ? RemoteAudioState::Active
+        : RemoteAudioState::Muted;
 }
 
 }
@@ -145,10 +154,49 @@ public:
                     strong->StateChanged(ToFacadeState(state));
                 }
             },
+            .signalBarsUpdated = [weak](int bars) {
+                if (const auto strong = weak.lock()) {
+                    strong->SignalBarsChanged(bars);
+                }
+            },
+            .audioLevelUpdated = [weak](float level) {
+                if (const auto strong = weak.lock()) {
+                    strong->AudioLevelChanged(level);
+                }
+            },
+            .remoteMediaStateUpdated = [weak](tgcalls::AudioState audio, tgcalls::VideoState) {
+                if (const auto strong = weak.lock()) {
+                    strong->RemoteAudioStateChanged(ToFacadeAudioState(audio));
+                }
+            },
             .signalingDataEmitted = [weak](const std::vector<uint8_t>& data) {
                 if (const auto strong = weak.lock()) {
                     strong->SignalingData(data);
                 }
+            },
+            .createAudioDeviceModule = [weak](webrtc::TaskQueueFactory* factory)
+                    -> webrtc::scoped_refptr<webrtc::AudioDeviceModule> {
+                // MediaManager falls back to the same platform default when this returns
+                // null, so creating it here changes no behaviour; it exists purely to make
+                // an audio device failure observable instead of silently muting the call.
+                auto report = std::string("created=0");
+                auto module = webrtc::AudioDeviceModule::Create(
+                    webrtc::AudioDeviceModule::kPlatformDefaultAudio,
+                    factory);
+                if (module) {
+                    const auto initialized = module->Init();
+                    report = "created=1;init=" + std::to_string(initialized);
+                    if (initialized == 0) {
+                        report += ";playout_devices=" + std::to_string(module->PlayoutDevices());
+                        report += ";recording_devices=" + std::to_string(module->RecordingDevices());
+                    }
+                }
+
+                if (const auto strong = weak.lock()) {
+                    strong->RetainAudioDeviceModule(module);
+                    strong->AudioDeviceReport(report);
+                }
+                return module;
             },
         };
 
@@ -176,6 +224,25 @@ public:
         std::lock_guard<std::mutex> lock(_mutex);
         EnsureActive();
         _instance->setNetworkType(ToTgCallsNetworkType(value));
+    }
+
+    /// <summary>
+    /// Reads the live recording and playout state of the retained audio device module.
+    /// Reported as fixed keys with boolean values only.
+    /// </summary>
+    std::string AudioDeviceStatus() {
+        webrtc::scoped_refptr<webrtc::AudioDeviceModule> module;
+        {
+            std::lock_guard<std::mutex> lock(_audioDeviceMutex);
+            module = _audioDeviceModule;
+        }
+
+        if (!module) {
+            return "created=0";
+        }
+
+        return std::string("created=1;recording=") + (module->Recording() ? "1" : "0") +
+            ";playing=" + (module->Playing() ? "1" : "0");
     }
 
     void Stop() {
@@ -227,7 +294,38 @@ private:
         }
     }
 
+    void SignalBarsChanged(int bars) {
+        if (_callbacks.signalBarsChanged) {
+            _callbacks.signalBarsChanged(bars);
+        }
+    }
+
+    void AudioLevelChanged(float level) {
+        if (_callbacks.audioLevelChanged) {
+            _callbacks.audioLevelChanged(level);
+        }
+    }
+
+    void RemoteAudioStateChanged(RemoteAudioState state) {
+        if (_callbacks.remoteAudioStateChanged) {
+            _callbacks.remoteAudioStateChanged(state);
+        }
+    }
+
+    void AudioDeviceReport(const std::string& report) {
+        if (_callbacks.audioDeviceReport) {
+            _callbacks.audioDeviceReport(report);
+        }
+    }
+
+    void RetainAudioDeviceModule(webrtc::scoped_refptr<webrtc::AudioDeviceModule> module) {
+        std::lock_guard<std::mutex> lock(_audioDeviceMutex);
+        _audioDeviceModule = std::move(module);
+    }
+
     std::mutex _mutex;
+    std::mutex _audioDeviceMutex;
+    webrtc::scoped_refptr<webrtc::AudioDeviceModule> _audioDeviceModule;
     CallConfiguration _configuration;
     std::unique_ptr<tgcalls::Instance> _instance;
     CallCallbacks _callbacks;
@@ -287,6 +385,13 @@ void SetNetworkType(const CallSessionPtr& session, NetworkType value) {
         throw std::invalid_argument("The TgCalls session is unavailable.");
     }
     session->SetNetworkType(value);
+}
+
+std::string GetAudioDeviceStatus(const CallSessionPtr& session) {
+    if (!session) {
+        return "created=0";
+    }
+    return session->AudioDeviceStatus();
 }
 
 void StopCallSession(const CallSessionPtr& session) {

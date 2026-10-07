@@ -60,6 +60,17 @@ namespace Unigram.Logs
 
         public static void WriteException(string eventName, Exception exception, string context = null)
         {
+            WriteException(eventName, exception, context, null);
+        }
+
+        /// <summary>
+        /// <paramref name="description"/> carries the platform-supplied text of an unhandled
+        /// failure. On .NET Native the managed exception reaching Application.UnhandledException
+        /// has already lost its stack, while the event argument's own message still describes the
+        /// throw site, so it is the only remaining way to attribute the fault.
+        /// </summary>
+        public static void WriteException(string eventName, Exception exception, string context, string description)
+        {
             var prefix = string.IsNullOrEmpty(context) ? string.Empty : context + ";";
 
             if (exception == null)
@@ -126,9 +137,9 @@ namespace Unigram.Logs
                 else
                 {
                     // An exception surfaced through Application.UnhandledException has already
-                    // had its stack discarded. ToString still carries the throw site often
-                    // enough to be worth recording, and it is the only remaining locator.
-                    var text = root.ToString();
+                    // had its stack discarded. The platform description is populated before that
+                    // happens, so prefer it and fall back to ToString when none was supplied.
+                    var text = string.IsNullOrEmpty(description) ? root.ToString() : description;
                     if (!string.IsNullOrEmpty(text))
                     {
                         var frames = text.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", " << ");
@@ -192,7 +203,15 @@ namespace Unigram.Logs
                 // tail of a sentence is an acceptable trade for never emitting a path.
                 sanitized = Regex.Replace(sanitized, @"[A-Za-z]:(?:[\\/][^\\/""\r\n]*)+", "[redacted_path]");
                 sanitized = Regex.Replace(sanitized, @"\b\d{6,}\b", "[redacted_number]");
-                sanitized = Regex.Replace(sanitized, @"\b[A-Za-z0-9_-]{24,}\b", "[redacted_token]");
+                // Framework resource keys and type names are the only locator left once
+                // .NET Native strips an exception's stack, and they are long enough to trip
+                // the opaque-token rule. Preserve that one identifier shape -- letters and
+                // underscores only, and only when it names an exception -- so that anything
+                // bearing digits or hyphens (tokens, GUIDs, base64, URIs) still redacts.
+                sanitized = Regex.Replace(sanitized, @"\b[A-Za-z0-9_-]{24,}\b", match =>
+                    Regex.IsMatch(match.Value, @"^(?:Arg_[A-Za-z]+|[A-Za-z]*Exception[A-Za-z]*)$")
+                        ? match.Value
+                        : "[redacted_token]");
                 return sanitized.Length <= maxLength ? sanitized : sanitized.Substring(0, maxLength);
             }
             catch
