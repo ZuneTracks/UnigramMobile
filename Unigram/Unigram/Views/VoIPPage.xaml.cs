@@ -24,6 +24,9 @@ using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Media.Imaging;
 using Windows.UI.Xaml.Shapes;
 using Point = Windows.Foundation.Point;
+#if MODERN_TGCALLS
+using ModernCalls = Unigram.Native.Calls.Proof;
+#endif
 
 namespace Unigram.Views
 {
@@ -45,6 +48,11 @@ namespace Unigram.Views
         private Call _call;
 
         private libtgvoip.CallState _state;
+
+        // The modern tgcalls bridge replaces VoIPControllerWrapper, so Connect() is never
+        // called and OnCallStateChanged never fires. This tracks the bridge's transport
+        // state instead, so the duration timer and the state label behave the same way.
+        private bool _modernEstablished;
         private IList<string> _emojis;
         private DateTime _started;
 
@@ -148,12 +156,14 @@ namespace Unigram.Views
         {
             if (Routing == null)
             {
+                Logs.PushDiagnostics.Write("voip.ui", "result=routing_skipped;reason=control_unavailable");
                 return;
             }
 
             if (!ApiInfo.IsPhoneContractPresent)
             {
                 Routing.Visibility = Visibility.Collapsed;
+                Logs.PushDiagnostics.Write("voip.ui", "result=routing_skipped;reason=no_phone_contract");
                 return;
             }
 
@@ -168,6 +178,9 @@ namespace Unigram.Views
             Routing.Visibility = Visibility.Visible;
             _audioRoutingManager.AudioEndpointChanged += AudioEndpointChanged;
             Routing.IsChecked = _audioRoutingManager.GetAudioEndpoint() == AudioRoutingEndpoint.Speakerphone;
+            Logs.PushDiagnostics.Write(
+                "voip.ui",
+                $"result=routing_ready;endpoint={_audioRoutingManager.GetAudioEndpoint()};available={_audioRoutingManager.AvailableAudioEndpoints}");
         }
 
         private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -391,10 +404,21 @@ namespace Unigram.Views
                 case CallStateExchangingKeys exchangingKeys:
                     StateLabel.Content = Strings.Resources.VoipExchangingKeys;
                     break;
+                case CallStateReady readyState:
+                    // TDLib has finished its part, but the transport is still being negotiated.
+                    // Only the libtgvoip controller used to advance the label past this point,
+                    // so without this the modern bridge leaves it on "exchanging keys" forever.
+                    if (!_modernEstablished)
+                    {
+                        StateLabel.Content = Strings.Resources.VoipConnecting;
+                    }
+                    break;
                 case CallStateHangingUp hangingUp:
+                    _modernEstablished = false;
                     StateLabel.Content = Strings.Resources.VoipHangingUp;
                     break;
                 case CallStateDiscarded discarded:
+                    _modernEstablished = false;
                     StateLabel.Content = discarded.Reason is CallDiscardReasonDeclined
                         ? Strings.Resources.VoipBusy
                         : Strings.Resources.VoipCallEnded;
@@ -459,11 +483,65 @@ namespace Unigram.Views
 
         public void SetSignalBars(int count)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             for (int i = 1; i < 5; i++)
             {
-                ((Rectangle)FindName($"Signal{i}")).Fill = Resources[count >= i ? "SignalBarForegroundBrush" : "SignalBarForegroundDisabledBrush"] as SolidColorBrush;
+                var bar = FindName($"Signal{i}") as Rectangle;
+                if (bar != null)
+                {
+                    bar.Fill = Resources[count >= i ? "SignalBarForegroundBrush" : "SignalBarForegroundDisabledBrush"] as SolidColorBrush;
+                }
             }
         }
+
+#if MODERN_TGCALLS
+        // Modern tgcalls replacement for OnCallStateChanged. CallsService routes the bridge's
+        // transport state here because VoIPControllerWrapper, which used to drive this, is
+        // never created when the modern engine is in use.
+        public void UpdateModernTransportState(ModernCalls.CallState state)
+        {
+            this.BeginOnUIThread(() =>
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                switch (state)
+                {
+                    case ModernCalls.CallState.WaitInit:
+                    case ModernCalls.CallState.WaitInitAck:
+                        if (!_modernEstablished)
+                        {
+                            StateLabel.Content = Strings.Resources.VoipConnecting;
+                        }
+                        break;
+                    case ModernCalls.CallState.Established:
+                        if (!_modernEstablished)
+                        {
+                            _modernEstablished = true;
+                            // VoIPService._callStarted is never reset between calls, so the
+                            // value passed into Update() can belong to a previous call. Take
+                            // the establishment time directly instead.
+                            _started = DateTime.Now;
+                            StateLabel.Content = "00:00";
+
+                            SignalBarsLabel.Visibility = Visibility.Visible;
+                            StartUpdatingCallDuration();
+                        }
+                        break;
+                    case ModernCalls.CallState.Failed:
+                        _modernEstablished = false;
+                        StateLabel.Content = Strings.Resources.VoipFailed;
+                        break;
+                }
+            });
+        }
+#endif
 
         private void StartUpdatingCallDuration()
         {
@@ -479,7 +557,7 @@ namespace Unigram.Views
                 StateLabel.Opacity = 0;
             }
 
-            if (_state == libtgvoip.CallState.Established)
+            if (_state == libtgvoip.CallState.Established || _modernEstablished)
             {
                 var duration = DateTime.Now - _started;
                 DurationLabel.Text = duration.ToString(duration.TotalHours >= 1 ? "hh\\:mm\\:ss" : "mm\\:ss");
@@ -612,7 +690,7 @@ namespace Unigram.Views
                 relay = _controller.GetPreferredRelayID();
             }
 
-            var duration = _state == libtgvoip.CallState.Established ? DateTime.Now - _started : TimeSpan.Zero;
+            var duration = _state == libtgvoip.CallState.Established || _modernEstablished ? DateTime.Now - _started : TimeSpan.Zero;
             _protoService.Send(ModernTdlibCompatibility.CreateDiscardCall(call.Id, false, (int)duration.TotalSeconds, relay));
         }
 
@@ -659,8 +737,23 @@ namespace Unigram.Views
                 {
                     _controller.SetMicMute(value);
                 }
+#if MODERN_TGCALLS
+                else
+                {
+                    // The modern bridge owns the microphone instead of VoIPControllerWrapper,
+                    // and CallsService owns the session, so the toggle is forwarded there.
+                    ModernMuteRequested?.Invoke(value);
+                }
+#endif
             }
         }
+
+#if MODERN_TGCALLS
+        /// <summary>
+        /// Supplied by CallsService so the mute toggle can reach the modern tgcalls session.
+        /// </summary>
+        public Action<bool> ModernMuteRequested { get; set; }
+#endif
 
         private async void AudioEndpointChanged(AudioRoutingManager sender, object args)
         {

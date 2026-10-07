@@ -1336,3 +1336,255 @@ Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`.
 
 Packed `ModernCallsBridge.dll` `1AF6A2AE57EAC31970C1A487841267566E1C027864C14572ED08E3A43BB65D45`,
 identical to the freshly built binary.
+
+## 26.9.6165.0 - calls work; fixing the call UI that never left "exchanging keys"
+
+### What 6164 proved
+
+The ABI fix worked. Device testing of 6164 produced two complete calls that ran end to
+end without killing the process, in both directions:
+
+```
+voip.update     state=CallStateReady
+voip.ready      result=starting
+voip.transport  state=Reconnecting
+voip.transport  state=Established
+                ... every audio step phase=end;faulted=0;code=0 ...
+voip.media      remote_audio;state=Active
+voip.media      audio_level;samples=49;active=34;peak=5.08;created=1;recording=1;playing=1
+voip.media      signal_bars;bars=4
+voip.update     state=CallStateDiscarded
+voip.teardown   result=drained;elapsed_ms=100
+```
+
+`start_playout` and `start_recording` - the exact steps that killed every build from
+6155 through 6163 - now complete normally. Audio is audible in both directions. The
+crash is fixed.
+
+What remained was a **UI-only** defect: the call connected and audio flowed, but the
+page kept displaying "Exchanging encryption keys" for the entire call, and the call
+duration never started counting.
+
+### Root cause of the stuck label
+
+`VoIPPage.Update(Call, DateTime)` ends with a switch that sets `StateLabel.Content`:
+
+| TDLib call state | Label |
+| --- | --- |
+| `CallStatePending` | Requesting / Waiting / Ringing / Incoming |
+| `CallStateExchangingKeys` | "Exchanging encryption keys" |
+| `CallStateHangingUp` | "Hanging up" |
+| `CallStateDiscarded` | "Busy" / "Call ended" |
+| **`CallStateReady`** | **no case - label left untouched** |
+
+That omission is not a bug in the original app. `CallStateReady` is the point where
+TDLib hands the call over to the voice engine, and in the legacy design
+`VoIPControllerWrapper.CallStateChanged` took over from there:
+`VoIPPage.OnCallStateChanged` set "Connecting" on `WaitInit`/`WaitInitAck`, then on
+`Established` set the label to `00:00`, revealed `SignalBarsLabel`, and started
+`_durationTimer`.
+
+With the modern tgcalls bridge there is no `VoIPControllerWrapper`. `CallsService`
+never constructs one, so `VoIPPage.Connect(controller)` is never called and
+`OnCallStateChanged` never fires. TDLib's last labelled state was
+`CallStateExchangingKeys`, so that string stayed on screen for the whole call while the
+bridge quietly reached `Established` and pumped audio underneath it.
+
+The bridge was already reporting everything needed - `voip.transport|state=Established`
+and `voip.media|signal_bars;bars=4` are in the 6164 log - it simply had no route to the
+page.
+
+### The fix
+
+**`Unigram\Unigram\Views\VoIPPage.xaml.cs`**
+
+- New `_modernEstablished` field, the modern counterpart to `_state ==
+  libtgvoip.CallState.Established`.
+- New `case CallStateReady` in the label switch, showing "Connecting" so the label
+  advances the moment TDLib is done, even before the transport comes up. Guarded by
+  `!_modernEstablished` so a later `Update()` cannot clobber a running duration.
+- `CallStateHangingUp` / `CallStateDiscarded` now clear `_modernEstablished`, which also
+  stops the duration timer through its existing tick check.
+- New `UpdateModernTransportState(ModernCalls.CallState)` under `MODERN_TGCALLS`. It is
+  a direct mirror of `OnCallStateChanged`: "Connecting" on `WaitInit`/`WaitInitAck`,
+  `00:00` + signal bars + `StartUpdatingCallDuration()` on `Established`, "Failed" on
+  `Failed`. `Reconnecting` is deliberately unhandled so a mid-call blip does not wipe
+  the duration. Idempotent via `_modernEstablished`, and it early-returns if `_disposed`.
+- `DurationTimer_Tick` and the discard-duration calculation now accept either the legacy
+  `_state` or `_modernEstablished`.
+- `SetSignalBars` no longer hard-casts `FindName($"Signal{i}")`; a missing element is
+  skipped instead of throwing an NRE.
+
+**`Unigram\Unigram\Services\CallsService.cs`**
+
+- `OnModernCallStateChanged` records the state in a new `_modernTransportState` field
+  and forwards it to `_callPage.UpdateModernTransportState(state)`. If the page does not
+  exist yet it logs `voip.ui|result=transport_deferred;state=<state>` rather than
+  dropping the event silently.
+- `OnModernSignalBarsChanged` forwards to `_callPage.SetSignalBars(bars)` on the UI
+  thread.
+- `ShowAsync` replays the last `_modernTransportState` and `_modernSignalBars` right
+  after `callPage.Update(call, started)`. This closes the race where the page is created
+  (or re-created on activation) after the transport already reported `Established`, in
+  which case no further event would ever arrive.
+- Both fields are reset alongside `_modernSignalBars` / `_modernRemoteAudioState` when a
+  call is torn down.
+
+### Also in this build
+
+The two code-review fixes made after commit `20b313625` are included here:
+
+- `FatalExceptionReporter` no longer discards the fault-slot write when the diagnostic
+  budget is exhausted. It publishes to the mapped slot first and claims the budget only
+  around the log write, so an always-fatal code arriving late is still recorded.
+- `ClearFaultSlot` takes the `g_faultSlotWriter` claim, so it cannot race a concurrent
+  publish and resurrect a partially written record.
+
+### Still open, deliberately
+
+- A survivable `NullReferenceException` is still absorbed at `App.xaml.cs:655` roughly
+  140 ms after the call page is constructed, in both call directions. It does **not**
+  block the UI - subsequent `Update()` calls demonstrably ran, which is how the label
+  reached "exchanging keys" at all - so it is not the cause of this defect. The reported
+  stack names `VoIPPage.OnSizeChanged`, but its caller frame is
+  `TypedEventHandler<UIElement, RoutedEventArgs>`, which is not the `SizeChanged`
+  delegate type; .NET Native symbol merging means the real throw site is elsewhere.
+  Adding guards to `OnSizeChanged` in 6164 did not stop it, confirming the
+  misattribution. Chase it only if it starts causing visible harm.
+- `_HAS_EXCEPTIONS=0` is still not matched against `webrtc.lib` (the facade throws
+  `std::invalid_argument` / `std::logic_error` in ~15 places). Now that calls are
+  stable this is a lower priority, but it remains formally unsupported mixing.
+- `DisarmFaultReporting()` still runs inside the `stop()` completion, before tgcalls'
+  deferred `~Manager` / `~MediaManager` teardown. Faults in that window are declined.
+
+### Artifacts
+
+| File | SHA-256 |
+| --- | --- |
+| `Unigram_26.9.6165.0_ARM_ModernTgCalls_CallUi_Sideload.zip` | `2ABAD6FF9A19DBF38F69922D94F592B072FA11563C42323DB6D0DD3492C0DBED` |
+| `Unigram_26.9.6165.0_ARM_ModernTgCalls_CallUi.appx` | `A32E084E65E6129DE8C5873D904192E7A741C280EC7232480C7A6CF3B3FAB795` |
+| `Unigram_26.9.6165.0_ARM_ModernTgCalls_CallUi.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` |
+| `ModernCallsBridge_26.9.6165.0.map` | `AAF413BCD5FD536B8D7EE13F9E07DF170F9B285101771FD3EB5E0466892BA446` |
+
+Packed `ModernCallsBridge.dll` =
+`79B2CE0716DCC7080F2D420DC46E81A0D68A8F15CC47DE3B5A57B509A9178BD9` (4,250,112 bytes),
+hash-identical to the freshly built binary.
+
+### What to look for in the next log
+
+Success now looks like a normal call *plus* a usable screen:
+
+- the label leaves "exchanging encryption keys" within a second of
+  `voip.update|state=CallStateReady`,
+- it shows "Connecting" briefly, then switches to a counting `00:00` timer at
+  `voip.transport|state=Established`,
+- the signal-bar indicator appears and tracks `voip.media|result=signal_bars`.
+
+If the label still sticks, check for `voip.ui|result=transport_deferred` - that would
+mean the transport state arrived before the page existed and the `ShowAsync` replay did
+not run.
+
+## 26.9.6166.0 - inbound audio inaudible and a dead mute button
+
+### What 6165 proved
+
+The call page now leaves "exchanging encryption keys", shows the connected state and
+runs the duration timer. The UI fix landed. Device testing surfaced two further,
+separate defects:
+
+1. Nothing is audible on the Windows 10 Mobile handset, while the Android peer hears
+   the user fine. Capture works; playout does not reach the ear.
+2. The mute toggle does nothing.
+
+### Mute - confirmed, same class of bug as the label
+
+`VoIPPage.IsMuted`'s setter only ever called `_controller.SetMicMute(value)`.
+`_controller` is the legacy `VoIPControllerWrapper`, which the modern engine never
+constructs, so the setter was a no-op for every modern call. The native chain already
+existed end to end - `AudioCallSession.SetMuted` -> `CallSession::SetMuted` ->
+`_instance->setMuteMicrophone` - it simply had no caller.
+
+Fixed by giving `VoIPPage` a `ModernMuteRequested` callback that `CallsService`
+assigns in `ShowAsync`. `SetModernMuted` stores the value in `_modernMuted` and
+applies it to the session; the stored value is re-applied when the session is created,
+so a toggle flipped before the call reaches Ready is not lost. Each attempt logs
+`voip.media|result=mute;muted=N;applied=N`.
+
+### Silence - not yet diagnosed, so 6166 adds the missing telemetry
+
+Everything the 6165 log can show is green: `playout_devices=2`, every ADM step
+`faulted=0;code=0`, `start_playout` succeeds, `Playing()` is true, `remote_audio`
+`state=Active`, transport `Established`. The `audio_level` summary is misleading here:
+tgcalls' `audioLevelUpdated` reports the *outgoing* microphone level, so its peaks only
+confirm capture - consistent with Android hearing us. We had no playout telemetry at
+all.
+
+Two hypotheses, both now observable:
+
+- The platform ADM starts the render endpoint muted or at zero gain. tgcalls never
+  calls `SetSpeakerVolume`/`SetSpeakerMute`, so nothing would correct it.
+  `AudioDeviceStatus()` now also reports `speaker_volume=<vol>/<max>` and
+  `speaker_mute=0|1`, and a new `EnsureSpeakerAudible()` runs after a successful
+  `StartPlayout()`: it unmutes a muted speaker and raises a zero volume to the
+  maximum. Every step is reported as `voip.media|...step=speaker_*`. Only numeric
+  gain is logged, never device names.
+- Windows 10 Mobile routes the Communications render stream to the earpiece. The page
+  already has a speakerphone toggle driven by `AudioRoutingManager`, but `OnLoaded`
+  returned silently in two of its branches and only logged failure, so no routing line
+  appeared anywhere in the log. It now logs `routing_skipped` with a reason,
+  `routing_unavailable`, or `routing_ready;endpoint=...;available=...`.
+
+`SetPlayoutDevice`/`SetRecordingDevice` now log the endpoint tgcalls selected
+(`phase=select;index=` or `;type=`) for both the index and `WindowsDeviceType`
+overloads, so a successful-but-wrong endpoint selection is visible.
+
+### Review findings folded in
+
+A code review of the 6165 diff raised three valid defects, all fixed here:
+
+- **Stale call duration (high).** `VoIPService._callStarted` is never reset between
+  calls, and `VoIPPage.Update` assigns `_started` from it unconditionally, so the
+  second call in an app session would open its timer at the first call's elapsed time
+  and report that inflated duration to Telegram in `CreateDiscardCall`. The
+  `Established` branch now takes `_started = DateTime.Now` directly, and
+  `_callStarted` is reset during teardown.
+- **Hang-up resurrected by the replay (medium).** `_modernTransportState` is cleared
+  only by `DisposeModernCall()`, which `CallStateHangingUp` never reaches, so the
+  `ShowAsync` replay re-applied `Established` one dispatcher pass after the teardown
+  cleared it - restarting the timer and hiding the "Hanging up" label. The replay now
+  skips terminal call states.
+- **Signal bars on the wrong dispatcher (medium).** `OnModernSignalBarsChanged` used
+  the service's `BeginOnUIThread`, which resolves to the *main* window, while
+  `ShowAsync` can host the page in a secondary `ApplicationView` on desktop ARM -
+  `RPC_E_WRONG_THREAD` on every bars change. It now uses `callPage.BeginOnUIThread`.
+  `SetSignalBars` also gained the `_disposed` guard it was missing.
+
+### Still open
+
+The silence itself. 6166 is a diagnostic round with one speculative fix; if the
+speaker was already unmuted at full volume and the endpoint is correct, the next
+suspect is the render side of the UWP ADM itself.
+
+### Artifacts
+
+`%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`
+
+| File | SHA-256 | Bytes |
+| --- | --- | --- |
+| `Unigram_26.9.6166.0_ARM_ModernTgCalls_Audio_Sideload.zip` | `D4761C0EBD9671311B02DEAA1F9A2E40B9E41FB29FF130CB06ACB080614C0DE4` | 64,114,158 |
+| `Unigram_26.9.6166.0_ARM_ModernTgCalls_Audio.appx` | `87C2080432973FA325D8EA363E768A1C2308F1F3884B5E6822D5D7A9808CD463` | 57,512,435 |
+| `Unigram_26.9.6166.0_ARM_ModernTgCalls_Audio.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6166.0.map` | `20B90BC0DEE75EF5352028BE143B1FF90A57F3C8747C4D69BA95FBC4675DEDCE` | 14,841,516 |
+
+Packed `ModernCallsBridge.dll` = `4B832C012EDD94760BF514AE2B18F7FC742DC6C65B5B62119CA31B3425EB32B6`
+(4,253,696 bytes), matching the built binary.
+
+### Reading the next log
+
+- `voip.ui|result=routing_*` - exactly one per call page. `routing_ready` names the
+  active endpoint; anything else means the speakerphone toggle is not even wired up.
+- `voip.media|...step=set_playout_device;phase=select` - which endpoint tgcalls chose.
+- `voip.media|...step=speaker_mute;phase=state;muted=` and
+  `step=speaker_volume;phase=state;volume=N;max=N` - the state the render endpoint was
+  actually in when playout started. A `set_speaker_*` step means we corrected it.
+- `voip.media|result=mute;muted=N;applied=N` - one per toggle press.

@@ -81,6 +81,8 @@ namespace Unigram.Services
         private DateTime _modernAudioLevelReported = DateTime.MinValue;
         private int _modernSignalBars = -1;
         private ModernCalls.RemoteAudioState? _modernRemoteAudioState;
+        private ModernCalls.CallState? _modernTransportState;
+        private bool _modernMuted;
 #endif
 
         private VoIPPage _callPage;
@@ -822,6 +824,13 @@ namespace Unigram.Services
                 _modernCallId = call.Id;
                 _modernCallStarting = true;
                 session.Start();
+                if (_modernMuted)
+                {
+                    // The toggle can be flipped before the session exists, so re-apply it
+                    // rather than silently starting an unmuted call.
+                    ApplyModernMuted(_modernMuted);
+                }
+
                 if (!FlushPendingModernSignalingData(call.Id, session))
                 {
                     DisposeModernCall();
@@ -927,6 +936,38 @@ namespace Unigram.Services
                 $"result=audio_device;transport=modern_tgcalls;{Logs.PushDiagnostics.SanitizeErrorMessage(report)}");
         }
 
+        /// <summary>
+        /// Receives the call page's mute toggle. VoIPControllerWrapper is never created when
+        /// the modern engine is in use, so without this the toggle has no effect at all.
+        /// </summary>
+        private void SetModernMuted(bool muted)
+        {
+            _modernMuted = muted;
+            ApplyModernMuted(muted);
+        }
+
+        private void ApplyModernMuted(bool muted)
+        {
+            var session = _modernController;
+            if (session == null)
+            {
+                WriteAudioCallDiagnostic("voip.media", $"result=mute;transport=modern_tgcalls;muted={(muted ? 1 : 0)};applied=0");
+                return;
+            }
+
+            try
+            {
+                session.SetMuted(muted);
+                WriteAudioCallDiagnostic("voip.media", $"result=mute;transport=modern_tgcalls;muted={(muted ? 1 : 0)};applied=1");
+            }
+            catch (Exception error)
+            {
+                WriteAudioCallDiagnostic(
+                    "voip.media",
+                    $"result=mute;transport=modern_tgcalls;muted={(muted ? 1 : 0)};applied=0;hresult=0x{error.HResult:X8}");
+            }
+        }
+
         private void OnModernSignalBarsChanged(int callId, int bars)
         {
             if (_modernCallId != callId || _modernSignalBars == bars)
@@ -936,6 +977,12 @@ namespace Unigram.Services
 
             _modernSignalBars = bars;
             WriteModernMediaDiagnostic($"result=signal_bars;transport=modern_tgcalls;bars={bars}");
+
+            var callPage = _callPage;
+            if (callPage != null)
+            {
+                callPage.BeginOnUIThread(() => callPage.SetSignalBars(bars));
+            }
         }
 
         private void OnModernRemoteAudioStateChanged(int callId, ModernCalls.RemoteAudioState state)
@@ -1046,6 +1093,9 @@ namespace Unigram.Services
 
             _modernSignalBars = -1;
             _modernRemoteAudioState = null;
+            _modernTransportState = null;
+            _modernMuted = false;
+            _callStarted = DateTime.MinValue;
             _modernMediaDiagnosticBudget = ModernMediaDiagnosticBudget;
         }
 
@@ -1057,6 +1107,18 @@ namespace Unigram.Services
             }
 
             WriteAudioCallDiagnostic("voip.transport", $"result=state;transport=modern_tgcalls;state={state}");
+            _modernTransportState = state;
+
+            var callPage = _callPage;
+            if (callPage != null)
+            {
+                callPage.UpdateModernTransportState(state);
+            }
+            else
+            {
+                WriteAudioCallDiagnostic("voip.ui", $"result=transport_deferred;state={state}");
+            }
+
             BeginOnUIThread(() =>
             {
                 if (state == ModernCalls.CallState.WaitInit || state == ModernCalls.CallState.WaitInitAck)
@@ -1454,6 +1516,29 @@ namespace Unigram.Services
                         }
 
                         callPage.Update(call, started);
+#if MODERN_TGCALLS
+                        callPage.ModernMuteRequested = SetModernMuted;
+
+                        // The page can be created after the bridge already reported its
+                        // transport state, so replay the latest values instead of waiting
+                        // for an event that has already been raised. Terminal states are
+                        // excluded: replaying a stale Established would undo the label and
+                        // restart the duration timer the teardown just stopped.
+                        var terminal = call.State is CallStateHangingUp
+                            || call.State is CallStateDiscarded
+                            || call.State is CallStateError;
+
+                        var transportState = _modernTransportState;
+                        if (transportState.HasValue && !terminal)
+                        {
+                            callPage.UpdateModernTransportState(transportState.Value);
+                        }
+
+                        if (_modernSignalBars >= 0 && !terminal)
+                        {
+                            callPage.SetSignalBars(_modernSignalBars);
+                        }
+#endif
                     });
                     EnableDisplayOnOffController();
                 }

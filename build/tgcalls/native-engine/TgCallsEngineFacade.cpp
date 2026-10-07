@@ -337,11 +337,23 @@ void PublishFaultSlot(const char* text, int length) {
 
 // Nothing else empties the slot, so without this a single out-of-step fault would be
 // reported as the last fault before exit on every subsequent launch, long after the call
-// that produced it ended cleanly.
+// that produced it ended cleanly. It takes the same writer claim as a publish: clearing
+// part way through one would otherwise let the publisher's final store resurrect the
+// record after the clear, which is the stale read this exists to prevent. Declining when
+// a publish holds the claim is correct, because a fault in progress is newer information
+// than the clean teardown asking to erase it.
 void ClearFaultSlot() {
-    if (volatile char* const slot = g_faultSlot) {
-        slot[0] = '\0';
+    volatile char* const slot = g_faultSlot;
+    if (slot == nullptr) {
+        return;
     }
+    if (InterlockedCompareExchange(&g_faultSlotWriter, 1, 0) != 0) {
+        return;
+    }
+
+    slot[0] = '\0';
+
+    InterlockedExchange(&g_faultSlotWriter, 0);
 }
 
 // A fatal error that does not travel as a structured exception never reaches a vectored
@@ -385,13 +397,11 @@ LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
     const bool inStep = g_audioDeviceLifecycleDepth > 0;
     const bool alwaysFatal = IsAlwaysFatalExceptionCode(pointers->ExceptionRecord->ExceptionCode);
 
-    // Only a fault raised while a device step is on the stack, or one of the codes that is
-    // fatal by construction, is written to the log. Anything else goes to the mapped slot
-    // instead, which neither claims budget nor performs file I/O on the engine's
-    // real-time threads.
-    if ((inStep || alwaysFatal) && !ClaimFaultReport()) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
+    // The budget is claimed further down, immediately around the log write, rather than
+    // here. Claiming it up front would also discard the mapped slot write, and the slot is
+    // the one channel that costs no budget and survives a death before the write reaches
+    // disk - so a fatal breakpoint arriving after the allowance ran out would be recorded
+    // in neither place, which is precisely the report this build exists to capture.
 
     // The scope only tracks depth, so the step and thread it recorded outlive it. Reading
     // them when no step is live would name a device call that finished long ago and
@@ -455,16 +465,20 @@ LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
     AppendLiteral(line, length, ";noncontinuable=");
     line[length++] = (pointers->ExceptionRecord->ExceptionFlags & EXCEPTION_NONCONTINUABLE) ? '1' : '0';
 
-    // A code that is fatal by construction is recorded in both places: the log gets it
-    // immediately, and the mapped slot keeps it even if the process dies before the write
-    // reaches disk.
+    // A code that is fatal by construction is recorded in both places: the mapped slot
+    // first, because it is free and survives the death, and the log second.
     if (alwaysFatal) {
         PublishFaultSlot(line, length);
     }
 
+    // Only a fault raised while a device step is on the stack, or one that is fatal by
+    // construction, is worth the blocking write. Anything else goes to the mapped slot
+    // alone, which performs no file I/O on the engine's real-time threads.
     if (inStep || alwaysFatal) {
-        AppendLiteral(line, length, "\r\n");
-        WriteFaultLine(line, length);
+        if (ClaimFaultReport()) {
+            AppendLiteral(line, length, "\r\n");
+            WriteFaultLine(line, length);
+        }
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -547,6 +561,9 @@ using AdmBoolOutMethod = int32_t (webrtc::AudioDeviceModule::*)(bool*);
 using AdmConstBoolOutMethod = int32_t (webrtc::AudioDeviceModule::*)(bool*) const;
 using AdmBoolInMethod = int32_t (webrtc::AudioDeviceModule::*)(bool);
 using AdmWindowsDeviceMethod = int32_t (webrtc::AudioDeviceModule::*)(webrtc::AudioDeviceModule::WindowsDeviceType);
+using AdmVolumeOutMethod = int32_t (webrtc::AudioDeviceModule::*)(uint32_t*) const;
+using AdmVolumeInMethod = int32_t (webrtc::AudioDeviceModule::*)(uint32_t);
+using AdmDeviceIndexMethod = int32_t (webrtc::AudioDeviceModule::*)(uint16_t);
 
 __declspec(noinline) int32_t InvokeGuarded(
         webrtc::AudioDeviceModule* impl,
@@ -612,6 +629,45 @@ __declspec(noinline) int32_t InvokeGuarded(
     }
 }
 
+__declspec(noinline) int32_t InvokeGuarded(
+        const webrtc::AudioDeviceModule* impl,
+        AdmVolumeOutMethod method,
+        uint32_t* argument,
+        int* faulted) {
+    __try {
+        return (impl->*method)(argument);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+        return -1;
+    }
+}
+
+__declspec(noinline) int32_t InvokeGuarded(
+        webrtc::AudioDeviceModule* impl,
+        AdmVolumeInMethod method,
+        uint32_t argument,
+        int* faulted) {
+    __try {
+        return (impl->*method)(argument);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+        return -1;
+    }
+}
+
+__declspec(noinline) int32_t InvokeGuarded(
+        webrtc::AudioDeviceModule* impl,
+        AdmDeviceIndexMethod method,
+        uint16_t argument,
+        int* faulted) {
+    __try {
+        return (impl->*method)(argument);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+        return -1;
+    }
+}
+
 /// <summary>
 /// Forwards every audio device module call to the real platform module, reporting only
 /// fixed step names and numeric result codes. No device names, identifiers, or audio
@@ -651,7 +707,13 @@ public:
     int32_t InitRecording() override {
         return Guarded("init_recording", &webrtc::AudioDeviceModule::InitRecording);
     }
-    int32_t StartPlayout() override { return Guarded("start_playout", &webrtc::AudioDeviceModule::StartPlayout); }
+    int32_t StartPlayout() override {
+        const auto result = Guarded("start_playout", &webrtc::AudioDeviceModule::StartPlayout);
+        if (result == 0) {
+            EnsureSpeakerAudible();
+        }
+        return result;
+    }
     int32_t StopPlayout() override { return Guarded("stop_playout", &webrtc::AudioDeviceModule::StopPlayout); }
     int32_t StartRecording() override {
         return Guarded("start_recording", &webrtc::AudioDeviceModule::StartRecording);
@@ -668,10 +730,26 @@ public:
         return Guarded("recording_available", &webrtc::AudioDeviceModule::RecordingIsAvailable, available);
     }
 
-    using tgcalls::DefaultWrappedAudioDeviceModule::SetPlayoutDevice;
-    using tgcalls::DefaultWrappedAudioDeviceModule::SetRecordingDevice;
+    // Both overloads are declared so the selected endpoint is visible in diagnostics;
+    // playout can run successfully against the wrong endpoint and simply be inaudible.
+    int32_t SetPlayoutDevice(uint16_t index) override {
+        Report("step=set_playout_device;phase=select;index=" + std::to_string(index));
+        return Guarded(
+            "set_playout_device",
+            static_cast<AdmDeviceIndexMethod>(&webrtc::AudioDeviceModule::SetPlayoutDevice),
+            index);
+    }
+
+    int32_t SetRecordingDevice(uint16_t index) override {
+        Report("step=set_recording_device;phase=select;index=" + std::to_string(index));
+        return Guarded(
+            "set_recording_device",
+            static_cast<AdmDeviceIndexMethod>(&webrtc::AudioDeviceModule::SetRecordingDevice),
+            index);
+    }
 
     int32_t SetPlayoutDevice(WindowsDeviceType device) override {
+        Report("step=set_playout_device;phase=select;type=" + std::to_string(static_cast<int>(device)));
         return Guarded(
             "set_playout_device",
             static_cast<AdmWindowsDeviceMethod>(&webrtc::AudioDeviceModule::SetPlayoutDevice),
@@ -679,6 +757,7 @@ public:
     }
 
     int32_t SetRecordingDevice(WindowsDeviceType device) override {
+        Report("step=set_recording_device;phase=select;type=" + std::to_string(static_cast<int>(device)));
         return Guarded(
             "set_recording_device",
             static_cast<AdmWindowsDeviceMethod>(&webrtc::AudioDeviceModule::SetRecordingDevice),
@@ -702,6 +781,64 @@ public:
     }
 
 private:
+    /// <summary>
+    /// Playout can report success at every step and still be inaudible, because the
+    /// endpoint gain and mute state belong to the platform module and tgcalls never
+    /// touches them. This reads them once after playout starts and lifts a muted or
+    /// zero-gain speaker. Only numeric levels are reported, never device names.
+    /// </summary>
+    void EnsureSpeakerAudible() {
+        bool muteAvailable = false;
+        if (Guarded("speaker_mute_available", &webrtc::AudioDeviceModule::SpeakerMuteIsAvailable, &muteAvailable) == 0 &&
+                muteAvailable) {
+            bool muted = false;
+            if (GuardedConst(
+                    "speaker_mute",
+                    static_cast<AdmConstBoolOutMethod>(&webrtc::AudioDeviceModule::SpeakerMute),
+                    &muted) == 0) {
+                Report(std::string("step=speaker_mute;phase=state;muted=") + (muted ? "1" : "0"));
+                if (muted) {
+                    Guarded(
+                        "set_speaker_mute",
+                        static_cast<AdmBoolInMethod>(&webrtc::AudioDeviceModule::SetSpeakerMute),
+                        false);
+                }
+            }
+        }
+
+        bool volumeAvailable = false;
+        if (Guarded("speaker_volume_available", &webrtc::AudioDeviceModule::SpeakerVolumeIsAvailable, &volumeAvailable) != 0 ||
+                !volumeAvailable) {
+            return;
+        }
+
+        uint32_t volume = 0;
+        uint32_t maxVolume = 0;
+        if (GuardedConst(
+                "speaker_volume",
+                static_cast<AdmVolumeOutMethod>(&webrtc::AudioDeviceModule::SpeakerVolume),
+                &volume) != 0) {
+            return;
+        }
+
+        if (GuardedConst(
+                "max_speaker_volume",
+                static_cast<AdmVolumeOutMethod>(&webrtc::AudioDeviceModule::MaxSpeakerVolume),
+                &maxVolume) != 0) {
+            return;
+        }
+
+        Report("step=speaker_volume;phase=state;volume=" + std::to_string(volume) +
+            ";max=" + std::to_string(maxVolume));
+
+        if (volume == 0 && maxVolume > 0) {
+            Guarded(
+                "set_speaker_volume",
+                static_cast<AdmVolumeInMethod>(&webrtc::AudioDeviceModule::SetSpeakerVolume),
+                maxVolume);
+        }
+    }
+
     template <typename Method, typename... Args>
     int32_t Guarded(const char* step, Method method, Args... arguments) const {
         AudioDeviceLifecycleScope scope(step);
@@ -1002,8 +1139,34 @@ public:
             return "created=0";
         }
 
-        return std::string("created=1;recording=") + (module->Recording() ? "1" : "0") +
+        std::string status = std::string("created=1;recording=") + (module->Recording() ? "1" : "0") +
             ";playing=" + (module->Playing() ? "1" : "0");
+
+        // Playout can report "playing" while nothing is audible, because the endpoint
+        // volume and mute state are owned by the platform module rather than by tgcalls.
+        // Only numeric gain levels are reported here, never device names or identifiers.
+        bool available = false;
+        if (module->SpeakerVolumeIsAvailable(&available) == 0 && available) {
+            uint32_t volume = 0;
+            uint32_t maxVolume = 0;
+            if (module->SpeakerVolume(&volume) == 0 && module->MaxSpeakerVolume(&maxVolume) == 0) {
+                status += ";speaker_volume=" + std::to_string(volume) + "/" + std::to_string(maxVolume);
+            }
+        } else {
+            status += ";speaker_volume=unavailable";
+        }
+
+        bool muteAvailable = false;
+        if (module->SpeakerMuteIsAvailable(&muteAvailable) == 0 && muteAvailable) {
+            bool muted = false;
+            if (module->SpeakerMute(&muted) == 0) {
+                status += ";speaker_mute=" + std::string(muted ? "1" : "0");
+            }
+        } else {
+            status += ";speaker_mute=unavailable";
+        }
+
+        return status;
     }
 
     void Stop() {
