@@ -17,6 +17,7 @@ namespace Unigram.Logs
 
         public const string DirectoryName = "Diagnostics";
         public const string FileName = "push-diagnostics.txt";
+        public const string FaultFileName = "voip-fault.txt";
 
         public static void Write(string eventName, string details = null)
         {
@@ -181,8 +182,58 @@ namespace Unigram.Logs
             }
         }
 
-        public static string SanitizeErrorMessage(string message)
+        /// <summary>
+        /// Returns the file that native fault reporting appends to. It is deliberately not
+        /// the main diagnostics log: a fault handler can only append with raw file APIs,
+        /// while the managed writer tracks its own end-of-file offset and would write back
+        /// over anything appended behind its back.
+        /// </summary>
+        public static string GetFaultFilePath()
         {
+            try
+            {
+                var path = GetFilePath();
+                return string.IsNullOrEmpty(path)
+                    ? null
+                    : Path.Combine(Path.GetDirectoryName(path), FaultFileName);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Moves anything the native fault handler recorded into the main log, so a single
+        /// file still tells the whole story, then clears it.
+        /// </summary>
+        public static void DrainFaultFile()
+        {
+            try
+            {
+                var path = GetFaultFilePath();
+                if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                {
+                    return;
+                }
+
+                foreach (var line in File.ReadAllLines(path))
+                {
+                    if (!string.IsNullOrWhiteSpace(line))
+                    {
+                        Write("voip.fault", SanitizeErrorMessage(line.Trim()) + ";deferred=1");
+                    }
+                }
+
+                File.Delete(path);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Unable to drain fault diagnostics: 0x{ex.HResult:X8}");
+            }
+        }
+
+        public static string SanitizeErrorMessage(string message)        {
             return SanitizeErrorMessage(message, 256);
         }
 
@@ -206,10 +257,12 @@ namespace Unigram.Logs
                 // Framework resource keys and type names are the only locator left once
                 // .NET Native strips an exception's stack, and they are long enough to trip
                 // the opaque-token rule. Preserve that one identifier shape -- letters and
-                // underscores only, and only when it names an exception -- so that anything
-                // bearing digits or hyphens (tokens, GUIDs, base64, URIs) still redacts.
+                // underscores only, and only when it names an exception -- together with the
+                // two native status keys that reach this length, so that anything else
+                // bearing digits, hyphens or arbitrary words (tokens, GUIDs, base64, URIs,
+                // usernames, host labels, file names) still redacts.
                 sanitized = Regex.Replace(sanitized, @"\b[A-Za-z0-9_-]{24,}\b", match =>
-                    Regex.IsMatch(match.Value, @"^(?:Arg_[A-Za-z]+|[A-Za-z]*Exception[A-Za-z]*)$")
+                    Regex.IsMatch(match.Value, @"^(?:Arg_[A-Za-z]+|[A-Za-z]*Exception[A-Za-z]*|stereo_playout_available|stereo_recording_available)$")
                         ? match.Value
                         : "[redacted_token]");
                 return sanitized.Length <= maxLength ? sanitized : sanitized.Substring(0, maxLength);

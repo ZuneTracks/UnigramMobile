@@ -108,6 +108,7 @@ public ref class Diagnostics sealed {
 public:
     static Platform::String^ GetBuildInfo();
     static Windows::Foundation::Collections::IVector<Platform::String^>^ GetSupportedVersions();
+    static void EnableCrashDiagnostics(Platform::String^ diagnosticsFilePath);
 };
 
 }

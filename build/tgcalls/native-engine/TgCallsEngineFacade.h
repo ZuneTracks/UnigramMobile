@@ -90,6 +90,15 @@ struct CallCallbacks {
 const wchar_t* GetFirstSupportedVersion();
 std::vector<std::wstring> GetSupportedVersions();
 /// <summary>
+/// Installs a process-wide handler that appends the code of a fatal hardware exception to
+/// the given diagnostics file. The per-call guards around the audio device only cover the
+/// thread that calls into it, but the platform completes capture activation on a pool
+/// thread, so a fault there kills the process with nothing recorded. The handler writes
+/// with raw file APIs and no allocation or locking because it runs in a fault context, and
+/// it records only an exception code -- never an address, a module or a path.
+/// </summary>
+void EnableCrashDiagnostics(const std::wstring& diagnosticsFilePath);
+/// <summary>
 /// Returns the live state of the platform audio device module as a short diagnostic
 /// string built only from fixed keys and boolean or count values. Whether the module is
 /// actually recording and playing is the one unambiguous answer to "the transport is

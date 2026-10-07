@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -21,6 +22,107 @@ namespace Unigram {
 namespace Native {
 namespace Calls {
 namespace {
+
+extern "C" {
+PVOID WINAPI AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler);
+}
+
+// A fault handler cannot allocate, take a lock or call into the CRT, so the diagnostics
+// path is captured once up front into a fixed buffer and the report is assembled by hand.
+// It writes to its own file rather than the managed diagnostics log, because the managed
+// writer tracks its own end-of-file offset and would write back over an appended record.
+wchar_t g_crashDiagnosticsPath[MAX_PATH] = {};
+volatile LONG g_crashDiagnosticsBudget = 8;
+// Only faults raised while the audio device module is being driven are recorded. A
+// vectored handler sees every first-chance exception in the process, and .NET Native
+// raises an access violation for each ordinary null dereference, so an ungated handler
+// would spend its budget on benign exceptions long before the fatal one arrives.
+volatile LONG g_audioDeviceLifecycleDepth = 0;
+PVOID g_crashDiagnosticsHandle = nullptr;
+INIT_ONCE g_crashDiagnosticsOnce = INIT_ONCE_STATIC_INIT;
+
+struct AudioDeviceLifecycleScope {
+    AudioDeviceLifecycleScope() { InterlockedIncrement(&g_audioDeviceLifecycleDepth); }
+    ~AudioDeviceLifecycleScope() { InterlockedDecrement(&g_audioDeviceLifecycleDepth); }
+};
+
+void AppendHex32(char* buffer, int& length, uint32_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    buffer[length++] = '0';
+    buffer[length++] = 'x';
+    for (int shift = 28; shift >= 0; shift -= 4) {
+        buffer[length++] = digits[(value >> shift) & 0xF];
+    }
+}
+
+void AppendLiteral(char* buffer, int& length, const char* text) {
+    while (*text != '\0') {
+        buffer[length++] = *text++;
+    }
+}
+
+bool IsFatalExceptionCode(DWORD code) {
+    switch (code) {
+    case EXCEPTION_ACCESS_VIOLATION:
+    case EXCEPTION_ILLEGAL_INSTRUCTION:
+    case EXCEPTION_PRIV_INSTRUCTION:
+    case EXCEPTION_IN_PAGE_ERROR:
+    case EXCEPTION_DATATYPE_MISALIGNMENT:
+    case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
+        return true;
+    default:
+        // A stack overflow is deliberately absent: the handler would run on the
+        // exhausted stack and fault again before writing anything.
+        return false;
+    }
+}
+
+LONG CALLBACK FatalExceptionReporter(EXCEPTION_POINTERS* pointers) {
+    if (pointers == nullptr ||
+        pointers->ExceptionRecord == nullptr ||
+        g_audioDeviceLifecycleDepth <= 0 ||
+        !IsFatalExceptionCode(pointers->ExceptionRecord->ExceptionCode)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    if (InterlockedDecrement(&g_crashDiagnosticsBudget) < 0) {
+        InterlockedIncrement(&g_crashDiagnosticsBudget);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Only the exception code and whether it was continuable are recorded. A fault
+    // address or module would identify the install, and neither is needed to name the
+    // failing stage once the surrounding breadcrumbs are read alongside it.
+    char line[160];
+    int length = 0;
+    AppendLiteral(line, length, "result=exception;code=");
+    AppendHex32(line, length, static_cast<uint32_t>(pointers->ExceptionRecord->ExceptionCode));
+    AppendLiteral(line, length, ";noncontinuable=");
+    line[length++] = (pointers->ExceptionRecord->ExceptionFlags & EXCEPTION_NONCONTINUABLE) ? '1' : '0';
+    AppendLiteral(line, length, "\r\n");
+
+    const HANDLE file = CreateFile2(
+        g_crashDiagnosticsPath,
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        OPEN_ALWAYS,
+        nullptr);
+    if (file != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(file, line, static_cast<DWORD>(length), &written, nullptr);
+        FlushFileBuffers(file);
+        CloseHandle(file);
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+BOOL CALLBACK InstallFatalExceptionReporter(PINIT_ONCE, PVOID, PVOID*) {
+    // The header gates this out of the app partition, but the export exists and is
+    // permitted for store apps; declaring it keeps the UWP surface otherwise untouched.
+    g_crashDiagnosticsHandle = AddVectoredExceptionHandler(1, FatalExceptionReporter);
+    return TRUE;
+}
 
 // The audio device module lifecycle calls below run once per call and are the last
 // thing to execute before the process has been observed to die mid-call, so each one
@@ -171,6 +273,7 @@ public:
 private:
     template <typename Method, typename... Args>
     int32_t Guarded(const char* step, Method method, Args... arguments) const {
+        AudioDeviceLifecycleScope scope;
         Report(std::string("step=") + step + ";phase=begin");
         int faulted = 0;
         const auto result = InvokeGuarded(_raw, method, arguments..., &faulted);
@@ -181,6 +284,7 @@ private:
 
     template <typename Method, typename... Args>
     int32_t GuardedConst(const char* step, Method method, Args... arguments) const {
+        AudioDeviceLifecycleScope scope;
         Report(std::string("step=") + step + ";phase=begin");
         int faulted = 0;
         const auto result = InvokeGuarded(
@@ -527,6 +631,18 @@ private:
 const wchar_t* GetFirstSupportedVersion() {
     static const std::wstring version = GetSupportedVersions().front();
     return version.c_str();
+}
+
+void EnableCrashDiagnostics(const std::wstring& diagnosticsFilePath) {
+    if (diagnosticsFilePath.empty() || diagnosticsFilePath.size() >= MAX_PATH) {
+        return;
+    }
+
+    std::memcpy(
+        g_crashDiagnosticsPath,
+        diagnosticsFilePath.c_str(),
+        (diagnosticsFilePath.size() + 1) * sizeof(wchar_t));
+    InitOnceExecuteOnce(&g_crashDiagnosticsOnce, InstallFatalExceptionReporter, nullptr, nullptr);
 }
 
 std::vector<std::wstring> GetSupportedVersions() {

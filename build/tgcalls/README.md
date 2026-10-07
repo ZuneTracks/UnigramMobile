@@ -563,3 +563,106 @@ Expected `6154` evidence from one call: a `step=`/`phase=` pair for each audio
 device lifecycle call, and either a `faulted=1` line naming the faulting step,
 or a complete set of `faulted=0` pairs proving the audio device stack is not
 where the process dies.
+
+## 26.9.6156.0 — the process dies inside `InitRecording`
+
+The `6154` trace answered its question exactly. Every one of the bracketed
+audio device lifecycle calls up to and including playout completed cleanly:
+
+```text
+voip.media|result=audio_device;step=init_playout;phase=end;faulted=0;code=0
+voip.media|result=audio_device;step=start_playout;phase=end;faulted=0;code=0
+voip.media|result=audio_device;step=init_recording;phase=begin
+```
+
+`init_recording` has a `phase=begin` and no `phase=end`, and the log stops
+about 40 ms later. Playout therefore works end to end and the process dies in
+the capture path. Because the structured exception guard around that call did
+not report `faulted=1`, the fault did not happen on the thread that made the
+call: UWP activates a capture endpoint through `ActivateAudioInterfaceAsync`,
+whose completion runs on a thread pool thread that no `__except` of ours
+covers.
+
+The most likely cause is microphone consent. Searching the app shows that
+nothing in the call path ever requests it — only `ChatRecordButton` does, for
+voice messages, through `MediaCapture`. Playout needs no consent, which is why
+it succeeds, and raw WASAPI capture activation is the first thing in a call
+that does. The webrtc-uwp fork's capture activation handler does not appear to
+tolerate a failed activation result.
+
+So `6156` acquires consent before the engine is ever constructed.
+`CallsService` starts an idempotent `MediaCapture` initialization as soon as a
+call reaches `CallStatePending`, using `StreamingCaptureMode.Audio` and
+`MediaCategory.Communications`, and disposes it immediately. The TDLib update
+thread then waits up to eight seconds for that result before creating the
+session. It never waits on the UI thread: `Handle(UpdateCall)` runs on TDLib's
+native receive thread, so the `MediaCapture` work is marshalled to the UI
+thread and awaited from the caller without any possibility of self-blocking.
+
+If consent has not been granted the call is rejected with
+`reason=microphone_unavailable` instead of proceeding into the fatal path. A
+timeout is treated as a refusal for the same reason — the only case that times
+out is a first-ever consent prompt still on screen — but the pending
+acquisition is deliberately left in place so answering it makes the next call
+work. A non-timeout failure clears the cached task so one transient error
+cannot wedge every later call.
+
+```text
+voip.media|result=microphone;acquired=1
+voip.media|result=microphone;acquired=0;hresult=0x80070005
+```
+
+### Reporting a fault that kills the process
+
+Because the fault can land on a thread we do not control, `6156` also installs
+a vectored exception handler in the native engine. Three details make it safe:
+
+- It only reports while an audio device lifecycle call is in flight, tracked by
+  an interlocked depth counter. A first-chance handler otherwise sees every
+  exception in the process, and .NET Native raises `NullReferenceException` as
+  an access violation, so an ungated handler would burn its report budget on
+  benign managed exceptions and on the very access violations the sibling
+  structured exception guard deliberately swallows.
+- It ignores `EXCEPTION_STACK_OVERFLOW`, where running any handler on the
+  remaining guard page would simply fault again.
+- It always returns `EXCEPTION_CONTINUE_SEARCH`, so it changes no behaviour.
+
+It writes to its own file, `Diagnostics\voip-fault.txt`, not to the main log. A
+fault context can only append with raw file APIs, while the managed writer
+tracks its own end-of-file offset and would write back over anything appended
+behind its back. `CallsService` drains that file into the main log at the start
+of the next call, tagging each recovered line `deferred=1`, so the user still
+collects a single artifact. `CreateFileW` is unavailable in the UWP app
+partition, so the handler uses `CreateFile2`; `AddVectoredExceptionHandler` is
+likewise gated out of the app partition headers but the export is present and
+links against the UWP import library once declared by hand.
+
+### Artifacts
+
+```text
+%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\Unigram_26.9.6156.0_ARM_ModernTgCalls_MicAcquire.appx
+  57497091 bytes  SHA-256 B089503D464760B1A56636C61C7E800CAA25A603C44440FB6FE2E4EE503BF2C5
+%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\Unigram_26.9.6156.0_ARM_ModernTgCalls_MicAcquire_Sideload.zip
+  64098545 bytes  SHA-256 92DDE730A150DEA4BC8200DF2E07EF31C21F117A11E53AFBE95ED58366EA4666
+```
+
+Expected evidence from one call: `result=microphone;acquired=1` followed by
+`step=init_recording;phase=end`, which would confirm the diagnosis and leave
+the remaining lifecycle calls visible for the first time. A clean
+`acquired=0;hresult=` instead names the consent failure directly. If
+`init_recording` still truncates the log, the drained `voip.fault` line on the
+following call reports the exception code.
+
+### Upstream comparison
+
+`UnigramDev/Unigram`'s `Telegram.Native.Calls/VoipManager.cpp` was read as a
+reference. It does not override `createAudioDeviceModule`, does not request
+microphone consent, and builds a `tgcalls::Descriptor` and `Config` matching
+ours field for field. That is a useful negative result: it rules out a
+mis-integration of tgcalls, and it is consistent with the diagnosis, since raw
+WASAPI capture activation does succeed unprompted on desktop UWP. Two
+differences remain noted but unapplied: upstream sets `config.logPath` (which
+makes tgcalls write a native log containing IP addresses, so it cannot be fed
+into the shared diagnostics as-is), and its reflector `server.id` is 0-based
+where ours is 1-based. The transport already reaches `Established`, so the
+latter is not the cause of this crash.

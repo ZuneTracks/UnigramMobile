@@ -295,6 +295,14 @@ IVector<String^>^ Diagnostics::GetSupportedVersions() {
     return result;
 }
 
+void Diagnostics::EnableCrashDiagnostics(String^ diagnosticsFilePath) {
+    if (diagnosticsFilePath == nullptr || diagnosticsFilePath->IsEmpty()) {
+        return;
+    }
+
+    Unigram::Native::Calls::EnableCrashDiagnostics(std::wstring(diagnosticsFilePath->Data()));
+}
+
 }
 }
 }

@@ -68,6 +68,9 @@ namespace Unigram.Services
         private readonly Dictionary<int, List<List<byte>>> _pendingModernSignalingData = new Dictionary<int, List<List<byte>>>();
         private const float ModernAudibleLevel = 0.01f;
         private const int ModernMediaDiagnosticBudget = 192;
+        private const int ModernMicrophoneWaitMs = 8000;
+        private static readonly object _microphoneLock = new object();
+        private static Task<int> _microphoneTask;
         private readonly object _modernAudioLevelLock = new object();
         private int _modernMediaDiagnosticBudget = ModernMediaDiagnosticBudget;
         private int _modernAudioLevelSamples;
@@ -231,6 +234,9 @@ namespace Unigram.Services
 
             if (update.Call.State is CallStatePending pending)
             {
+#if MODERN_TGCALLS
+                BeginAcquireMicrophone();
+#endif
                 if (update.Call.IsOutgoing && pending.IsCreated && pending.IsReceived)
                 {
                     if (pending.IsCreated && pending.IsReceived)
@@ -502,6 +508,153 @@ namespace Unigram.Services
             WriteAudioCallDiagnostic("voip.signaling", "result=ignored;reason=no_matching_modern_call");
         }
 
+        /// <summary>
+        /// Opens the microphone through the supported UWP capture API before the call engine
+        /// touches it. The engine activates the capture endpoint directly, which on this
+        /// platform terminates the process rather than returning an error when the endpoint
+        /// cannot be opened, so the failure is invisible and uncatchable. Going through
+        /// MediaCapture first performs the consent flow and surfaces any failure as an
+        /// ordinary HRESULT that can be reported and acted on.
+        /// </summary>
+        private void BeginAcquireMicrophone()
+        {
+            lock (_microphoneLock)
+            {
+                if (_microphoneTask != null)
+                {
+                    return;
+                }
+
+                _microphoneTask = AcquireMicrophoneAsync();
+            }
+        }
+
+        private Task<int> AcquireMicrophoneAsync()
+        {
+            var completion = new TaskCompletionSource<int>();
+
+            BeginOnUIThread(async () =>
+            {
+                var result = 0;
+                Windows.Media.Capture.MediaCapture capture = null;
+
+                try
+                {
+                    capture = new Windows.Media.Capture.MediaCapture();
+                    await capture.InitializeAsync(new Windows.Media.Capture.MediaCaptureInitializationSettings
+                    {
+                        StreamingCaptureMode = Windows.Media.Capture.StreamingCaptureMode.Audio,
+                        MediaCategory = Windows.Media.Capture.MediaCategory.Communications
+                    });
+
+                    WriteModernMediaDiagnostic("result=microphone;acquired=1");
+                }
+                catch (Exception error)
+                {
+                    result = error.HResult == 0 ? -1 : error.HResult;
+                    WriteModernMediaDiagnostic($"result=microphone;acquired=0;hresult=0x{result:X8}");
+                }
+                finally
+                {
+                    try
+                    {
+                        capture?.Dispose();
+                    }
+                    catch
+                    {
+                        // Disposal failures are not interesting and must not mask the result.
+                    }
+
+                    completion.TrySetResult(result);
+                }
+            });
+
+            return completion.Task;
+        }
+
+        /// <summary>
+        /// Blocks the update thread, never the UI thread, until the microphone has been
+        /// opened. A timeout is treated as failure: the only case that actually reaches it
+        /// is the first call on a device, where the consent prompt is still waiting to be
+        /// answered, and that is exactly the state in which letting the engine activate the
+        /// capture device would kill the process. Rejecting the call leaves the prompt up,
+        /// so answering it once makes every later call work.
+        /// </summary>
+        private bool WaitForMicrophone()
+        {
+            Task<int> task;
+            lock (_microphoneLock)
+            {
+                task = _microphoneTask;
+            }
+
+            if (task == null)
+            {
+                BeginAcquireMicrophone();
+                lock (_microphoneLock)
+                {
+                    task = _microphoneTask;
+                }
+            }
+
+            try
+            {
+                if (!task.Wait(ModernMicrophoneWaitMs))
+                {
+                    // The attempt is deliberately left in place rather than discarded, so
+                    // that answering the prompt completes it for the next call.
+                    WriteModernMediaDiagnostic("result=microphone;acquired=0;reason=consent_pending");
+                    return false;
+                }
+            }
+            catch (Exception error)
+            {
+                WriteModernMediaDiagnostic($"result=microphone;acquired=0;hresult=0x{error.HResult:X8}");
+                return false;
+            }
+
+            if (task.Result != 0)
+            {
+                // Retry from scratch next time: a transient failure such as the device
+                // being held by another app must not wedge every later call.
+                lock (_microphoneLock)
+                {
+                    _microphoneTask = null;
+                }
+
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool _modernCrashDiagnosticsEnabled;
+
+        private void EnableModernCrashDiagnostics()
+        {
+            if (_modernCrashDiagnosticsEnabled)
+            {
+                return;
+            }
+
+            _modernCrashDiagnosticsEnabled = true;
+
+            try
+            {
+                Logs.PushDiagnostics.DrainFaultFile();
+
+                var path = Logs.PushDiagnostics.GetFaultFilePath();
+                if (!string.IsNullOrEmpty(path))
+                {
+                    ModernCalls.Diagnostics.EnableCrashDiagnostics(path);
+                }
+            }
+            catch (Exception error)
+            {
+                WriteModernMediaDiagnostic($"result=fault_reporter;enabled=0;hresult=0x{error.HResult:X8}");
+            }
+        }
+
         private bool TryStartModernCall(Call call, CallStateReady ready, string version)
         {
             WriteAudioCallDiagnostic("voip.ready", "result=bridge_dispatch;transport=modern_tgcalls");
@@ -616,6 +769,14 @@ namespace Unigram.Services
                 WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=no_supported_server;transport=modern_tgcalls");
                 return false;
             }
+
+            if (!WaitForMicrophone())
+            {
+                WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=microphone_unavailable;transport=modern_tgcalls");
+                return false;
+            }
+
+            EnableModernCrashDiagnostics();
 
             ModernCalls.AudioCallSession session;
             try
