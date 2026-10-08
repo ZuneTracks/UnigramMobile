@@ -3,10 +3,8 @@ using Microsoft.Graphics.Canvas.Effects;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Numerics;
-using System.Runtime.InteropServices.WindowsRuntime;
 using Telegram.Td.Api;
 using Unigram.Common;
 using Unigram.Controls;
@@ -76,8 +74,8 @@ namespace Unigram.Views
         private bool _disposed;
         private bool _isLoaded;
 #if MODERN_TGCALLS
-        private WriteableBitmap _localVideoBitmap;
-        private WriteableBitmap _remoteVideoBitmap;
+        private SpriteVisual _localVideoVisual;
+        private SpriteVisual _remoteVideoVisual;
         private bool _modernCameraFront = true;
 #endif
 
@@ -223,6 +221,10 @@ namespace Unigram.Views
             _disposed = true;
             _debugTimer.Stop();
             _durationTimer.Stop();
+#if MODERN_TGCALLS
+            ClearModernVideoOutputVisual(true);
+            ClearModernVideoOutputVisual(false);
+#endif
 
             if (_controller != null)
             {
@@ -239,50 +241,59 @@ namespace Unigram.Views
         }
 
 #if MODERN_TGCALLS
-        public void RenderModernVideoFrame(ModernCalls.VideoFrame frame, Action acknowledge)
+        public SpriteVisual CreateModernVideoOutputVisual(bool local)
         {
-            _ = Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Low, () =>
+            if (_disposed || !_isLoaded || _compositor == null)
             {
-                try
-                {
-                    if (!_disposed && frame != null && frame.Width > 0 && frame.Height > 0)
-                    {
-                        var bitmap = frame.IsLocal ? _localVideoBitmap : _remoteVideoBitmap;
-                        if (bitmap == null || bitmap.PixelWidth != frame.Width || bitmap.PixelHeight != frame.Height)
-                        {
-                            bitmap = new WriteableBitmap(frame.Width, frame.Height);
-                            if (frame.IsLocal)
-                            {
-                                _localVideoBitmap = bitmap;
-                                LocalVideo.Source = bitmap;
-                                LocalVideoPanel.Visibility = Visibility.Visible;
-                            }
+                return null;
+            }
 
-                            else
-                            {
-                                _remoteVideoBitmap = bitmap;
-                                RemoteVideo.Source = bitmap;
-                                RemoteVideo.Visibility = Visibility.Visible;
-                            }
-                        }
+            ClearModernVideoOutputVisual(local);
+            var visual = _compositor.CreateSpriteVisual();
+            visual.RelativeSizeAdjustment = new Vector2(1.0f, 1.0f);
 
-                        if (frame.Pixels != null && frame.Pixels.Length == frame.Width * frame.Height * 4)
-                        {
-                            using (Stream source = frame.Pixels.AsStream())
-                            using (Stream stream = bitmap.PixelBuffer.AsStream())
-                            {
-                                stream.Position = 0;
-                                source.CopyTo(stream);
-                            }
-                            bitmap.Invalidate();
-                        }
-                    }
-                }
-                finally
+            if (local)
+            {
+                _localVideoVisual = visual;
+                ElementCompositionPreview.SetElementChildVisual(LocalVideo, visual);
+                LocalVideoPanel.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                _remoteVideoVisual = visual;
+                ElementCompositionPreview.SetElementChildVisual(RemoteVideo, visual);
+                RemoteVideo.Visibility = Visibility.Visible;
+            }
+
+            return visual;
+        }
+
+        public void ClearModernVideoOutputVisual(bool local)
+        {
+            if (local)
+            {
+                if (LocalVideo != null)
                 {
-                    acknowledge?.Invoke();
+                    ElementCompositionPreview.SetElementChildVisual(LocalVideo, null);
                 }
-            });
+                _localVideoVisual = null;
+                if (LocalVideoPanel != null)
+                {
+                    LocalVideoPanel.Visibility = Visibility.Collapsed;
+                }
+            }
+            else
+            {
+                if (RemoteVideo != null)
+                {
+                    ElementCompositionPreview.SetElementChildVisual(RemoteVideo, null);
+                }
+                _remoteVideoVisual = null;
+                if (RemoteVideo != null)
+                {
+                    RemoteVideo.Visibility = Visibility.Collapsed;
+                }
+            }
         }
 
         public void EnableModernVideoControls()

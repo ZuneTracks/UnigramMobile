@@ -6,9 +6,20 @@
 #include <string>
 #include <vector>
 
+namespace rtc {
+template <typename Frame>
+class VideoSinkInterface;
+}
+
+namespace webrtc {
+class VideoFrame;
+}
+
 namespace Unigram {
 namespace Native {
 namespace Calls {
+
+using VideoOutputPtr = std::shared_ptr<rtc::VideoSinkInterface<webrtc::VideoFrame>>;
 
 enum class CallState {
     WaitInit,
@@ -91,7 +102,6 @@ struct CallCallbacks {
     std::function<void(RemoteAudioState)> remoteAudioStateChanged;
     std::function<void(VideoState)> remoteVideoStateChanged;
     std::function<void()> videoCaptureFailed;
-    std::function<void(bool, int, int, std::vector<uint8_t>)> videoFrameReceived;
     // Reports the outcome of creating the platform audio device module as a short
     // diagnostic string built only from fixed keys, result codes and device counts.
     // It never carries a device name, identifier or path.
@@ -126,8 +136,11 @@ void SetMuted(const CallSessionPtr& session, bool value);
 bool SupportsVideo(const CallSessionPtr& session);
 void SetVideoState(const CallSessionPtr& session, VideoState state);
 void SwitchVideoCaptureDevice(const CallSessionPtr& session, const std::wstring& deviceId);
-void SetVideoOutputEnabled(const CallSessionPtr& session, bool local, bool enabled);
-void AcknowledgeVideoFrame(const CallSessionPtr& session, bool local);
+/// <summary>
+/// Attaches a native video sink directly to TgCalls. The bridge remains the strong owner
+/// of the sink; TgCalls keeps only weak references and receives nullptr on teardown.
+/// </summary>
+void SetVideoOutput(const CallSessionPtr& session, bool local, VideoOutputPtr output);
 /// <summary>
 /// Queues the selected physical output endpoint through TgCalls' own media-device path.
 /// Returns a fixed diagnostic token describing whether an earpiece/speaker index was

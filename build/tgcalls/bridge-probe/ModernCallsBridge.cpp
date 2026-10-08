@@ -1,10 +1,9 @@
 #include "ModernCallsBridge.h"
+#include "CompositionVideoOutput.h"
 #include "TgCallsEngineFacade.h"
 #include <windows.h>
 #include <windows.applicationmodel.core.h>
 #include <exception>
-#include <windows.ui.core.h>
-#include <windows.storage.streams.h>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -23,16 +22,11 @@ void EnsureUwpTlsSupport();
 
 namespace {
 
-MIDL_INTERFACE("905a0fe0-bc53-11df-8c49-001e4fc686da")
-IBufferByteAccess : public IUnknown {
-public:
-    virtual HRESULT STDMETHODCALLTYPE Buffer(byte** value) = 0;
-};
-
 struct SessionHolder {
     Unigram::Native::Calls::CallSessionPtr session;
     WeakReference owner;
-    Windows::UI::Core::CoreDispatcher^ dispatcher;
+    std::shared_ptr<CompositionVideoOutput> localVideoOutput;
+    std::shared_ptr<CompositionVideoOutput> remoteVideoOutput;
 };
 
 // Teardown normally drains in well under a second; the bound only exists so a wedged
@@ -90,14 +84,11 @@ AudioCallConfiguration::AudioCallConfiguration() {
     RtcServers = ref new Vector<RtcServer^>();
 }
 
-VideoFrame::VideoFrame() {
-}
-
-void AudioCallSession::ReportVideoFrameDeliveryFailure(int result) {
+void AudioCallSession::ReportVideoOutputFailure(int result) {
     try {
-        VideoFrameDeliveryFailed(this, result);
+        VideoOutputFailed(this, result);
     } catch (Platform::Exception^) {
-        OutputDebugStringW(L"ModernCallsBridge video frame failure notification failed.\n");
+        OutputDebugStringW(L"ModernCallsBridge video output failure notification failed.\n");
     }
 }
 
@@ -115,11 +106,6 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
 
     auto holder = std::make_shared<SessionHolder>();
     holder->owner = WeakReference(this);
-    auto mainView = Windows::ApplicationModel::Core::CoreApplication::MainView;
-    if (mainView != nullptr && mainView->CoreWindow != nullptr) {
-        holder->dispatcher = mainView->CoreWindow->Dispatcher;
-    }
-
     auto native = Unigram::Native::Calls::CallConfiguration{};
     native.version = configuration->Version->Data();
     native.initializationTimeout = configuration->InitializationTimeout;
@@ -236,70 +222,6 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
             }
         }
     };
-    callbacks.videoFrameReceived = [weakHolder](
-            bool local,
-            int width,
-            int height,
-            std::vector<uint8_t> pixels) {
-        if (const auto holder = weakHolder.lock()) {
-            if (const auto owner = ResolveOwner(holder)) {
-                auto framePixels = std::make_shared<std::vector<uint8_t>>(std::move(pixels));
-                const auto dispatcher = holder->dispatcher;
-                if (dispatcher == nullptr) {
-                    owner->ReportVideoFrameDeliveryFailure(E_HANDLE);
-                    return;
-                }
-                try {
-                    dispatcher->RunAsync(
-                        Windows::UI::Core::CoreDispatcherPriority::Low,
-                        ref new Windows::UI::Core::DispatchedHandler(
-                            [weakHolder, local, width, height, framePixels] {
-                                const auto dispatchedHolder = weakHolder.lock();
-                                if (!dispatchedHolder) {
-                                    return;
-                                }
-
-                                const auto dispatchedOwner = ResolveOwner(dispatchedHolder);
-                                if (dispatchedOwner == nullptr) {
-                                    return;
-                                }
-
-                                try {
-                                    auto frame = ref new VideoFrame();
-                                    frame->IsLocal = local;
-                                    frame->Width = width;
-                                    frame->Height = height;
-                                    auto buffer = ref new Windows::Storage::Streams::Buffer(
-                                        static_cast<unsigned int>(framePixels->size()));
-                                    Microsoft::WRL::ComPtr<IBufferByteAccess> access;
-                                    if (FAILED(reinterpret_cast<IInspectable*>(buffer)->QueryInterface(IID_PPV_ARGS(&access))) ||
-                                        !access) {
-                                        dispatchedOwner->ReportVideoFrameDeliveryFailure(E_NOINTERFACE);
-                                        return;
-                                    }
-                                    byte* data = nullptr;
-                                    if (FAILED(access->Buffer(&data)) || data == nullptr) {
-                                        dispatchedOwner->ReportVideoFrameDeliveryFailure(E_FAIL);
-                                        return;
-                                    }
-                                    std::memcpy(data, framePixels->data(), framePixels->size());
-                                    buffer->Length = static_cast<unsigned int>(framePixels->size());
-                                    frame->Pixels = buffer;
-                                    dispatchedOwner->VideoFrameReceived(dispatchedOwner, frame);
-                                } catch (Platform::Exception^ error) {
-                                    dispatchedOwner->ReportVideoFrameDeliveryFailure(error->HResult);
-                                } catch (const std::bad_alloc&) {
-                                    dispatchedOwner->ReportVideoFrameDeliveryFailure(E_OUTOFMEMORY);
-                                }
-                            }));
-                } catch (Platform::Exception^ error) {
-                    owner->ReportVideoFrameDeliveryFailure(error->HResult);
-                } catch (const std::bad_alloc&) {
-                    owner->ReportVideoFrameDeliveryFailure(E_OUTOFMEMORY);
-                }
-            }
-        }
-    };
     callbacks.audioDeviceReport = [weakHolder](std::string report) {
         if (const auto holder = weakHolder.lock()) {
             if (const auto owner = ResolveOwner(holder)) {
@@ -331,6 +253,15 @@ Platform::String^ AudioCallSession::DrainSession() {
 
     String^ result = L"empty";
     if (*holder && (*holder)->session) {
+        try {
+            Unigram::Native::Calls::SetVideoOutput((*holder)->session, true, nullptr);
+            Unigram::Native::Calls::SetVideoOutput((*holder)->session, false, nullptr);
+        } catch (...) {
+            // A stopped session cannot accept a detach, but its subsequent destruction
+            // still releases TgCalls' weak references.
+        }
+        (*holder)->localVideoOutput.reset();
+        (*holder)->remoteVideoOutput.reset();
         try {
             // Blocking matters here: tgcalls stops asynchronously and destroys the audio
             // device on its own threads, so returning early would let the next call
@@ -419,22 +350,55 @@ void AudioCallSession::SwitchVideoCaptureDevice(String^ deviceId) {
     }
 }
 
-void AudioCallSession::SetVideoOutputEnabled(bool local, bool enabled) {
+void AudioCallSession::SetVideoOutput(
+    bool local,
+    Platform::Object^ visual,
+    bool mirrored) {
+    const auto compositionVisual = dynamic_cast<Windows::UI::Composition::SpriteVisual^>(visual);
+    if (compositionVisual == nullptr) {
+        throw ref new InvalidArgumentException(L"A video composition visual is required.");
+    }
+
     try {
         const auto holder = GetSessionHolder(_holder);
-        Unigram::Native::Calls::SetVideoOutputEnabled(holder->session, local, enabled);
+        auto output = CompositionVideoOutput::Create(
+            compositionVisual,
+            mirrored,
+            [weakHolder = std::weak_ptr<SessionHolder>(holder)](HRESULT result) {
+                if (const auto callbackHolder = weakHolder.lock()) {
+                    if (const auto owner = ResolveOwner(callbackHolder)) {
+                        owner->ReportVideoOutputFailure(result);
+                    }
+                }
+            });
+        auto& installed = local ? holder->localVideoOutput : holder->remoteVideoOutput;
+        Unigram::Native::Calls::SetVideoOutput(holder->session, local, output);
+        auto previous = std::move(installed);
+        installed = std::move(output);
+        if (previous) {
+            previous->Close();
+        }
     } catch (const std::exception& error) {
         throw ref new InvalidArgumentException(ToPlatformString(error));
     }
 }
 
-void AudioCallSession::AcknowledgeVideoFrame(bool local) {
+void AudioCallSession::ClearVideoOutput(bool local) {
     if (_holder == nullptr) {
         return;
     }
 
-    const auto holder = GetSessionHolder(_holder);
-    Unigram::Native::Calls::AcknowledgeVideoFrame(holder->session, local);
+    try {
+        const auto holder = GetSessionHolder(_holder);
+        Unigram::Native::Calls::SetVideoOutput(holder->session, local, nullptr);
+        auto& installed = local ? holder->localVideoOutput : holder->remoteVideoOutput;
+        auto previous = std::move(installed);
+        if (previous) {
+            previous->Close();
+        }
+    } catch (const std::exception& error) {
+        throw ref new InvalidArgumentException(ToPlatformString(error));
+    }
 }
 
 String^ AudioCallSession::SetAudioOutputEndpoint(bool speakerphone) {

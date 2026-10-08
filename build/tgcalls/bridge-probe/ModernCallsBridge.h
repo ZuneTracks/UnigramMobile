@@ -86,16 +86,6 @@ public:
     property Windows::Foundation::Collections::IVector<RtcServer^>^ RtcServers;
 };
 
-public ref class VideoFrame sealed {
-public:
-    VideoFrame();
-
-    property bool IsLocal;
-    property int Width;
-    property int Height;
-    property Windows::Storage::Streams::IBuffer^ Pixels;
-};
-
 public ref class AudioCallSession sealed {
 public:
     static AudioCallSession^ Create(AudioCallConfiguration^ configuration);
@@ -108,8 +98,11 @@ public:
     bool SupportsVideo();
     void SetVideoState(VideoState value);
     void SwitchVideoCaptureDevice(Platform::String^ deviceId);
-    void SetVideoOutputEnabled(bool local, bool enabled);
-    void AcknowledgeVideoFrame(bool local);
+    void SetVideoOutput(
+        bool local,
+        Platform::Object^ visual,
+        bool mirrored);
+    void ClearVideoOutput(bool local);
     Platform::String^ SetAudioOutputEndpoint(bool speakerphone);
     void SetNetworkType(NetworkType value);
     Platform::String^ GetAudioDeviceStatus();
@@ -133,14 +126,13 @@ public:
     event Windows::Foundation::EventHandler<RemoteAudioState>^ RemoteAudioStateChanged;
     event Windows::Foundation::EventHandler<VideoState>^ RemoteVideoStateChanged;
     event Windows::Foundation::EventHandler<Platform::Object^>^ VideoCaptureFailed;
-    event Windows::Foundation::EventHandler<VideoFrame^>^ VideoFrameReceived;
-    event Windows::Foundation::EventHandler<int>^ VideoFrameDeliveryFailed;
+    event Windows::Foundation::EventHandler<int>^ VideoOutputFailed;
     event Windows::Foundation::EventHandler<Platform::String^>^ AudioDeviceReport;
 
 private:
     AudioCallSession(AudioCallConfiguration^ configuration);
     Platform::String^ DrainSession();
-    void ReportVideoFrameDeliveryFailure(int result);
+    void ReportVideoOutputFailure(int result);
     void* _holder;
 };
 

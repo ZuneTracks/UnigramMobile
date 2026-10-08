@@ -75,12 +75,10 @@ namespace Unigram.Services
         private const float ModernAudibleLevel = 0.01f;
         private const int ModernMediaDiagnosticBudget = 192;
         private const int ModernMicrophoneWaitMs = 8000;
-        // The experimental CPU/WriteableBitmap preview path is isolated while native
-        // capture/encoding is validated on Windows 10 Mobile.
-        // The local CPU/WriteableBitmap sink still causes an access violation after the
-        // call establishes, even when it is the sole attached output. Keep both sinks
-        // isolated until a native renderer replaces this experimental path.
-        private const bool ModernVideoLocalPreviewEnabled = false;
+        // The CPU/WriteableBitmap preview path is permanently replaced by the native
+        // composition-surface sink. Start with the local sink only; remote presentation
+        // remains gated until local rendering has a physical-device result.
+        private const bool ModernVideoLocalPreviewEnabled = true;
         private const bool ModernVideoRemotePreviewEnabled = false;
         private const int ModernV2H264MaxBitrateKbps = 1536;
         private static readonly object _microphoneLock = new object();
@@ -771,24 +769,6 @@ namespace Unigram.Services
             return task.Result.DeviceId;
         }
 
-        private void OnModernVideoFrame(int callId, ModernCalls.AudioCallSession session, ModernCalls.VideoFrame frame)
-        {
-            if (frame == null || _modernCallId != callId || _modernController != session)
-            {
-                session?.AcknowledgeVideoFrame(frame?.IsLocal ?? false);
-                return;
-            }
-
-            var page = _callPage;
-            if (page == null)
-            {
-                session.AcknowledgeVideoFrame(frame.IsLocal);
-                return;
-            }
-
-            page.RenderModernVideoFrame(frame, () => session.AcknowledgeVideoFrame(frame.IsLocal));
-        }
-
         private void SwitchModernVideoCaptureDevice(string deviceId)
         {
             var session = _modernController;
@@ -1025,11 +1005,9 @@ namespace Unigram.Services
                     GuardModernCallback("remote_video_state", () => WriteModernMediaDiagnostic($"result=remote_video;transport=modern_tgcalls;state={state}"));
                 session.VideoCaptureFailed += (sender, ignored) =>
                     GuardModernCallback("video_capture_failed", () => WriteModernMediaDiagnostic("result=video_capture;transport=modern_tgcalls;state=failed"));
-                session.VideoFrameReceived += (sender, frame) =>
-                    GuardModernCallback("video_frame", () => OnModernVideoFrame(call.Id, session, frame));
-                session.VideoFrameDeliveryFailed += (sender, hresult) =>
-                    GuardModernCallback("video_frame_dispatch", () =>
-                        WriteModernMediaDiagnostic($"result=video_output;transport=modern_tgcalls;state=frame_dispatch_failed;hresult=0x{hresult:X8}"));
+                session.VideoOutputFailed += (sender, hresult) =>
+                    GuardModernCallback("video_output", () =>
+                        WriteModernMediaDiagnostic($"result=video_output;transport=modern_tgcalls;state=native_render_failed;hresult=0x{hresult:X8}"));
 
                 _modernController = session;
                 _modernCallId = call.Id;
@@ -1450,11 +1428,21 @@ namespace Unigram.Services
                         $"result=video_output;state=attaching;local={(ModernVideoLocalPreviewEnabled ? 1 : 0)};remote={(ModernVideoRemotePreviewEnabled ? 1 : 0)}");
                     if (ModernVideoLocalPreviewEnabled)
                     {
-                        session.SetVideoOutputEnabled(true, true);
+                        var visual = page.CreateModernVideoOutputVisual(true);
+                        if (visual == null)
+                        {
+                            throw new InvalidOperationException("The local video composition host is unavailable.");
+                        }
+                        session.SetVideoOutput(true, visual, true);
                     }
                     if (ModernVideoRemotePreviewEnabled)
                     {
-                        session.SetVideoOutputEnabled(false, true);
+                        var visual = page.CreateModernVideoOutputVisual(false);
+                        if (visual == null)
+                        {
+                            throw new InvalidOperationException("The remote video composition host is unavailable.");
+                        }
+                        session.SetVideoOutput(false, visual, false);
                     }
                     _modernVideoOutputsEnabled = true;
                     WriteModernMediaDiagnostic(
@@ -1522,6 +1510,16 @@ namespace Unigram.Services
                 if (controller == null)
                 {
                     return;
+                }
+
+                var callPage = _callPage;
+                if (callPage != null)
+                {
+                    callPage.BeginOnUIThread(() =>
+                    {
+                        callPage.ClearModernVideoOutputVisual(true);
+                        callPage.ClearModernVideoOutputVisual(false);
+                    });
                 }
 
                 var elapsed = System.Diagnostics.Stopwatch.StartNew();

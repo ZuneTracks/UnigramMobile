@@ -20,9 +20,24 @@ prototype is deliberately disabled:
   receive the Lumia camera, so signaling, capture, H.264 encoding, and video
   transport are not the failing boundary.
 
-Do not re-enable `ModernVideoLocalPreviewEnabled` or
-`ModernVideoRemotePreviewEnabled` without replacing that CPU path and
-performing a fresh device test.
+The CPU path has now been replaced by a native composition-surface proof:
+
+- `CompositionVideoOutput` is a native `rtc::VideoSinkInterface` that retains
+  one latest `webrtc::VideoFrame`, renders it on a dedicated native thread,
+  and never projects its pixels through C++/CX or C#.
+- It creates an ARM hardware D3D11/D2D device and a
+  `CompositionDrawingSurface` for the page-owned `SpriteVisual`. It performs
+  the interim I420-to-ARGB conversion with libyuv in native code, then draws
+  the bitmap with native rotation and local-camera mirroring.
+- Only `ModernVideoLocalPreviewEnabled` is enabled for the first device
+  milestone. `ModernVideoRemotePreviewEnabled` remains false until local
+  rendering has been proven on a Lumia without a deferred access violation.
+
+This is a memory-lifetime proof, not the final renderer optimization. The
+planned follow-up is the upstream-style D2D YUV420 pixel shader and
+deterministic `i420.bin` packaging, which removes the native ARGB conversion
+and copy. Do not enable the remote sink or claim full preview support before
+the local-only device test succeeds.
 
 The working upstream Unigram renderer is the implementation reference. It
 keeps `webrtc::VideoFrame` objects entirely native: a

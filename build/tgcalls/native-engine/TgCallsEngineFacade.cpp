@@ -11,7 +11,6 @@
 #include "api/video/video_frame.h"
 #include "modules/audio_device/include/audio_device.h"
 #include "platform/PlatformInterface.h"
-#include "third_party/libyuv/include/libyuv.h"
 
 #include <algorithm>
 #include <array>
@@ -1519,63 +1518,6 @@ enum class StopWaitResult {
     Reentrant,
 };
 
-class VideoFrameOutputSink final : public rtc::VideoSinkInterface<webrtc::VideoFrame> {
-public:
-    using FrameCallback = std::function<void(int, int, std::vector<uint8_t>)>;
-
-    explicit VideoFrameOutputSink(FrameCallback callback)
-        : _callback(std::move(callback)) {
-    }
-
-    void OnFrame(const webrtc::VideoFrame& frame) override {
-        const auto now = std::chrono::steady_clock::now();
-        const auto previous = _lastDelivered.load(std::memory_order_relaxed);
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - std::chrono::steady_clock::time_point(std::chrono::milliseconds(previous))).count();
-        if (elapsed < 66 || _pending.exchange(true, std::memory_order_acq_rel)) {
-            return;
-        }
-
-        const auto buffer = frame.video_frame_buffer()->ToI420();
-        if (!buffer || buffer->width() <= 0 || buffer->height() <= 0) {
-            _pending.store(false, std::memory_order_release);
-            return;
-        }
-
-        const auto width = buffer->width();
-        const auto height = buffer->height();
-        auto pixels = std::vector<uint8_t>(static_cast<size_t>(width) * height * 4);
-        const auto result = libyuv::I420ToARGB(
-            buffer->DataY(),
-            buffer->StrideY(),
-            buffer->DataU(),
-            buffer->StrideU(),
-            buffer->DataV(),
-            buffer->StrideV(),
-            pixels.data(),
-            width * 4,
-            width,
-            height);
-        if (result != 0) {
-            _pending.store(false, std::memory_order_release);
-            return;
-        }
-
-        _lastDelivered.store(std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()).count(), std::memory_order_relaxed);
-        _callback(width, height, std::move(pixels));
-    }
-
-    void Acknowledge() {
-        _pending.store(false, std::memory_order_release);
-    }
-
-private:
-    FrameCallback _callback;
-    std::atomic<bool> _pending{false};
-    std::atomic<int64_t> _lastDelivered{0};
-};
-
 class CallSession final : public std::enable_shared_from_this<CallSession> {
 public:
     static CallSessionPtr Create(
@@ -1816,40 +1758,24 @@ public:
         _videoCapture->switchToDevice(ToUtf8(deviceId), false);
     }
 
-    void SetVideoOutputEnabled(bool local, bool enabled) {
+    void SetVideoOutput(bool local, VideoOutputPtr output) {
         std::lock_guard<std::mutex> lock(_mutex);
         EnsureActive();
-        auto& output = local ? _localVideoOutput : _remoteVideoOutput;
-        if (enabled && !output) {
-            const auto weak = std::weak_ptr<CallSession>(shared_from_this());
-            output = std::make_shared<VideoFrameOutputSink>(
-                [weak, local](int width, int height, std::vector<uint8_t> pixels) {
-                    if (const auto strong = weak.lock()) {
-                        strong->VideoFrameReceived(local, width, height, std::move(pixels));
-                    }
-                });
+        auto& installed = local ? _localVideoOutput : _remoteVideoOutput;
+        if (installed == output) {
+            return;
         }
 
         if (local) {
             if (!_videoCapture) {
                 throw std::logic_error("The TgCalls session has no video capture.");
             }
-            _videoCapture->setOutput(enabled ? output : nullptr);
+            _videoCapture->setOutput(output);
         } else {
-            _instance->setIncomingVideoOutput(enabled ? output : nullptr);
+            _instance->setIncomingVideoOutput(output);
         }
 
-        if (!enabled) {
-            output.reset();
-        }
-    }
-
-    void AcknowledgeVideoFrame(bool local) {
-        std::lock_guard<std::mutex> lock(_mutex);
-        const auto& output = local ? _localVideoOutput : _remoteVideoOutput;
-        if (output) {
-            output->Acknowledge();
-        }
+        installed = std::move(output);
     }
 
     std::string SetAudioOutputEndpoint(bool speakerphone) {
@@ -2138,12 +2064,6 @@ private:
         }
     }
 
-    void VideoFrameReceived(bool local, int width, int height, std::vector<uint8_t> pixels) {
-        if (_callbacks.videoFrameReceived) {
-            _callbacks.videoFrameReceived(local, width, height, std::move(pixels));
-        }
-    }
-
     void AudioDeviceReport(const std::string& report) {
         if (_callbacks.audioDeviceReport) {
             _callbacks.audioDeviceReport(report);
@@ -2196,8 +2116,8 @@ private:
     webrtc::scoped_refptr<webrtc::AudioDeviceModule> _audioDeviceModule;
     CallConfiguration _configuration;
     std::shared_ptr<tgcalls::VideoCaptureInterface> _videoCapture;
-    std::shared_ptr<VideoFrameOutputSink> _localVideoOutput;
-    std::shared_ptr<VideoFrameOutputSink> _remoteVideoOutput;
+    VideoOutputPtr _localVideoOutput;
+    VideoOutputPtr _remoteVideoOutput;
     std::unique_ptr<tgcalls::Instance> _instance;
     CallCallbacks _callbacks;
     bool _started = false;
@@ -2285,18 +2205,11 @@ void SwitchVideoCaptureDevice(const CallSessionPtr& session, const std::wstring&
     session->SwitchVideoCaptureDevice(deviceId);
 }
 
-void SetVideoOutputEnabled(const CallSessionPtr& session, bool local, bool enabled) {
+void SetVideoOutput(const CallSessionPtr& session, bool local, VideoOutputPtr output) {
     if (!session) {
         throw std::invalid_argument("The TgCalls session is unavailable.");
     }
-    session->SetVideoOutputEnabled(local, enabled);
-}
-
-void AcknowledgeVideoFrame(const CallSessionPtr& session, bool local) {
-    if (!session) {
-        return;
-    }
-    session->AcknowledgeVideoFrame(local);
+    session->SetVideoOutput(local, std::move(output));
 }
 
 std::string SetAudioOutputEndpoint(const CallSessionPtr& session, bool speakerphone) {

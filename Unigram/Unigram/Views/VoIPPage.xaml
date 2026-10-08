@@ -181,9 +181,9 @@
     <Grid Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" RequestedTheme="Dark">
         <!--<Image x:Name="Image" Source="http://i.imgur.com/kx2hM3N.jpg" Opacity="0.6" Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center"/>-->
         <Image x:Name="Image" Opacity="0.6" Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-        <Image x:Name="RemoteVideo" Visibility="Collapsed" Stretch="UniformToFill" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+        <Grid x:Name="RemoteVideo" Visibility="Collapsed" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
         <Border x:Name="LocalVideoPanel" Visibility="Collapsed" Width="112" Height="150" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12" BorderBrush="White" BorderThickness="2">
-            <Image x:Name="LocalVideo" Stretch="UniformToFill"/>
+            <Grid x:Name="LocalVideo" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
         </Border>
         <Border x:Name="BackgroundPanel" Background="Transparent"/>
 
