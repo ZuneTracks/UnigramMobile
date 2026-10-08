@@ -101,6 +101,7 @@ namespace Unigram.Services
         private ModernCalls.RemoteAudioState? _modernRemoteAudioState;
         private ModernCalls.CallState? _modernTransportState;
         private bool _modernMuted;
+        private bool _modernVideoOutputsEnabled;
 
         private sealed class VideoCapturePreflight
         {
@@ -1353,6 +1354,7 @@ namespace Unigram.Services
             _modernRemoteAudioState = null;
             _modernTransportState = null;
             _modernMuted = false;
+            _modernVideoOutputsEnabled = false;
             _callStarted = DateTime.MinValue;
             _modernMediaDiagnosticBudget = ModernMediaDiagnosticBudget;
         }
@@ -1370,7 +1372,7 @@ namespace Unigram.Services
             var callPage = _callPage;
             if (callPage != null)
             {
-                callPage.UpdateModernTransportState(state);
+                callPage.BeginOnUIThread(() => callPage.UpdateModernTransportState(state));
             }
             else
             {
@@ -1387,6 +1389,50 @@ namespace Unigram.Services
                 {
                     _callStarted = DateTime.Now;
                     StopTone();
+                    EnableModernVideoOutputs(callId);
+                }
+            });
+        }
+
+        private void EnableModernVideoOutputs(int callId)
+        {
+            if (_modernVideoOutputsEnabled || _modernCallId != callId)
+            {
+                return;
+            }
+
+            var page = _callPage;
+            if (page == null)
+            {
+                WriteModernMediaDiagnostic("result=video_output;state=deferred;reason=page_unavailable");
+                return;
+            }
+
+            page.BeginOnUIThread(() =>
+            {
+                if (_modernVideoOutputsEnabled || _modernCallId != callId)
+                {
+                    return;
+                }
+
+                var session = _modernController;
+                if (session == null)
+                {
+                    WriteModernMediaDiagnostic("result=video_output;state=deferred;reason=session_unavailable");
+                    return;
+                }
+
+                try
+                {
+                    WriteModernMediaDiagnostic("result=video_output;state=attaching");
+                    session.SetVideoOutputEnabled(true, true);
+                    session.SetVideoOutputEnabled(false, true);
+                    _modernVideoOutputsEnabled = true;
+                    WriteModernMediaDiagnostic("result=video_output;state=attached");
+                }
+                catch (Exception error)
+                {
+                    WriteModernMediaDiagnostic($"result=video_output;state=failed;hresult=0x{error.HResult:X8}");
                 }
             });
         }
@@ -1800,8 +1846,6 @@ namespace Unigram.Services
                         if (call.IsVideo && _modernController != null && _modernCallId == call.Id)
                         {
                             callPage.EnableModernVideoControls();
-                            _modernController.SetVideoOutputEnabled(true, true);
-                            _modernController.SetVideoOutputEnabled(false, true);
                         }
 
                         // The page can be created after the bridge already reported its

@@ -235,9 +235,12 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
                 auto buffer = ref new Windows::Storage::Streams::Buffer(
                     static_cast<unsigned int>(pixels.size()));
                 Microsoft::WRL::ComPtr<IBufferByteAccess> access;
-                reinterpret_cast<IInspectable*>(buffer)->QueryInterface(IID_PPV_ARGS(&access));
+                if (FAILED(reinterpret_cast<IInspectable*>(buffer)->QueryInterface(IID_PPV_ARGS(&access))) ||
+                    !access) {
+                    return;
+                }
                 byte* data = nullptr;
-                if (FAILED(access->Buffer(&data))) {
+                if (FAILED(access->Buffer(&data)) || data == nullptr) {
                     return;
                 }
                 std::memcpy(data, pixels.data(), pixels.size());
