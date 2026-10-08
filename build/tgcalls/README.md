@@ -2420,3 +2420,63 @@ It has 555 payload entries, includes `Telegram.Td.dll`, `Telegram.Td.winmd`, and
 `ModernCallsBridge.dll`, and contains no source-secret, PFX, or PDB payload. The
 sideload ZIP has 23 entries: the installer scripts/resources, the APPX/certificate, and
 exactly four ARM dependency APPXs—no x86, x64, ARM64, Win32, or telemetry dependency.
+
+## 26.9.6179.0 — upstream V1 relay-contract alignment
+
+The iOS media investigation was re-based on the current upstream Unigram `develop`
+implementation at `b6eeb455251aa34cda8ba2256679cecf1fec4a03`, not on a guessed
+Windows Mobile-specific media policy. Its `Telegram.Native.Calls/VoipManager.cpp` uses
+the same V1 `tgcalls::InstanceImpl` transport that this experimental bridge creates for
+negotiated `5.0.0` calls.
+
+The comparison exposed three concrete relay mapping differences:
+
+- upstream sets `allowTCP = false`; the experimental bridge was allowing TCP;
+- upstream assigns each Telegram reflector its sorted, zero-based `RtcServer.id`; the
+  bridge assigned the same reflectors one-based IDs;
+- upstream registers both non-empty IPv4 and IPv6 WebRTC server addresses, adding STUN
+  entries first and TURN entries only when both credentials are supplied. The bridge
+  previously collapsed every server to a single preferred address.
+
+6179 applies those exact V1 transport rules. These values feed TgCalls'
+`ReflectorRelayPortFactory`; they are not audio-processing or speakerphone changes.
+Android can hide an incorrect relay map when a direct route succeeds, whereas an iOS
+peer or its network may require the correctly identified/addressed relay route. This is
+therefore a focused compatibility correction, not a claim that the absent iOS RTP is
+already resolved.
+
+The V1 manager consumes the normalized `RtcServer` list and does not consume the
+legacy endpoint list, so 6179 deliberately leaves the bridge's legacy endpoint
+diagnostic/validation surface unchanged. The current upstream manager supplies that
+legacy list empty for the same reason. No server hostname, address, credential, peer
+tag, account data, signaling data, key, token, or audio is written to diagnostics.
+
+Device acceptance is an iOS-to-W10M call in both directions, on a network where the
+iOS peer previously connected without audio. Keep the call open for at least ten
+seconds of speech each way and export diagnostics. A successful result requires
+non-zero incoming RTP and playout on W10M as well as working W10M uplink; an established
+transport or RTCP feedback alone is insufficient evidence.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `Unigram_26.9.6179.0_ARM_IosRelayAlignment_Sideload.zip` | `FA157BED2E532CAACA1C901F35686D9A0855A3A6F75B070A5B8892351F5E6101` | 64,143,964 |
+| `Unigram_26.9.6179.0_ARM_IosRelayAlignment.appx` | `FD54958C974280531E30AC129AFBD37731D75D2268072805F798FF21D684C5B9` | 57,531,994 |
+| `Unigram_26.9.6179.0_ARM_IosRelayAlignment.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6179.0.map` | `8DB994C46B1ACF8D09526565AC87F9A5C83A3DA6886E13D73E7AF87166414A4A` | 14,901,517 |
+
+The package and rebuilt `ModernCallsBridge.dll` SHA-256 values both equal
+`9383B3DF4ACDC4A3C2BD0C32BF63C1DCEC3B6346D0DB06106ACA2D3F2DC41DF1`.
+
+Verification: the Release|ARM UWP APPX build completed successfully and signature
+verification passed. The APPX identity is
+`49197Wirdschon.UnigramMobileTdlibExperimental`; version `26.9.6179.0`;
+architecture `arm`; and `Unigram.Native.Tasks.NotificationTask` declares
+`pushNotification`. Its 555 payload entries include `Telegram.Td.dll`,
+`Telegram.Td.winmd`, and `ModernCallsBridge.dll` with no source-secret, PFX, or PDB
+payload. The sideload ZIP contains exactly 23 entries: installer scripts/resources, the
+APPX/certificate, and four ARM dependency APPXs with no x86, x64, ARM64, Win32, or
+telemetry dependencies.

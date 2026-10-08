@@ -748,7 +748,7 @@ namespace Unigram.Services
                 InitializationTimeout = (connectTimeout > 0 ? connectTimeout : 30000) / 1000.0,
                 ReceiveTimeout = (packetTimeout > 0 ? packetTimeout : 10000) / 1000.0,
                 EnableP2P = ready.Protocol.UdpP2p && ready.AllowP2p,
-                AllowTcp = true,
+                AllowTcp = false,
                 MaxApiLayer = ready.Protocol.MaxLayer,
                 IsOutgoing = call.IsOutgoing,
                 InitialNetworkType = ModernCalls.NetworkType.Unknown,
@@ -796,7 +796,7 @@ namespace Unigram.Services
                         return false;
                     }
 
-                    configuration.RtcServers.Add(CreateModernReflectorRtcServer(server, reflector, unchecked((byte)(reflectorIndex + 1))));
+                    configuration.RtcServers.Add(CreateModernReflectorRtcServer(server, reflector, unchecked((byte)reflectorIndex)));
                 }
                 else if (server.Type is CallServerTypeWebrtc webRtc)
                 {
@@ -806,13 +806,23 @@ namespace Unigram.Services
                         return false;
                     }
 
-                    if (webRtc.SupportsTurn)
-                    {
-                        configuration.RtcServers.Add(CreateModernRtcServer(server, webRtc, true));
-                    }
+                    var hosts = GetModernRtcServerHosts(server).ToList();
                     if (webRtc.SupportsStun)
                     {
-                        configuration.RtcServers.Add(CreateModernRtcServer(server, webRtc, false));
+                        foreach (var host in hosts)
+                        {
+                            configuration.RtcServers.Add(CreateModernRtcServer(server, webRtc, host, false));
+                        }
+                    }
+
+                    if (webRtc.SupportsTurn &&
+                        !string.IsNullOrWhiteSpace(webRtc.Username) &&
+                        !string.IsNullOrWhiteSpace(webRtc.Password))
+                    {
+                        foreach (var host in hosts)
+                        {
+                            configuration.RtcServers.Add(CreateModernRtcServer(server, webRtc, host, true));
+                        }
                     }
                 }
             }
@@ -911,12 +921,29 @@ namespace Unigram.Services
             };
         }
 
-        private static ModernCalls.RtcServer CreateModernRtcServer(CallServer server, CallServerTypeWebrtc webRtc, bool isTurn)
+        private static IEnumerable<string> GetModernRtcServerHosts(CallServer server)
+        {
+            if (!string.IsNullOrWhiteSpace(server.IpAddress))
+            {
+                yield return server.IpAddress;
+            }
+
+            if (!string.IsNullOrWhiteSpace(server.Ipv6Address))
+            {
+                yield return server.Ipv6Address;
+            }
+        }
+
+        private static ModernCalls.RtcServer CreateModernRtcServer(
+            CallServer server,
+            CallServerTypeWebrtc webRtc,
+            string host,
+            bool isTurn)
         {
             return new ModernCalls.RtcServer
             {
                 Id = unchecked((byte)server.Id),
-                Host = string.IsNullOrWhiteSpace(server.IpAddress) ? server.Ipv6Address : server.IpAddress,
+                Host = host,
                 Port = (ushort)server.Port,
                 Username = webRtc.Username ?? string.Empty,
                 Password = webRtc.Password ?? string.Empty,
