@@ -74,6 +74,7 @@ namespace Unigram.Views
 #endif
 
         private bool _disposed;
+        private bool _isLoaded;
 #if MODERN_TGCALLS
         private WriteableBitmap _localVideoBitmap;
         private WriteableBitmap _remoteVideoBitmap;
@@ -169,6 +170,8 @@ namespace Unigram.Views
 
         private void OnLoaded(object sender, RoutedEventArgs e)
         {
+            _isLoaded = true;
+
             if (Routing == null)
             {
                 Logs.PushDiagnostics.Write("voip.ui", "result=routing_skipped;reason=control_unavailable");
@@ -207,6 +210,7 @@ namespace Unigram.Views
         private void OnUnloaded(object sender, RoutedEventArgs e)
         {
             Debug.WriteLine("Unloaded");
+            _isLoaded = false;
 
             if (_audioRoutingManager != null)
             {
@@ -349,7 +353,8 @@ namespace Unigram.Views
             // before the composition visuals have been created and again after Dispose has
             // torn them down. Both are ordinary, and neither justifies faulting the UI
             // thread over work that is purely decorative.
-            if (_disposed || _blurVisual == null || _blurBrush == null)
+            if (_disposed || !_isLoaded || e == null || _blurVisual == null || _blurBrush == null ||
+                _descriptionVisual == null || _largeVisual == null)
             {
                 return;
             }
@@ -359,6 +364,10 @@ namespace Unigram.Views
             if (_collapsed && SmallPanel != null && LargeEmojiLabel != null)
             {
                 var transform = SmallPanel.TransformToVisual(LargeEmojiLabel);
+                if (transform == null)
+                {
+                    return;
+                }
                 var position = transform.TransformPoint(new Point());
 
                 _descriptionVisual.Opacity = 0;
