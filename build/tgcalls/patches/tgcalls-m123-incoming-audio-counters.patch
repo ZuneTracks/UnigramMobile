@@ -1,5 +1,5 @@
 diff --git a/tgcalls/MediaManager.cpp b/tgcalls/MediaManager.cpp
-index 9ee2939..4bdd9c8 100644
+index 9ee2939..3d77445 100644
 --- a/tgcalls/MediaManager.cpp
 +++ b/tgcalls/MediaManager.cpp
 @@ -1,5 +1,9 @@
@@ -62,7 +62,7 @@ index 9ee2939..4bdd9c8 100644
      });
  
      float bitrateNorm = 16.0f;
-@@ -990,12 +1003,134 @@ void MediaManager::setIncomingVideoOutput(std::weak_ptr<rtc::VideoSinkInterface<
+@@ -990,12 +1003,143 @@ void MediaManager::setIncomingVideoOutput(std::weak_ptr<rtc::VideoSinkInterface<
      _incomingVideoSinkProxy->setSink(sink);
  }
  
@@ -185,22 +185,32 @@ index 9ee2939..4bdd9c8 100644
 +    }
 +}
 +
++void RecordIncomingAudioRtpDiagnostics(const rtc::CopyOnWriteBuffer &packet) {
++    diagRecordIncomingAudioSize(packet.size());
++    g_diagIncomingAudioRtp.fetch_add(1, std::memory_order_relaxed);
++}
++
++void RecordIncomingAudioRtcpDiagnostics(const rtc::CopyOnWriteBuffer &packet) {
++    diagRecordIncomingAudioSize(packet.size());
++    g_diagIncomingAudioRtcp.fetch_add(1, std::memory_order_relaxed);
++    diagScanIncomingAudioRtcp(packet);
++}
++
  void MediaManager::receiveMessage(DecryptedMessage &&message) {
  	const auto data = &message.message.data;
  	if (const auto formats = absl::get_if<VideoFormatsMessage>(data)) {
  		setPeerVideoFormats(std::move(*formats));
  	} else if (const auto audio = absl::get_if<AudioDataMessage>(data)) {
-+        diagRecordIncomingAudioSize(audio->data.size());
          if (webrtc::IsRtcpPacket(audio->data)) {
-+            g_diagIncomingAudioRtcp.fetch_add(1, std::memory_order_relaxed);
-+            diagScanIncomingAudioRtcp(audio->data);
++            RecordIncomingAudioRtcpDiagnostics(audio->data);
              RTC_LOG(LS_VERBOSE) << "Deliver audio RTCP";
          }
          StaticThreads::getWorkerThread()->BlockingCall([&] {
-@@ -1004,12 +1139,17 @@ void MediaManager::receiveMessage(DecryptedMessage &&message) {
+@@ -1004,12 +1148,18 @@ void MediaManager::receiveMessage(DecryptedMessage &&message) {
              } else {
                  webrtc::RtpPacketReceived parsedPacket(&_audioRtpHeaderExtensionMap, webrtc::Timestamp::Micros(rtc::TimeUTCMicros()));
                  if (!parsedPacket.Parse(audio->data)) {
++                  diagRecordIncomingAudioSize(audio->data.size());
 +                  g_diagIncomingAudioParseFailed.fetch_add(1, std::memory_order_relaxed);
                    RTC_LOG(LS_ERROR)
                        << "Failed to parse the incoming RTP packet before demuxing. Drop it.";
@@ -209,7 +219,7 @@ index 9ee2939..4bdd9c8 100644
 -                
 -                _call->Receiver()->DeliverRtpPacket(webrtc::MediaType::AUDIO, parsedPacket, [](const webrtc::RtpPacketReceived &) { return false; });
 +
-+                g_diagIncomingAudioRtp.fetch_add(1, std::memory_order_relaxed);
++                RecordIncomingAudioRtpDiagnostics(audio->data);
 +                _call->Receiver()->DeliverRtpPacket(webrtc::MediaType::AUDIO, parsedPacket, [](const webrtc::RtpPacketReceived &) {
 +                    g_diagIncomingAudioUndemuxed.fetch_add(1, std::memory_order_relaxed);
 +                    return false;
@@ -217,7 +227,7 @@ index 9ee2939..4bdd9c8 100644
              }
          });
  	} else if (const auto video = absl::get_if<VideoDataMessage>(data)) {
-@@ -1106,22 +1246,63 @@ void MediaManager::setInputVolume(float level) {
+@@ -1106,22 +1256,63 @@ void MediaManager::setInputVolume(float level) {
  }
  
  void MediaManager::setOutputVolume(float level) {
@@ -297,7 +307,7 @@ index 9ee2939..4bdd9c8 100644
  }
  
  void MediaManager::addExternalAudioSamples(std::vector<uint8_t> &&samples) {
-@@ -1157,6 +1338,10 @@ bool MediaManager::NetworkInterfaceImpl::SendRtcp(rtc::CopyOnWriteBuffer *packet
+@@ -1157,6 +1348,10 @@ bool MediaManager::NetworkInterfaceImpl::SendRtcp(rtc::CopyOnWriteBuffer *packet
  bool MediaManager::NetworkInterfaceImpl::sendTransportMessage(rtc::CopyOnWriteBuffer *packet, const rtc::PacketOptions& options) {
      if (_isVideo) {
          RTC_LOG(LS_VERBOSE) << "Send video packet";
@@ -309,7 +319,7 @@ index 9ee2939..4bdd9c8 100644
  	_mediaManager->_sendTransportMessage(_isVideo
  		? Message{ VideoDataMessage{ *packet } }
 diff --git a/tgcalls/MediaManager.h b/tgcalls/MediaManager.h
-index fbac021..1bdfa65 100644
+index fbac021..cfa5b73 100644
 --- a/tgcalls/MediaManager.h
 +++ b/tgcalls/MediaManager.h
 @@ -10,6 +10,7 @@
@@ -320,7 +330,17 @@ index fbac021..1bdfa65 100644
  
  #include "Instance.h"
  #include "Message.h"
-@@ -155,6 +156,7 @@ private:
+@@ -38,6 +39,9 @@ namespace tgcalls {
+ 
+ class VideoSinkInterfaceProxyImpl;
+ 
++void RecordIncomingAudioRtpDiagnostics(const rtc::CopyOnWriteBuffer &packet);
++void RecordIncomingAudioRtcpDiagnostics(const rtc::CopyOnWriteBuffer &packet);
++
+ class MediaManager : public sigslot::has_slots<>, public std::enable_shared_from_this<MediaManager> {
+ public:
+ 	static rtc::Thread *getWorkerThread();
+@@ -155,6 +159,7 @@ private:
  
      webrtc::Environment _webrtcEnvironment;
      std::unique_ptr<webrtc::MediaFactory> _mediaFactory;
@@ -328,7 +348,7 @@ index fbac021..1bdfa65 100644
      std::unique_ptr<cricket::MediaEngineInterface> _mediaEngine;
  	std::unique_ptr<webrtc::Call> _call;
  	webrtc::LocalAudioSinkAdapter _audioSource;
-@@ -180,6 +182,10 @@ private:
+@@ -180,6 +185,10 @@ private:
  
      float _currentAudioLevel = 0.0f;
      float _currentMyAudioLevel = 0.0f;
@@ -339,3 +359,63 @@ index fbac021..1bdfa65 100644
  
  	std::unique_ptr<MediaManager::NetworkInterfaceImpl> _audioNetworkInterface;
  	std::unique_ptr<MediaManager::NetworkInterfaceImpl> _videoNetworkInterface;
+diff --git a/tgcalls/platform/PlatformInterface.h b/tgcalls/platform/PlatformInterface.h
+index f643408..515cc34 100644
+--- a/tgcalls/platform/PlatformInterface.h
++++ b/tgcalls/platform/PlatformInterface.h
+@@ -88,11 +88,9 @@ public:
+         return _impl->SetPlayoutDevice(index);
+     }
+ 
+-#ifdef TGCALLS_UWP_DESKTOP
+     virtual int32_t SetPlayoutDevice(std::string deviceId) override {
+         return _impl->SetPlayoutDevice(deviceId);
+     }
+-#endif
+ 
+     virtual int32_t SetPlayoutDevice(WindowsDeviceType device) override {
+         return _impl->SetPlayoutDevice(device);
+@@ -102,11 +100,9 @@ public:
+         return _impl->SetRecordingDevice(index);
+     }
+ 
+-#ifdef TGCALLS_UWP_DESKTOP
+     virtual int32_t SetRecordingDevice(std::string deviceId) override {
+         return _impl->SetRecordingDevice(deviceId);
+     }
+-#endif
+ 
+     virtual int32_t SetRecordingDevice(WindowsDeviceType device) override {
+         return _impl->SetRecordingDevice(device);
+diff --git a/tgcalls/v2/NativeNetworkingImpl.cpp b/tgcalls/v2/NativeNetworkingImpl.cpp
+index b067cf5..3421f8a 100644
+--- a/tgcalls/v2/NativeNetworkingImpl.cpp
++++ b/tgcalls/v2/NativeNetworkingImpl.cpp
+@@ -25,6 +25,7 @@
+ #include "ReflectorPort.h"
+ #include "FieldTrialsConfig.h"
+ #include "EncryptedConnection.h"
++#include "MediaManager.h"
+ #include "v2/CustomParameters.h"
+ 
+ namespace tgcalls {
+@@ -997,12 +998,19 @@ void NativeNetworkingImpl::candidatePairChanged(cricket::CandidatePairChangeEven
+ }
+ 
+ void NativeNetworkingImpl::RtpPacketReceived_n(rtc::CopyOnWriteBuffer *packet, int64_t packet_time_us, bool isUnresolved) {
++    // V2 receives already-decrypted RTP here, after the selected SRTP transport has
++    // classified the datagram. Keep the experimental aggregate media counter aligned
++    // with the V1 receive path without retaining packet contents or identifiers.
++    RecordIncomingAudioRtpDiagnostics(*packet);
+     if (_transportMessageReceived) {
+         _transportMessageReceived(*packet, isUnresolved);
+     }
+ }
+ 
+ void NativeNetworkingImpl::OnRtcpPacketReceived_n(rtc::CopyOnWriteBuffer *packet, int64_t packet_time_us) {
++    // RTCP is delivered separately by the SRTP transport, so aggregate sender-report
++    // and feedback totals remain meaningful for V2 calls as well as V1 calls.
++    RecordIncomingAudioRtcpDiagnostics(*packet);
+     if (_rtcpPacketReceived) {
+         _rtcpPacketReceived(*packet, packet_time_us);
+     }

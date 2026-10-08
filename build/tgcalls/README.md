@@ -2548,3 +2548,47 @@ bridge WinMD/DLL, `z.dll`, and `zlib1.dll`, with no source-secret, PFX, or PDB p
 The sideload ZIP has exactly 23 entries: installer scripts/resources, the APPX and
 certificate, and four ARM-only dependencies with no x86, x64, ARM64, Win32, or
 telemetry content.
+
+## 26.9.6181.0 — V2 receive-path diagnostics
+
+6180 added the upstream V2 implementations and preserves the supplied Windows audio
+device module for both `InstanceV2Impl` and `InstanceV2ReferenceImpl`. Its existing
+aggregate RTP/RTCP counters, however, were attached only to the V1 `MediaManager`
+receive path. A V2 call could therefore have reported misleading zero receive totals
+even when the native V2 transport delivered media.
+
+6181 records the same bounded, content-free receive measurements at V2's
+`RtpPacketReceived_n` and `OnRtcpPacketReceived_n` callbacks: aggregate incoming
+RTP/RTCP counts, largest received packet, RTCP sender reports, and RTCP feedback. A V2
+counter is transport-wide if a call negotiates multiple media streams; this experiment's
+acceptance scope is audio-only. The V1 path continues to use the shared helpers and
+preserves malformed-RTP and undemuxed counters. No packet payload, ID, address,
+signaling, key, account, token, or path is stored or logged. Outbound V2 packet counts
+remain intentionally unspecified; device acceptance requires audible W10M uplink on
+iOS, and incoming media is evidenced by V2 `rtp_in`/`rtcp_sr` together with the
+existing audio-device playout aggregate.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `Unigram_26.9.6181.0_ARM_UpstreamV2Diagnostics_Sideload.zip` | `D14555DD9721BBDC01874F54B948E83D949C2A146DAE3CC72C30139F6048E712` | 65,011,572 |
+| `Unigram_26.9.6181.0_ARM_UpstreamV2Diagnostics.appx` | `5D924C1EEF6EEE7EAB28182E5D761A841E89B360019C3EA17CB25C89DBD70BC0` | 58,401,563 |
+| `Unigram_26.9.6181.0_ARM_UpstreamV2Diagnostics.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+
+The rebuilt/package-matching bridge SHA-256 is
+`7F51413CB18E856762E7D7D3C9AD95514FF8FC5BBA0286482206C0C6E7345275`.
+The non-package map at
+`%LOCALAPPDATA%\UnigramTdlibExperiment\bridge-probe\ModernCallsBridge.map` has SHA-256
+`4C5A46243648270D0BC828BEE2E921B7B2ED3846E92CF8DC8F120A2F1D0B7C82`
+and 23,830,502 bytes.
+
+Verification: the hardened native bridge proof and the Release|ARM APPX build completed
+with zero errors; Authenticode status is valid; manifest identity is
+`49197Wirdschon.UnigramMobileTdlibExperimental`; version `26.9.6181.0`; architecture
+`arm`; and the push background entry point remains present. The APPX has 554 entries
+including TDLib, the V2 bridge WinMD/DLL, `z.dll`, and `zlib1.dll`, with no
+source-secret, PFX, or PDB payload. The sideload ZIP has exactly 23 entries and contains
+only installer resources, the APPX/certificate, and four ARM dependency APPXs.
