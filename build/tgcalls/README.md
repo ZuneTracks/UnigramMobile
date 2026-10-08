@@ -2092,3 +2092,104 @@ binary (`76C515B6…`); ZIP contains exactly 23 entries.
 
 26.9.6172.0 was built and verified but superseded by the review fixes above before it was
 ever handed over, so it was discarded rather than shipped; no two binaries share a version.
+
+## 26.9.6175.0 — iOS RTP isolated; speakerphone routing fixed; RTCP-kind probe
+
+### What 26.9.6173.0 proved about iOS
+
+The incoming-RTP counter shipped in 6173 answered the iOS question outright.
+
+| Call | Peer | `rtp_in` | `rtcp_in` | `rtp_bad` | `rtp_undemux` | `playout_peak_permille` |
+| --- | --- | --- | --- | --- | --- | --- |
+| outgoing | iOS | **0** | 20 | 0 | 0 | 0 |
+| incoming | iOS | **0** | 19 to 100 | 0 | 0 | 0 |
+| outgoing | Android | 52 to 368 | 20 to 163 | 0 | 0 | 79/355/385/267 |
+
+RTP and RTCP from the peer arrive over the identical `AudioDataMessage` path, so a
+non-zero `rtcp_in` with `rtp_in=0` proves transport, decryption and deserialization all
+work against iOS. The transport is **not** the fault. Misclassification is ruled out by
+rate: `rtcp_in` climbs at the same ~4/sec in both calls, where RTP counted as RTCP would
+make the iOS figure ~3x the Android one. `rtp_bad=0` and `rtp_undemux=0` rule out
+header-extension-map disagreement and SSRC/payload-type demux failure. iOS simply sends
+no audio RTP.
+
+### The probe added in 26.9.6175.0
+
+Five counters in `MediaManager.cpp` narrow this to a side:
+
+| Key | Meaning |
+| --- | --- |
+| `rtcp_sr` | Incoming RTCP Sender Reports (PT 200). Only a peer with an active **send** stream emits these. |
+| `rtcp_fb` | Incoming transport feedback (PT 205/206). Only a peer that is **receiving** our media emits these. |
+| `rtp_out` / `rtcp_out` | Outgoing audio RTP/RTCP, counted in `NetworkInterfaceImpl::sendTransportMessage` under `!_isVideo`. |
+| `msg_max` | Largest incoming audio message seen, to detect a transport silently dropping large packets. |
+
+`diagScanIncomingAudioRtcp` walks compound RTCP block by block rather than reading only
+the first header, so a Sender Report bundled behind a Receiver Report is still counted.
+
+Decision table for the next log:
+
+- `rtcp_sr>0` — iOS *is* sending; the loss is on our receive/decrypt path.
+- `rtcp_sr=0, rtcp_fb>0` — iOS is not sending but *is* receiving us; fault is the iOS-side send stream.
+- `rtcp_sr=0, rtcp_fb=0` — the session is half-dead in both directions.
+
+The 6174 key `rtp_max` was renamed `msg_max` because it counts **all** incoming audio
+messages, not just RTP. Left as `rtp_max` it would have read non-zero in exactly the iOS
+case (`rtp_in=0`) and invited the opposite conclusion.
+
+### The speakerphone fix — and the `GlyphToggleButton` trap
+
+`Routing` in `VoIPPage.xaml` is a `controls:GlyphToggleButton`, **not** a stock
+`ToggleButton`. Its `OnToggle()` override (`GlyphToggleButton.cs:104-117`) calls
+`base.OnToggle()` only when `IsOneWay == false`, or when `IsOneWay == true` *and*
+`GetBindingExpression(IsCheckedProperty)` is a `TwoWay` binding. `IsOneWayProperty`
+defaults to **`true`**, and `VoIPPage.xaml:319` sets neither — so **`IsChecked` does not
+flip when the button is clicked**. Compare `Mute` at `:276-278`, which sets both.
+
+Never assume stock `ToggleButton` semantics for this control. Any handler must own the
+checked state explicitly.
+
+The real defect: `AudioRoutingManager.GetAudioEndpoint()` reports `Speakerphone` at
+`routing_ready` on this handset while playout is audibly in the **earpiece** — the
+manager's state and the hardware disagree from the start, so the toggle began every call
+out of step and the first press appeared to do nothing. The fix:
+
+- `OnLoaded` now **asserts** the starting endpoint via `ApplyAudioEndpoint(..., "ready")`
+  rather than merely reading it.
+- `ApplyAudioEndpoint` re-reads `GetAudioEndpoint()` after every `SetAudioEndpoint` and
+  assigns `Routing.IsChecked` from the **actual** endpoint, so the glyph cannot drift.
+- `SelectPrivateAudioEndpoint` picks Bluetooth when available, otherwise Earpiece.
+- `voip.ui result=routing_changed;stage=;requested=;actual=` makes a silently-refused
+  switch visible; `result=routing_failed` means `SetAudioEndpoint` threw.
+
+The render stream is tagged `AudioCategory_Communications` (see
+`patches/webrtc-m123-winuwp-arm-render-communications-category.patch`), so
+`AudioRoutingManager` is the correct lever here.
+
+`DescribePlayoutDevices` now emits `index:kind:name` triples (`ear`/`spk`/`hs`/`oth`).
+Because `:` is not a word character, the short kind token survives the diagnostics
+sanitizer even when the long device name is redacted — this gives the ADM index-to-endpoint
+mapping as a fallback lever if `AudioRoutingManager` turns out not to be honoured.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | --- |
+| `Unigram_26.9.6175.0_ARM_ModernTgCalls_RoutingFix_RtcpProbe_Sideload.zip` | `9CAC4CEFA9993E560DD565B8B60F7C7EC0B95C66A61EAE196275F930B143BB4F` | 64,136,550 |
+| `Unigram_26.9.6175.0_ARM_ModernTgCalls_RoutingFix_RtcpProbe.appx` | `91151A0F71C632D5B4F00C0BEF1F9928A9AC7056DDB988C95FC4C9BE9D6BD322` | 57,519,108 |
+| `Unigram_26.9.6175.0_ARM_ModernTgCalls_RoutingFix_RtcpProbe.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6175.0.map` | `3A4D9BB3CFB151A5B37955E4FBD57E5B588C2111A6AD0AC28F20EF7B9BDCE322` | 14,877,819 |
+
+Packaged `ModernCallsBridge.dll`: `D23488110F0AF8318A94D8378CF02C30DF15A9A2AB660C3CCF0B6F4F46D9A7B5`
+(parity with the built bridge: True).
+
+Verification: signature OK; identity `49197Wirdschon.UnigramMobileTdlibExperimental`;
+version `26.9.6175.0`; architecture `arm`; background entry point
+`Unigram.Native.Tasks.NotificationTask` with `<Task Type="pushNotification" />`; display
+name `Unigram Mobile TDLib Experimental`; 554 payload entries; 0 forbidden files; 23-entry ZIP.
+
+> 26.9.6174.0 was built and then discarded before shipping: a code review caught that the
+> first attempt at the routing fix, written on the stock-`ToggleButton` assumption, left the
+> button completely inert. No 26.9.6174.0 binary was ever handed over.

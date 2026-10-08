@@ -40,6 +40,11 @@ namespace tgcalls {
     extern std::atomic<uint32_t> g_diagIncomingAudioRtcp;
     extern std::atomic<uint32_t> g_diagIncomingAudioParseFailed;
     extern std::atomic<uint32_t> g_diagIncomingAudioUndemuxed;
+    extern std::atomic<uint32_t> g_diagIncomingAudioRtcpSenderReport;
+    extern std::atomic<uint32_t> g_diagIncomingAudioRtcpFeedback;
+    extern std::atomic<uint32_t> g_diagIncomingAudioMaxBytes;
+    extern std::atomic<uint32_t> g_diagOutgoingAudioRtp;
+    extern std::atomic<uint32_t> g_diagOutgoingAudioRtcp;
 }
 
 namespace Unigram {
@@ -884,6 +889,11 @@ void ResetIncomingAudioCounters() {
     ::tgcalls::g_diagIncomingAudioRtcp.store(0, std::memory_order_relaxed);
     ::tgcalls::g_diagIncomingAudioParseFailed.store(0, std::memory_order_relaxed);
     ::tgcalls::g_diagIncomingAudioUndemuxed.store(0, std::memory_order_relaxed);
+    ::tgcalls::g_diagIncomingAudioRtcpSenderReport.store(0, std::memory_order_relaxed);
+    ::tgcalls::g_diagIncomingAudioRtcpFeedback.store(0, std::memory_order_relaxed);
+    ::tgcalls::g_diagIncomingAudioMaxBytes.store(0, std::memory_order_relaxed);
+    ::tgcalls::g_diagOutgoingAudioRtp.store(0, std::memory_order_relaxed);
+    ::tgcalls::g_diagOutgoingAudioRtcp.store(0, std::memory_order_relaxed);
 }
 
 std::string DescribeIncomingAudioCounters() {
@@ -899,6 +909,11 @@ std::string DescribeIncomingAudioCounters() {
 
     return "rtp_in=" + clamp(::tgcalls::g_diagIncomingAudioRtp.load(std::memory_order_relaxed)) +
         ";rtcp_in=" + clamp(::tgcalls::g_diagIncomingAudioRtcp.load(std::memory_order_relaxed)) +
+        ";rtcp_sr=" + clamp(::tgcalls::g_diagIncomingAudioRtcpSenderReport.load(std::memory_order_relaxed)) +
+        ";rtcp_fb=" + clamp(::tgcalls::g_diagIncomingAudioRtcpFeedback.load(std::memory_order_relaxed)) +
+        ";rtp_out=" + clamp(::tgcalls::g_diagOutgoingAudioRtp.load(std::memory_order_relaxed)) +
+        ";rtcp_out=" + clamp(::tgcalls::g_diagOutgoingAudioRtcp.load(std::memory_order_relaxed)) +
+        ";msg_max=" + clamp(::tgcalls::g_diagIncomingAudioMaxBytes.load(std::memory_order_relaxed)) +
         ";rtp_bad=" + clamp(::tgcalls::g_diagIncomingAudioParseFailed.load(std::memory_order_relaxed)) +
         ";rtp_undemux=" + clamp(::tgcalls::g_diagIncomingAudioUndemuxed.load(std::memory_order_relaxed));
 }
@@ -918,6 +933,28 @@ std::string DescribePlayoutDevices(webrtc::AudioDeviceModule* module, int16_t co
     if (module == nullptr || count <= 0) {
         return "none";
     }
+
+    // Device names are long enough that the managed sanitizer replaces each one wholesale
+    // with an opaque-token placeholder, which made the list unreadable in practice. A short
+    // classification survives because ':' breaks the token run, and it carries what the
+    // diagnostic actually needs: which index is the earpiece and which the loudspeaker, so
+    // a routing complaint can be checked against the endpoint that was really selected.
+    const auto classify = [](const std::string& lowered) -> const char* {
+        const auto contains = [&lowered](const char* needle) {
+            return lowered.find(needle) != std::string::npos;
+        };
+
+        if (contains("earpiece") || contains("handset") || contains("receiver")) {
+            return "ear";
+        }
+        if (contains("speaker") || contains("loud")) {
+            return "spk";
+        }
+        if (contains("head") || contains("bluetooth")) {
+            return "hs";
+        }
+        return "oth";
+    };
 
     constexpr int16_t kMaxNamedDevices = 4;
     const int16_t named = count < kMaxNamedDevices ? count : kMaxNamedDevices;
@@ -940,14 +977,20 @@ std::string DescribePlayoutDevices(webrtc::AudioDeviceModule* module, int16_t co
 
         name[webrtc::kAdmMaxDeviceNameSize - 1] = '\0';
         std::string sanitised;
+        std::string lowered;
         for (const char* cursor = name; *cursor != '\0' && sanitised.size() < 48; ++cursor) {
             const auto value = static_cast<unsigned char>(*cursor);
             if (std::isalnum(value) != 0) {
                 sanitised += *cursor;
+                lowered += static_cast<char>(std::tolower(value));
             } else if (*cursor == ' ' || *cursor == '-' || *cursor == '_') {
                 sanitised += '_';
+                lowered += ' ';
             }
         }
+
+        list += classify(lowered);
+        list += ":";
         list += sanitised.empty() ? "unnamed" : sanitised;
     }
 

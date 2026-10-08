@@ -177,10 +177,16 @@ namespace Unigram.Views
 
             Routing.Visibility = Visibility.Visible;
             _audioRoutingManager.AudioEndpointChanged += AudioEndpointChanged;
-            Routing.IsChecked = _audioRoutingManager.GetAudioEndpoint() == AudioRoutingEndpoint.Speakerphone;
             Logs.PushDiagnostics.Write(
                 "voip.ui",
                 $"result=routing_ready;endpoint={_audioRoutingManager.GetAudioEndpoint()};available={_audioRoutingManager.AvailableAudioEndpoints}");
+
+            // GetAudioEndpoint() reports Speakerphone on this handset while playout is
+            // audibly in the earpiece, so the toggle began every call out of step with the
+            // hardware and its first press appeared to do nothing. The starting endpoint is
+            // asserted rather than merely read, which also matches how a voice call should
+            // begin: in the earpiece, or a headset when one is connected.
+            ApplyAudioEndpoint(_audioRoutingManager, SelectPrivateAudioEndpoint(_audioRoutingManager), "ready");
         }
 
         private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -696,30 +702,68 @@ namespace Unigram.Views
 
         private void Routing_Click(object sender, RoutedEventArgs e)
         {
-            var toggle = sender as ToggleButton;
             var routingManager = _audioRoutingManager;
-            if (toggle == null || routingManager == null)
+            if (routingManager == null || Routing == null)
             {
                 return;
             }
 
-            toggle.IsChecked = !toggle.IsChecked;
+            // GlyphToggleButton suppresses the base OnToggle unless IsOneWay is false, and
+            // this instance sets neither that nor an IsChecked binding, so the control does
+            // not flip itself when clicked. The handler owns the checked state, and every
+            // path below re-reads the endpoint afterwards so the glyph cannot drift away
+            // from the endpoint actually in force.
+            var requested = Routing.IsChecked == true
+                ? SelectPrivateAudioEndpoint(routingManager)
+                : AudioRoutingEndpoint.Speakerphone;
 
-            if (toggle.IsChecked.Value)
+            ApplyAudioEndpoint(routingManager, requested, "toggle");
+        }
+
+        /// <summary>
+        /// The endpoint a call falls back to when the loudspeaker is switched off: a
+        /// connected headset if there is one, otherwise the earpiece.
+        /// </summary>
+        private static AudioRoutingEndpoint SelectPrivateAudioEndpoint(AudioRoutingManager manager)
+        {
+            return manager.AvailableAudioEndpoints.HasFlag(AvailableAudioRoutingEndpoints.Bluetooth)
+                ? AudioRoutingEndpoint.Bluetooth
+                : AudioRoutingEndpoint.Earpiece;
+        }
+
+        /// <summary>
+        /// Applies a routing request and reconciles the toggle with the endpoint the
+        /// platform actually reports afterwards. The request is never assumed to have
+        /// succeeded: a switch that is silently refused is the failure being chased, and
+        /// it is only visible by reading the endpoint back.
+        /// </summary>
+        private void ApplyAudioEndpoint(AudioRoutingManager manager, AudioRoutingEndpoint requested, string stage)
+        {
+            AudioRoutingEndpoint actual;
+
+            try
             {
-                routingManager.SetAudioEndpoint(AudioRoutingEndpoint.Speakerphone);
+                manager.SetAudioEndpoint(requested);
+                actual = manager.GetAudioEndpoint();
             }
-            else
+            catch (Exception ex)
             {
-                if (routingManager.AvailableAudioEndpoints.HasFlag(AvailableAudioRoutingEndpoints.Bluetooth))
-                {
-                    routingManager.SetAudioEndpoint(AudioRoutingEndpoint.Bluetooth);
-                }
-                else if (routingManager.AvailableAudioEndpoints.HasFlag(AvailableAudioRoutingEndpoints.Earpiece))
-                {
-                    routingManager.SetAudioEndpoint(AudioRoutingEndpoint.Earpiece);
-                }
+                Logs.PushDiagnostics.Write(
+                    "voip.ui",
+                    $"result=routing_failed;stage={stage};requested={requested}" +
+                    $";error={Logs.PushDiagnostics.SanitizeErrorMessage(ex.Message)}");
+                return;
             }
+
+            if (Routing != null)
+            {
+                Routing.IsChecked = actual == AudioRoutingEndpoint.Speakerphone;
+            }
+
+            Logs.PushDiagnostics.Write(
+                "voip.ui",
+                $"result=routing_changed;stage={stage};requested={requested};actual={actual}" +
+                $";available={manager.AvailableAudioEndpoints}");
         }
 
         private bool _isMuted;

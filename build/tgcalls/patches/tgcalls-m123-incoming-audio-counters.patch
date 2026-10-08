@@ -1,5 +1,5 @@
 diff --git a/tgcalls/MediaManager.cpp b/tgcalls/MediaManager.cpp
-index 9ee2939..01bef9d 100644
+index 9ee2939..cb3ca00 100644
 --- a/tgcalls/MediaManager.cpp
 +++ b/tgcalls/MediaManager.cpp
 @@ -1,5 +1,7 @@
@@ -10,7 +10,7 @@ index 9ee2939..01bef9d 100644
  #include "Instance.h"
  #include "VideoCaptureInterfaceImpl.h"
  #include "VideoCapturerInterface.h"
-@@ -990,12 +992,24 @@ void MediaManager::setIncomingVideoOutput(std::weak_ptr<rtc::VideoSinkInterface<
+@@ -990,12 +992,68 @@ void MediaManager::setIncomingVideoOutput(std::weak_ptr<rtc::VideoSinkInterface<
      _incomingVideoSinkProxy->setSink(sink);
  }
  
@@ -25,17 +25,61 @@ index 9ee2939..01bef9d 100644
 +std::atomic<uint32_t> g_diagIncomingAudioParseFailed{0};
 +std::atomic<uint32_t> g_diagIncomingAudioUndemuxed{0};
 +
++// When a peer delivers RTCP but no RTP at all, the remaining question is whether the
++// peer believes it is transmitting. A sender report is only emitted by a peer that has
++// an active send stream, and transport feedback is only emitted by a peer that is
++// receiving our media, so the two together place the fault on one side of the link.
++std::atomic<uint32_t> g_diagIncomingAudioRtcpSenderReport{0};
++std::atomic<uint32_t> g_diagIncomingAudioRtcpFeedback{0};
++std::atomic<uint32_t> g_diagIncomingAudioMaxBytes{0};
++std::atomic<uint32_t> g_diagOutgoingAudioRtp{0};
++std::atomic<uint32_t> g_diagOutgoingAudioRtcp{0};
++
++// Compound RTCP interleaves several report blocks in one packet, so the presence of a
++// sender report cannot be read from the leading payload type alone. Only the kind of
++// each report block is recorded; no identifier, timestamp or payload is inspected.
++static void diagScanIncomingAudioRtcp(const rtc::CopyOnWriteBuffer &packet) {
++    const uint8_t *const bytes = packet.cdata();
++    size_t offset = 0;
++    while (offset + 4 <= packet.size()) {
++        const uint8_t payloadType = bytes[offset + 1];
++        const size_t blockSize =
++            (static_cast<size_t>((bytes[offset + 2] << 8) | bytes[offset + 3]) + 1) * 4;
++        if (offset + blockSize > packet.size()) {
++            break;
++        }
++        if (payloadType == 200) {
++            g_diagIncomingAudioRtcpSenderReport.fetch_add(1, std::memory_order_relaxed);
++        } else if (payloadType == 205 || payloadType == 206) {
++            g_diagIncomingAudioRtcpFeedback.fetch_add(1, std::memory_order_relaxed);
++        }
++        offset += blockSize;
++    }
++}
++
++// A transport that silently drops anything above a size threshold would look exactly
++// like a peer that never sends audio, so the largest message accepted is recorded too.
++static void diagRecordIncomingAudioSize(size_t size) {
++    const uint32_t observed = static_cast<uint32_t>(size);
++    uint32_t previous = g_diagIncomingAudioMaxBytes.load(std::memory_order_relaxed);
++    while (observed > previous &&
++           !g_diagIncomingAudioMaxBytes.compare_exchange_weak(previous, observed, std::memory_order_relaxed)) {
++    }
++}
++
  void MediaManager::receiveMessage(DecryptedMessage &&message) {
  	const auto data = &message.message.data;
  	if (const auto formats = absl::get_if<VideoFormatsMessage>(data)) {
  		setPeerVideoFormats(std::move(*formats));
  	} else if (const auto audio = absl::get_if<AudioDataMessage>(data)) {
++        diagRecordIncomingAudioSize(audio->data.size());
          if (webrtc::IsRtcpPacket(audio->data)) {
 +            g_diagIncomingAudioRtcp.fetch_add(1, std::memory_order_relaxed);
++            diagScanIncomingAudioRtcp(audio->data);
              RTC_LOG(LS_VERBOSE) << "Deliver audio RTCP";
          }
          StaticThreads::getWorkerThread()->BlockingCall([&] {
-@@ -1004,12 +1018,17 @@ void MediaManager::receiveMessage(DecryptedMessage &&message) {
+@@ -1004,12 +1062,17 @@ void MediaManager::receiveMessage(DecryptedMessage &&message) {
              } else {
                  webrtc::RtpPacketReceived parsedPacket(&_audioRtpHeaderExtensionMap, webrtc::Timestamp::Micros(rtc::TimeUTCMicros()));
                  if (!parsedPacket.Parse(audio->data)) {
@@ -55,3 +99,14 @@ index 9ee2939..01bef9d 100644
              }
          });
  	} else if (const auto video = absl::get_if<VideoDataMessage>(data)) {
+@@ -1157,6 +1220,10 @@ bool MediaManager::NetworkInterfaceImpl::SendRtcp(rtc::CopyOnWriteBuffer *packet
+ bool MediaManager::NetworkInterfaceImpl::sendTransportMessage(rtc::CopyOnWriteBuffer *packet, const rtc::PacketOptions& options) {
+     if (_isVideo) {
+         RTC_LOG(LS_VERBOSE) << "Send video packet";
++    } else if (webrtc::IsRtcpPacket(*packet)) {
++        g_diagOutgoingAudioRtcp.fetch_add(1, std::memory_order_relaxed);
++    } else {
++        g_diagOutgoingAudioRtp.fetch_add(1, std::memory_order_relaxed);
+     }
+ 	_mediaManager->_sendTransportMessage(_isVideo
+ 		? Message{ VideoDataMessage{ *packet } }
