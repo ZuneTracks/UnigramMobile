@@ -1263,6 +1263,14 @@ public:
         return Guarded("set_stereo_recording", &webrtc::AudioDeviceModule::SetStereoRecording, enable);
     }
 
+    int32_t SetSpeakerVolume(uint32_t volume) override {
+        Report("step=set_speaker_volume;phase=select;level=" + std::to_string(volume));
+        return Guarded(
+            "set_speaker_volume",
+            static_cast<AdmVolumeInMethod>(&webrtc::AudioDeviceModule::SetSpeakerVolume),
+            volume);
+    }
+
 private:
     /// <summary>
     /// Frees the probe only when the device module has provably stopped pointing at it.
@@ -1651,6 +1659,9 @@ public:
             : _earpiecePlayoutDeviceIndex.load(std::memory_order_acquire);
         const auto target = speakerphone ? "speakerphone" : "earpiece";
         if (index < 0) {
+            if (!speakerphone) {
+                _instance->setOutputVolume(1.0f);
+            }
             return std::string("unavailable;target=") + target;
         }
 
@@ -1658,7 +1669,14 @@ public:
         // AudioOutputId. The '#<index>' selector is resolved by TgCalls on its media
         // queue, which stops and restarts playout around the device switch.
         _instance->setAudioOutputDevice("#" + std::to_string(index));
-        return std::string("queued;target=") + target + ";index=" + std::to_string(index);
+        // The platform's software AEC3 is enabled, but this phone has no hardware AEC
+        // and its loudspeaker at full session gain can still create a physical feedback
+        // loop. The TgCalls calls are serialized after the device switch, so the cap is
+        // applied to the newly selected speaker endpoint and earpiece selection restores
+        // the session gain observed before the cap.
+        _instance->setOutputVolume(speakerphone ? 0.5f : 1.0f);
+        return std::string("queued;target=") + target + ";index=" + std::to_string(index) +
+            (speakerphone ? ";gain=50" : ";gain=restore");
     }
 
     void SetNetworkType(NetworkType value) {

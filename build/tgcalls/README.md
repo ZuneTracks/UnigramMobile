@@ -2354,3 +2354,69 @@ APPX signature verification passed; identity
 entries; `Telegram.Td.dll`, `Telegram.Td.winmd`, and `ModernCallsBridge.dll` present; 0
 source-secret/PFX/PDB payload entries; and the sideload ZIP contains exactly 23 entries
 with four ARM dependency APPXs and no x86/x64/ARM64/Win32 or telemetry dependencies.
+
+## 26.9.6178.0 — UWP speakerphone session-gain cap
+
+The working indexed loudspeaker path added in 6176 exposed a physical acoustic loop on
+the test handset. The audio device reports no built-in AEC, while software AEC3 remains
+enabled; a loudspeaker session level of `100/100` leaves too little acoustic margin for
+software cancellation to suppress feedback reliably.
+
+This build applies a 50% cap only after TgCalls has queued the classified native
+loudspeaker endpoint. The ordered `setAudioOutputDevice` and `setOutputVolume` commands
+run on TgCalls' manager/media queues, so the gain is applied after playout has restarted
+on the requested speaker. It is not issued for the routing manager path alone.
+
+The external patch enables `MediaManager::setOutputVolume` only under `WINUWP`. It reads
+and saves the app session's original `ISimpleAudioVolume` level once, scales that saved
+level by 0.5 for native speakerphone use, and restores it when switching to earpiece or
+when the media manager tears down. It does not alter hardware or device-wide volume.
+Non-UWP TgCalls builds retain the upstream no-op behavior. If platform volume control is
+unavailable or rejects a call, the route is retained and the failure is reported rather
+than silently treating the cap as applied.
+
+Expected privacy-safe diagnostics are:
+
+```text
+voip.media|result=audio_output;...;native=queued;target=speakerphone;index=1;gain=50
+voip.media|result=audio_device;...;step=set_speaker_volume;phase=select;level=50
+voip.media|result=audio_device;...;step=set_speaker_volume;phase=end;faulted=0;code=0
+```
+
+`gain=50` confirms the ordered request was queued; the final `set_speaker_volume` result
+is the platform acceptance evidence. The numeric level is an app-session gain only; no
+device name, identifier, audio, credentials, message content, account data, token, or
+path is logged.
+
+Device acceptance requires an Android-to-W10M call because Android is the known
+bidirectional-media peer. Test earpiece, switch to speakerphone, have the Android peer
+speak for at least ten seconds, then verify intelligible remote audio, working uplink,
+and reduced echo/feedback. Export diagnostics with the output-gain result plus
+`apm`, `aec_residual_pm`, `aec_residual_max_pm`, `aec_erle_db10`, and `aec_delay_ms`.
+The unresolved iOS no-RTP condition remains separate and is not an acceptance test for
+this cap.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `Unigram_26.9.6178.0_ARM_SpeakerGain_Sideload.zip` | `A5BE95448D912186ABC2F4443AE8D9A6F43AC23AE498B84E543C1D4E2EF7EC4E` | 64,123,511 |
+| `Unigram_26.9.6178.0_ARM_SpeakerGain.appx` | `4AE148E13D5E63F7B568BB7B8225644E46A27D8470F8D4A28A81759F5AD1A7A3` | 57,516,116 |
+| `Unigram_26.9.6178.0_ARM_SpeakerGain.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6178.0.map` | `12692273E737E8F644184390C3C656A6459F36B5616DEBFCFFE45BDF637CDB8A` | 14,901,517 |
+
+The packaged `ModernCallsBridge.dll` SHA-256 is
+`6218340E91A3F30D20F6B49D114D7E824351738E2336658F9C12C4359E74C31E`,
+which matches the bridge rebuilt from the pinned external source exactly.
+
+Verification: the Release|ARM native engine and C++/CX bridge builds both completed with
+zero errors; the Release|ARM UWP APPX build completed successfully; and Authenticode
+signature verification passed. The APPX has identity
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6178.0`, architecture
+`arm`, and the `Unigram.Native.Tasks.NotificationTask` `pushNotification` entry point.
+It has 555 payload entries, includes `Telegram.Td.dll`, `Telegram.Td.winmd`, and
+`ModernCallsBridge.dll`, and contains no source-secret, PFX, or PDB payload. The
+sideload ZIP has 23 entries: the installer scripts/resources, the APPX/certificate, and
+exactly four ARM dependency APPXs—no x86, x64, ARM64, Win32, or telemetry dependency.

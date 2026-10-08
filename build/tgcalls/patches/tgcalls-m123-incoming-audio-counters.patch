@@ -1,5 +1,5 @@
 diff --git a/tgcalls/MediaManager.cpp b/tgcalls/MediaManager.cpp
-index 9ee2939..02abae0 100644
+index 9ee2939..4bdd9c8 100644
 --- a/tgcalls/MediaManager.cpp
 +++ b/tgcalls/MediaManager.cpp
 @@ -1,5 +1,9 @@
@@ -39,7 +39,14 @@ index 9ee2939..02abae0 100644
          _audioSendChannel->AddSendStream(cricket::StreamParams::CreateLegacy(_ssrcAudio.outgoing));
          _audioSendChannel->SetInterface(_audioNetworkInterface.get());
  
-@@ -536,6 +544,7 @@ MediaManager::~MediaManager() {
+@@ -532,10 +540,14 @@ MediaManager::~MediaManager() {
+         _videoSendChannel.reset();
+         _videoReceiveChannel.reset();
+ 
++#if defined(WINUWP)
++        setOutputVolume(1.0f);
++#endif
+         _audioDeviceModule = nullptr;
  
          _call.reset();
          _mediaEngine.reset();
@@ -47,7 +54,7 @@ index 9ee2939..02abae0 100644
      });
  }
  
-@@ -613,6 +622,7 @@ void MediaManager::collectStats() {
+@@ -613,6 +625,7 @@ void MediaManager::collectStats() {
      webrtc::Call::Stats stats;
      StaticThreads::getWorkerThread()->BlockingCall([&] {
          stats = _call->GetStats();
@@ -55,7 +62,7 @@ index 9ee2939..02abae0 100644
      });
  
      float bitrateNorm = 16.0f;
-@@ -990,12 +1000,134 @@ void MediaManager::setIncomingVideoOutput(std::weak_ptr<rtc::VideoSinkInterface<
+@@ -990,12 +1003,134 @@ void MediaManager::setIncomingVideoOutput(std::weak_ptr<rtc::VideoSinkInterface<
      _incomingVideoSinkProxy->setSink(sink);
  }
  
@@ -190,7 +197,7 @@ index 9ee2939..02abae0 100644
              RTC_LOG(LS_VERBOSE) << "Deliver audio RTCP";
          }
          StaticThreads::getWorkerThread()->BlockingCall([&] {
-@@ -1004,12 +1136,17 @@ void MediaManager::receiveMessage(DecryptedMessage &&message) {
+@@ -1004,12 +1139,17 @@ void MediaManager::receiveMessage(DecryptedMessage &&message) {
              } else {
                  webrtc::RtpPacketReceived parsedPacket(&_audioRtpHeaderExtensionMap, webrtc::Timestamp::Micros(rtc::TimeUTCMicros()));
                  if (!parsedPacket.Parse(audio->data)) {
@@ -210,7 +217,87 @@ index 9ee2939..02abae0 100644
              }
          });
  	} else if (const auto video = absl::get_if<VideoDataMessage>(data)) {
-@@ -1157,6 +1294,10 @@ bool MediaManager::NetworkInterfaceImpl::SendRtcp(rtc::CopyOnWriteBuffer *packet
+@@ -1106,22 +1246,63 @@ void MediaManager::setInputVolume(float level) {
+ }
+ 
+ void MediaManager::setOutputVolume(float level) {
+-	// This is not what we want, it changes OS volume on macOS.
+-//	auto min = uint32_t();
+-//	auto max = uint32_t();
+-//	if (const auto result = _audioDeviceModule->MinSpeakerVolume(&min)) {
+-//		RTC_LOG(LS_ERROR) << "setOutputVolume(" << level << "): MinSpeakerVolume failed: " << result << ".";
+-//		return;
+-//	} else if (const auto result = _audioDeviceModule->MaxSpeakerVolume(&max)) {
+-//		RTC_LOG(LS_ERROR) << "setOutputVolume(" << level << "): MaxSpeakerVolume failed: " << result << ".";
+-//		return;
+-//	}
+-//	const auto volume = min + uint32_t(std::round((max - min) * std::min(std::max(level, 0.f), 1.f)));
+-//	if (const auto result = _audioDeviceModule->SetSpeakerVolume(volume)) {
+-//		RTC_LOG(LS_ERROR) << "setOutputVolume(" << level << "): SetSpeakerVolume(" << volume << ") failed: " << result << ".";
+-//	} else {
+-//		RTC_LOG(LS_INFO) << "setOutputVolume(" << level << ") volume " << volume << " success.";
+-//	}
++#if defined(WINUWP)
++    if (_audioDeviceModule == nullptr || !std::isfinite(level)) {
++        return;
++    }
++
++    if (level >= 1.0f) {
++        if (!_hasSavedOutputVolume) {
++            return;
++        }
++
++        const auto result = _audioDeviceModule->SetSpeakerVolume(_savedOutputVolume);
++        if (result != 0) {
++            RTC_LOG(LS_ERROR) << "restoreOutputVolume failed: " << result << ".";
++            return;
++        }
++
++        _hasSavedOutputVolume = false;
++        RTC_LOG(LS_INFO) << "restoreOutputVolume success.";
++        return;
++    }
++
++    bool available = false;
++    if (_audioDeviceModule->SpeakerVolumeIsAvailable(&available) != 0 || !available) {
++        RTC_LOG(LS_ERROR) << "setOutputVolume unavailable.";
++        return;
++    }
++
++    uint32_t minimum = 0;
++    uint32_t maximum = 0;
++    uint32_t current = 0;
++    if (_audioDeviceModule->MinSpeakerVolume(&minimum) != 0 ||
++        _audioDeviceModule->MaxSpeakerVolume(&maximum) != 0 ||
++        _audioDeviceModule->SpeakerVolume(&current) != 0 ||
++        maximum < minimum) {
++        RTC_LOG(LS_ERROR) << "setOutputVolume state unavailable.";
++        return;
++    }
++
++    if (!_hasSavedOutputVolume) {
++        _savedOutputVolume = current;
++        _hasSavedOutputVolume = true;
++    }
++
++    const auto baseline = std::clamp(_savedOutputVolume, minimum, maximum);
++    const auto clamped = std::max(0.0f, level);
++    const auto target = minimum + static_cast<uint32_t>(std::round(
++        static_cast<float>(baseline - minimum) * clamped));
++    const auto result = _audioDeviceModule->SetSpeakerVolume(target);
++    if (result != 0) {
++        RTC_LOG(LS_ERROR) << "setOutputVolume failed: " << result << ".";
++        return;
++    }
++
++    RTC_LOG(LS_INFO) << "setOutputVolume success.";
++#else
++    (void)level;
++#endif
+ }
+ 
+ void MediaManager::addExternalAudioSamples(std::vector<uint8_t> &&samples) {
+@@ -1157,6 +1338,10 @@ bool MediaManager::NetworkInterfaceImpl::SendRtcp(rtc::CopyOnWriteBuffer *packet
  bool MediaManager::NetworkInterfaceImpl::sendTransportMessage(rtc::CopyOnWriteBuffer *packet, const rtc::PacketOptions& options) {
      if (_isVideo) {
          RTC_LOG(LS_VERBOSE) << "Send video packet";
@@ -222,7 +309,7 @@ index 9ee2939..02abae0 100644
  	_mediaManager->_sendTransportMessage(_isVideo
  		? Message{ VideoDataMessage{ *packet } }
 diff --git a/tgcalls/MediaManager.h b/tgcalls/MediaManager.h
-index fbac021..8e89979 100644
+index fbac021..1bdfa65 100644
 --- a/tgcalls/MediaManager.h
 +++ b/tgcalls/MediaManager.h
 @@ -10,6 +10,7 @@
@@ -241,3 +328,14 @@ index fbac021..8e89979 100644
      std::unique_ptr<cricket::MediaEngineInterface> _mediaEngine;
  	std::unique_ptr<webrtc::Call> _call;
  	webrtc::LocalAudioSinkAdapter _audioSource;
+@@ -180,6 +182,10 @@ private:
+ 
+     float _currentAudioLevel = 0.0f;
+     float _currentMyAudioLevel = 0.0f;
++#if defined(WINUWP)
++    uint32_t _savedOutputVolume = 0;
++    bool _hasSavedOutputVolume = false;
++#endif
+ 
+ 	std::unique_ptr<MediaManager::NetworkInterfaceImpl> _audioNetworkInterface;
+ 	std::unique_ptr<MediaManager::NetworkInterfaceImpl> _videoNetworkInterface;
