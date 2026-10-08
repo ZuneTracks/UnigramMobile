@@ -2615,6 +2615,12 @@ W10M-to-iOS directions and confirmed speakerphone behavior is resolved. The log 
 no V2 RTP callback increments, which is expected under the diagnostic boundary above
 and does not contradict the observed decoded playout.
 
+The subsequent 6182 cross-platform test confirmed successful calls to and from
+experimental W10M, iOS, and Android clients. Its privacy-safe log includes two further
+V2 `8.0.0` negotiations, three established transitions, nine non-silent playout
+windows, and twelve nonzero local-capture windows. Speakerphone was also confirmed
+working during this test.
+
 ### Artifacts
 
 Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
