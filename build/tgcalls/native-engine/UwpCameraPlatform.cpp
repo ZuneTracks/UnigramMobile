@@ -34,7 +34,7 @@ constexpr int kPreferredFps = 30;
 // The Windows 10 Mobile capture backend delivers the Lumia sensor's landscape
 // buffer without device orientation. Advertise the portrait correction through
 // both the V2 media state and WebRTC frame metadata.
-constexpr auto kPortraitRotation = webrtc::kVideoRotation_90;
+constexpr auto kPortraitRotation = webrtc::kVideoRotation_270;
 
 bool IsH264(const webrtc::SdpVideoFormat& format) {
     return format.name == "H264";
@@ -363,7 +363,7 @@ public:
     }
 
     int getRotation() override {
-        return 90;
+        return 270;
     }
 
     void setOnFatalError(std::function<void()> error) override {

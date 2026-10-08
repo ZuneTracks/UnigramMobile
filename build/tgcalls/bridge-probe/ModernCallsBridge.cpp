@@ -1,7 +1,9 @@
 #include "ModernCallsBridge.h"
 #include "TgCallsEngineFacade.h"
 #include <windows.h>
+#include <windows.applicationmodel.core.h>
 #include <exception>
+#include <windows.ui.core.h>
 #include <windows.storage.streams.h>
 #include <cstring>
 #include <memory>
@@ -30,6 +32,7 @@ public:
 struct SessionHolder {
     Unigram::Native::Calls::CallSessionPtr session;
     WeakReference owner;
+    Windows::UI::Core::CoreDispatcher^ dispatcher;
 };
 
 // Teardown normally drains in well under a second; the bound only exists so a wedged
@@ -90,6 +93,14 @@ AudioCallConfiguration::AudioCallConfiguration() {
 VideoFrame::VideoFrame() {
 }
 
+void AudioCallSession::ReportVideoFrameDeliveryFailure(int result) {
+    try {
+        VideoFrameDeliveryFailed(this, result);
+    } catch (Platform::Exception^) {
+        OutputDebugStringW(L"ModernCallsBridge video frame failure notification failed.\n");
+    }
+}
+
 AudioCallSession^ AudioCallSession::Create(AudioCallConfiguration^ configuration) {
     if (configuration == nullptr) {
         throw ref new InvalidArgumentException(L"An audio call configuration is required.");
@@ -104,6 +115,10 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
 
     auto holder = std::make_shared<SessionHolder>();
     holder->owner = WeakReference(this);
+    auto mainView = Windows::ApplicationModel::Core::CoreApplication::MainView;
+    if (mainView != nullptr && mainView->CoreWindow != nullptr) {
+        holder->dispatcher = mainView->CoreWindow->Dispatcher;
+    }
 
     auto native = Unigram::Native::Calls::CallConfiguration{};
     native.version = configuration->Version->Data();
@@ -228,25 +243,60 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
             std::vector<uint8_t> pixels) {
         if (const auto holder = weakHolder.lock()) {
             if (const auto owner = ResolveOwner(holder)) {
-                auto frame = ref new VideoFrame();
-                frame->IsLocal = local;
-                frame->Width = width;
-                frame->Height = height;
-                auto buffer = ref new Windows::Storage::Streams::Buffer(
-                    static_cast<unsigned int>(pixels.size()));
-                Microsoft::WRL::ComPtr<IBufferByteAccess> access;
-                if (FAILED(reinterpret_cast<IInspectable*>(buffer)->QueryInterface(IID_PPV_ARGS(&access))) ||
-                    !access) {
+                auto framePixels = std::make_shared<std::vector<uint8_t>>(std::move(pixels));
+                const auto dispatcher = holder->dispatcher;
+                if (dispatcher == nullptr) {
+                    owner->ReportVideoFrameDeliveryFailure(E_HANDLE);
                     return;
                 }
-                byte* data = nullptr;
-                if (FAILED(access->Buffer(&data)) || data == nullptr) {
-                    return;
+                try {
+                    dispatcher->RunAsync(
+                        Windows::UI::Core::CoreDispatcherPriority::Low,
+                        ref new Windows::UI::Core::DispatchedHandler(
+                            [weakHolder, local, width, height, framePixels] {
+                                const auto dispatchedHolder = weakHolder.lock();
+                                if (!dispatchedHolder) {
+                                    return;
+                                }
+
+                                const auto dispatchedOwner = ResolveOwner(dispatchedHolder);
+                                if (dispatchedOwner == nullptr) {
+                                    return;
+                                }
+
+                                try {
+                                    auto frame = ref new VideoFrame();
+                                    frame->IsLocal = local;
+                                    frame->Width = width;
+                                    frame->Height = height;
+                                    auto buffer = ref new Windows::Storage::Streams::Buffer(
+                                        static_cast<unsigned int>(framePixels->size()));
+                                    Microsoft::WRL::ComPtr<IBufferByteAccess> access;
+                                    if (FAILED(reinterpret_cast<IInspectable*>(buffer)->QueryInterface(IID_PPV_ARGS(&access))) ||
+                                        !access) {
+                                        dispatchedOwner->ReportVideoFrameDeliveryFailure(E_NOINTERFACE);
+                                        return;
+                                    }
+                                    byte* data = nullptr;
+                                    if (FAILED(access->Buffer(&data)) || data == nullptr) {
+                                        dispatchedOwner->ReportVideoFrameDeliveryFailure(E_FAIL);
+                                        return;
+                                    }
+                                    std::memcpy(data, framePixels->data(), framePixels->size());
+                                    buffer->Length = static_cast<unsigned int>(framePixels->size());
+                                    frame->Pixels = buffer;
+                                    dispatchedOwner->VideoFrameReceived(dispatchedOwner, frame);
+                                } catch (Platform::Exception^ error) {
+                                    dispatchedOwner->ReportVideoFrameDeliveryFailure(error->HResult);
+                                } catch (const std::bad_alloc&) {
+                                    dispatchedOwner->ReportVideoFrameDeliveryFailure(E_OUTOFMEMORY);
+                                }
+                            }));
+                } catch (Platform::Exception^ error) {
+                    owner->ReportVideoFrameDeliveryFailure(error->HResult);
+                } catch (const std::bad_alloc&) {
+                    owner->ReportVideoFrameDeliveryFailure(E_OUTOFMEMORY);
                 }
-                std::memcpy(data, pixels.data(), pixels.size());
-                buffer->Length = static_cast<unsigned int>(pixels.size());
-                frame->Pixels = buffer;
-                owner->VideoFrameReceived(owner, frame);
             }
         }
     };

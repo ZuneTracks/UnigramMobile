@@ -134,11 +134,13 @@ public:
     event Windows::Foundation::EventHandler<VideoState>^ RemoteVideoStateChanged;
     event Windows::Foundation::EventHandler<Platform::Object^>^ VideoCaptureFailed;
     event Windows::Foundation::EventHandler<VideoFrame^>^ VideoFrameReceived;
+    event Windows::Foundation::EventHandler<int>^ VideoFrameDeliveryFailed;
     event Windows::Foundation::EventHandler<Platform::String^>^ AudioDeviceReport;
 
 private:
     AudioCallSession(AudioCallConfiguration^ configuration);
     Platform::String^ DrainSession();
+    void ReportVideoFrameDeliveryFailure(int result);
     void* _holder;
 };
 

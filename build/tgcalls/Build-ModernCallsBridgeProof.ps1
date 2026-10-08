@@ -13,6 +13,7 @@ $tgCallsRoot = Join-Path $env:LOCALAPPDATA 'UnigramTdlibExperiment\tgcalls'
 $tgCallsPatches = @(
     @{ Path = Join-Path $PSScriptRoot 'patches\tgcalls-m123-winuwp-audio-device.patch'; Name = 'M123 audio-device compatibility' }
     @{ Path = Join-Path $PSScriptRoot 'patches\tgcalls-m123-incoming-audio-counters.patch'; Name = 'incoming audio receive-path counters' }
+    @{ Path = Join-Path $PSScriptRoot 'patches\tgcalls-m123-v2-uwp-arm-h264-bitrate.patch'; Name = 'V2 ARM UWP H.264 bitrate policy' }
 )
 $expectedTgCallsCommit = '1c236c09f8d8569fead14bd68000618a52051225'
 $expectedZlibVersion = '1.3.2'

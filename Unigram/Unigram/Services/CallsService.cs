@@ -77,7 +77,11 @@ namespace Unigram.Services
         private const int ModernMicrophoneWaitMs = 8000;
         // The experimental CPU/WriteableBitmap preview path is isolated while native
         // capture/encoding is validated on Windows 10 Mobile.
-        private const bool ModernVideoPreviewEnabled = false;
+        // Test the UI-dispatched renderer one sink at a time. The prior CPU bridge crash
+        // happened when local and remote outputs were attached together.
+        private const bool ModernVideoLocalPreviewEnabled = true;
+        private const bool ModernVideoRemotePreviewEnabled = false;
+        private const int ModernV2H264MaxBitrateKbps = 1536;
         private static readonly object _microphoneLock = new object();
         private static Task<int> _microphoneTask;
         private static readonly object _videoCaptureLock = new object();
@@ -986,6 +990,11 @@ namespace Unigram.Services
             {
                 WriteAudioCallDiagnostic("voip.ready", "result=creating;transport=modern_tgcalls");
                 session = ModernCalls.AudioCallSession.Create(configuration);
+                if (call.IsVideo)
+                {
+                    WriteModernMediaDiagnostic(
+                        $"result=video_encoder;transport=modern_tgcalls;capture=1280x720;fps=30;max_bitrate_kbps={ModernV2H264MaxBitrateKbps}");
+                }
             }
             catch (Exception error)
             {
@@ -1017,6 +1026,9 @@ namespace Unigram.Services
                     GuardModernCallback("video_capture_failed", () => WriteModernMediaDiagnostic("result=video_capture;transport=modern_tgcalls;state=failed"));
                 session.VideoFrameReceived += (sender, frame) =>
                     GuardModernCallback("video_frame", () => OnModernVideoFrame(call.Id, session, frame));
+                session.VideoFrameDeliveryFailed += (sender, hresult) =>
+                    GuardModernCallback("video_frame_dispatch", () =>
+                        WriteModernMediaDiagnostic($"result=video_output;transport=modern_tgcalls;state=frame_dispatch_failed;hresult=0x{hresult:X8}"));
 
                 _modernController = session;
                 _modernCallId = call.Id;
@@ -1404,7 +1416,7 @@ namespace Unigram.Services
                 return;
             }
 
-            if (!ModernVideoPreviewEnabled)
+            if (!ModernVideoLocalPreviewEnabled && !ModernVideoRemotePreviewEnabled)
             {
                 WriteModernMediaDiagnostic("result=video_output;state=disabled;reason=preview_isolation");
                 return;
@@ -1433,11 +1445,19 @@ namespace Unigram.Services
 
                 try
                 {
-                    WriteModernMediaDiagnostic("result=video_output;state=attaching");
-                    session.SetVideoOutputEnabled(true, true);
-                    session.SetVideoOutputEnabled(false, true);
+                    WriteModernMediaDiagnostic(
+                        $"result=video_output;state=attaching;local={(ModernVideoLocalPreviewEnabled ? 1 : 0)};remote={(ModernVideoRemotePreviewEnabled ? 1 : 0)}");
+                    if (ModernVideoLocalPreviewEnabled)
+                    {
+                        session.SetVideoOutputEnabled(true, true);
+                    }
+                    if (ModernVideoRemotePreviewEnabled)
+                    {
+                        session.SetVideoOutputEnabled(false, true);
+                    }
                     _modernVideoOutputsEnabled = true;
-                    WriteModernMediaDiagnostic("result=video_output;state=attached");
+                    WriteModernMediaDiagnostic(
+                        $"result=video_output;state=attached;local={(ModernVideoLocalPreviewEnabled ? 1 : 0)};remote={(ModernVideoRemotePreviewEnabled ? 1 : 0)}");
                 }
                 catch (Exception error)
                 {
