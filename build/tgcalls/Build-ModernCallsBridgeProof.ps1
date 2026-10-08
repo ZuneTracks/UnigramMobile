@@ -9,7 +9,10 @@ $project = Join-Path $PSScriptRoot 'bridge-probe\ModernCallsBridge.vcxproj'
 $engineProject = Join-Path $PSScriptRoot 'native-engine\TgCallsEngine.vcxproj'
 $msbuild = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe'
 $tgCallsRoot = Join-Path $env:LOCALAPPDATA 'UnigramTdlibExperiment\tgcalls'
-$tgCallsPatch = Join-Path $PSScriptRoot 'patches\tgcalls-m123-winuwp-audio-device.patch'
+$tgCallsPatches = @(
+    @{ Path = Join-Path $PSScriptRoot 'patches\tgcalls-m123-winuwp-audio-device.patch'; Name = 'M123 audio-device compatibility' }
+    @{ Path = Join-Path $PSScriptRoot 'patches\tgcalls-m123-incoming-audio-counters.patch'; Name = 'incoming audio receive-path counters' }
+)
 $expectedTgCallsCommit = '1c236c09f8d8569fead14bd68000618a52051225'
 
 if (-not (Test-Path -LiteralPath (Join-Path $WebRtcRoot 'out\msvc\uwp\Release\arm\obj\webrtc.lib'))) {
@@ -31,11 +34,36 @@ if ($actualTgCallsCommit -ne $expectedTgCallsCommit) {
 
 Push-Location $tgCallsRoot
 try {
-    & git apply --reverse --check --ignore-whitespace $tgCallsPatch 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        & git apply --3way --ignore-whitespace $tgCallsPatch
+    foreach ($patch in $tgCallsPatches) {
+        if (-not (Test-Path -LiteralPath $patch.Path)) {
+            throw "The TgCalls $($patch.Name) patch was not found at '$($patch.Path)'."
+        }
+
+        & git apply --reverse --check --ignore-whitespace $patch.Path 2>$null
         if ($LASTEXITCODE -ne 0) {
-            throw 'Unable to apply the TgCalls M123 audio-device compatibility patch.'
+            # A plain apply works whenever the tree is clean for this patch; --3way is the
+            # recovery path and needs the blobs it references to be reachable, which is not
+            # the case once an earlier patch has been staged over the same checkout.
+            & git apply --ignore-whitespace --whitespace=nowarn $patch.Path 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                # --3way implies --index: on conflict it writes conflict markers into the
+                # working tree and records conflicted index stages, and leaves them there
+                # when it fails. Without cleanup every later build fails identically --
+                # reverse-check fails, plain apply fails against the marker-laden file,
+                # --3way conflicts again -- with nothing to say the checkout needs resetting.
+                $touched = (& git apply --numstat --ignore-whitespace $patch.Path 2>$null |
+                    ForEach-Object { ($_ -split "`t")[2] }) | Where-Object { $_ }
+
+                & git apply --3way --ignore-whitespace $patch.Path
+                if ($LASTEXITCODE -ne 0) {
+                    foreach ($file in $touched) {
+                        & git reset -q -- $file 2>$null
+                        & git checkout -- $file 2>$null
+                    }
+
+                    throw "Unable to apply the TgCalls $($patch.Name) patch to the checkout at '$tgCallsRoot'. Any partial result was reverted; re-run the build."
+                }
+            }
         }
     }
 }

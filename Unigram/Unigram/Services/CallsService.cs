@@ -46,7 +46,13 @@ namespace Unigram.Services
         private readonly IViewService _viewService;
 
         private readonly MediaPlayer _mediaPlayer;
-        private static int _audioCallDiagnosticBudget = 64;
+        private const int AudioCallDiagnosticBudget = 64;
+        private static int _audioCallDiagnosticBudget = AudioCallDiagnosticBudget;
+
+        // The call whose diagnostics budget is currently in force, so a new call can be told
+        // apart from further updates to the one already being recorded.
+        private int _diagnosticCallId;
+        private int _previousDiagnosticCallId;
 
         private Call _call;
         private DateTime _callStarted;
@@ -80,6 +86,16 @@ namespace Unigram.Services
         private float _modernAudioLevelPeak;
         private DateTime _modernAudioLevelReported = DateTime.MinValue;
         private int _modernSignalBars = -1;
+        private int _modernSignalingSent;
+        private int _modernSignalingReceived;
+
+        // First-occurrence reporting is keyed on the call the message belonged to rather than
+        // on the counters above. Keying it on a counter raced the per-call reset: an increment
+        // arriving from a torn-down call could leave the counter non-zero, so the next call's
+        // first message never looked like the first one and the only per-message evidence was
+        // lost. Comparing call ids can at worst emit one extra line, which errs toward evidence.
+        private int _modernSignalingSentCallId;
+        private int _modernSignalingReceivedCallId;
         private ModernCalls.RemoteAudioState? _modernRemoteAudioState;
         private ModernCalls.CallState? _modernTransportState;
         private bool _modernMuted;
@@ -227,6 +243,28 @@ namespace Unigram.Services
             }
 
             _call = update.Call;
+
+            // Budgets and first-occurrence flags belong to a call, not to an app launch.
+            // Resetting on the first update for a new call id — rather than at Ready —
+            // means a call that is declined, errors out, or is discarded while pending is
+            // still recorded, and those are exactly the failures worth having evidence for.
+            //
+            // TDLib interleaves late updates for a discarded call with the first updates of
+            // its successor, so the immediately preceding id is remembered too. Without that,
+            // each alternation would restore the full budget during a call transition, which
+            // is the single busiest logging window and the one the cap exists to bound.
+            if (_diagnosticCallId != update.Call.Id)
+            {
+                if (_previousDiagnosticCallId != update.Call.Id)
+                {
+                    ResetAudioCallDiagnosticBudget();
+                    ModernTdlibCompatibility.ResetAudioCallDiagnosticBudgets();
+                }
+
+                _previousDiagnosticCallId = _diagnosticCallId;
+                _diagnosticCallId = update.Call.Id;
+            }
+
             WriteAudioCallDiagnostic("voip.update", $"result=received;state={update.Call.State?.GetType().Name ?? "null"};outgoing={update.Call.IsOutgoing.ToString().ToLowerInvariant()};video={update.Call.IsVideo.ToString().ToLowerInvariant()}");
 
             if (update.Call.IsVideo)
@@ -486,7 +524,15 @@ namespace Unigram.Services
                 try
                 {
                     session.ReceiveSignalingData(update.Data.ToList());
-                    WriteAudioCallDiagnostic("voip.signaling", "result=received;transport=modern_tgcalls");
+                    System.Threading.Interlocked.Increment(ref _modernSignalingReceived);
+
+                    // Only the first delivery of a call is reported; the rest are counted and
+                    // folded into the periodic media summary. Logging every message spent the
+                    // whole call budget on fifty near-identical lines.
+                    if (System.Threading.Interlocked.Exchange(ref _modernSignalingReceivedCallId, update.CallId) != update.CallId)
+                    {
+                        WriteAudioCallDiagnostic("voip.signaling", "result=received;transport=modern_tgcalls");
+                    }
                 }
                 catch (ArgumentException)
                 {
@@ -1034,7 +1080,8 @@ namespace Unigram.Services
                 else if (now - _modernAudioLevelReported >= TimeSpan.FromSeconds(5))
                 {
                     summary = $"result=audio_level;transport=modern_tgcalls;samples={_modernAudioLevelSamples}" +
-                        $";active={_modernAudioLevelActive};peak={_modernAudioLevelPeak.ToString("F2", CultureInfo.InvariantCulture)}";
+                        $";active={_modernAudioLevelActive};peak={_modernAudioLevelPeak.ToString("F2", CultureInfo.InvariantCulture)}" +
+                        $";sig_sent={_modernSignalingSent};sig_recv={_modernSignalingReceived}";
                     _modernAudioLevelReported = now;
                     _modernAudioLevelSamples = 0;
                     _modernAudioLevelActive = 0;
@@ -1052,7 +1099,12 @@ namespace Unigram.Services
             {
                 try
                 {
-                    summary += ";" + Logs.PushDiagnostics.SanitizeErrorMessage(session.GetAudioDeviceStatus());
+                    // The native status is a fixed-shape list of our own keys and integers,
+                    // but it still goes through the shared sanitizer so a device name can
+                    // never leak. The default 256-character cap truncates the tail of that
+                    // list, so it is raised here; the cap bounds length, not redaction, and
+                    // every redaction rule still runs.
+                    summary += ";" + Logs.PushDiagnostics.SanitizeErrorMessage(session.GetAudioDeviceStatus(), 512);
                 }
                 catch (Exception error)
                 {
@@ -1092,6 +1144,10 @@ namespace Unigram.Services
             }
 
             _modernSignalBars = -1;
+            System.Threading.Interlocked.Exchange(ref _modernSignalingSent, 0);
+            System.Threading.Interlocked.Exchange(ref _modernSignalingReceived, 0);
+            System.Threading.Interlocked.Exchange(ref _modernSignalingSentCallId, 0);
+            System.Threading.Interlocked.Exchange(ref _modernSignalingReceivedCallId, 0);
             _modernRemoteAudioState = null;
             _modernTransportState = null;
             _modernMuted = false;
@@ -1145,7 +1201,11 @@ namespace Unigram.Services
                 CallId = callId,
                 Data = data.ToList()
             });
-            WriteAudioCallDiagnostic("voip.signaling", "result=sent;transport=modern_tgcalls");
+            System.Threading.Interlocked.Increment(ref _modernSignalingSent);
+            if (System.Threading.Interlocked.Exchange(ref _modernSignalingSentCallId, callId) != callId)
+            {
+                WriteAudioCallDiagnostic("voip.signaling", "result=sent;transport=modern_tgcalls");
+            }
         }
 
         private void OnModernCallStopped(int callId, ModernCalls.AudioCallSession session, bool completed)
@@ -1302,6 +1362,7 @@ namespace Unigram.Services
             try
             {
                 var flushed = false;
+                var flushedCount = 0;
                 while (true)
                 {
                     List<List<byte>> pending;
@@ -1312,7 +1373,7 @@ namespace Unigram.Services
                             _modernCallStarting = false;
                             if (flushed)
                             {
-                                WriteAudioCallDiagnostic("voip.signaling", "result=flushed;transport=modern_tgcalls");
+                                WriteAudioCallDiagnostic("voip.signaling", $"result=flushed;transport=modern_tgcalls;count={flushedCount}");
                             }
                             return true;
                         }
@@ -1324,6 +1385,8 @@ namespace Unigram.Services
                     foreach (var data in pending)
                     {
                         session.ReceiveSignalingData(data);
+                        flushedCount++;
+                        System.Threading.Interlocked.Increment(ref _modernSignalingReceived);
                     }
                 }
             }
@@ -1347,6 +1410,18 @@ namespace Unigram.Services
             }
         }
 #endif
+
+        /// <summary>
+        /// Lifecycle diagnostics are budgeted per call rather than per process. The budget was
+        /// previously a single static countdown that nothing ever replenished, so the first call
+        /// of a session spent it and every later call recorded no setup, transport or signalling
+        /// evidence at all. That silently hid the second half of every back-to-back comparison,
+        /// which is normally the call actually under investigation.
+        /// </summary>
+        private static void ResetAudioCallDiagnosticBudget()
+        {
+            System.Threading.Interlocked.Exchange(ref _audioCallDiagnosticBudget, AudioCallDiagnosticBudget);
+        }
 
         private static bool CanWriteAudioCallDiagnostic()
         {

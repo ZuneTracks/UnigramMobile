@@ -46,13 +46,29 @@ namespace Unigram.Services
     public static class ModernTdlibCompatibility
     {
         private const int LegacyVoipMinimumLayer = 65;
-        private static int _audioCallDiagnosticBudget = 24;
+        private const int AudioCallDiagnosticBudget = 24;
+        private static int _audioCallDiagnosticBudget = AudioCallDiagnosticBudget;
 #if MODERN_TGCALLS
         // Version negotiation gets its own budget. It is one line per call and the
         // single most important thing in the log when a call connects but carries no
         // audio, so it must not be starved by the shared call diagnostics.
-        private static int _audioCallVersionDiagnosticBudget = 24;
+        private const int AudioCallVersionDiagnosticBudget = 24;
+        private static int _audioCallVersionDiagnosticBudget = AudioCallVersionDiagnosticBudget;
 #endif
+
+        /// <summary>
+        /// Replenishes both budgets for a new call. They were previously set once per process,
+        /// so after roughly two dozen calls the negotiated-version line — the only place the
+        /// agreed protocol is recorded — went permanently silent for the rest of the launch.
+        /// </summary>
+        public static void ResetAudioCallDiagnosticBudgets()
+        {
+            System.Threading.Interlocked.Exchange(ref _audioCallDiagnosticBudget, AudioCallDiagnosticBudget);
+#if MODERN_TGCALLS
+            System.Threading.Interlocked.Exchange(ref _audioCallVersionDiagnosticBudget, AudioCallVersionDiagnosticBudget);
+#endif
+        }
+
 #if MODERN_TGCALLS
         // These are the registered versions from the pinned TgCalls source used by
         // the ARM bridge. Keeping the audited source-pin list in managed code
@@ -1281,9 +1297,15 @@ namespace Unigram.Services
 #if MODERN_TGCALLS
             if (peerVersions == null || peerVersions.Count == 0)
             {
-                WriteAudioCallVersionDiagnostic("result=unavailable;offered=0");
+                WriteAudioCallVersionDiagnostic("result=unavailable;offered=0;list=none");
                 return null;
             }
+
+            // The whole list, not just the head. Whether the ready-state list is the
+            // server's intersection of both offers or the peer's own catalogue decides
+            // where a silent call has to be chased next, and the two are told apart by
+            // what is actually in it. Version strings are protocol constants.
+            var list = DescribeVersions(peerVersions);
 
             // Take the head and nothing else. The ready-state list is the server's
             // decision, not a menu to search: every other client reads element zero,
@@ -1294,7 +1316,8 @@ namespace Unigram.Services
             var negotiated = peerVersions[0];
             if (string.IsNullOrWhiteSpace(negotiated))
             {
-                WriteAudioCallVersionDiagnostic($"result=unavailable;offered={peerVersions.Count}");
+                WriteAudioCallVersionDiagnostic(
+                    $"result=unavailable;offered={peerVersions.Count};list={list}");
                 return null;
             }
 
@@ -1303,7 +1326,7 @@ namespace Unigram.Services
                 if (string.Equals(negotiated, localVersion, StringComparison.Ordinal))
                 {
                     WriteAudioCallVersionDiagnostic(
-                        $"result=negotiated;version={negotiated};offered={peerVersions.Count}");
+                        $"result=negotiated;version={negotiated};offered={peerVersions.Count};list={list}");
                     return negotiated;
                 }
             }
@@ -1312,13 +1335,47 @@ namespace Unigram.Services
             // let the caller fall back to the legacy transport; silently substituting a
             // version we do support would produce the exact silent-call mismatch above.
             WriteAudioCallVersionDiagnostic(
-                $"result=unsupported;version={SanitizeVersion(negotiated)};offered={peerVersions.Count}");
+                $"result=unsupported;version={SanitizeVersion(negotiated)};offered={peerVersions.Count};list={list}");
 #endif
 
             return null;
         }
 
 #if MODERN_TGCALLS
+        /// <summary>
+        /// Renders the negotiated version list as a single comma-separated field. Each
+        /// entry goes through the same reduction as a lone version, and the list is
+        /// capped, so an unexpected server value cannot lengthen or reshape the line.
+        /// </summary>
+        private static string DescribeVersions(IList<string> versions)
+        {
+            if (versions == null || versions.Count == 0)
+            {
+                return "none";
+            }
+
+            const int MaxListed = 12;
+            var listed = versions.Count < MaxListed ? versions.Count : MaxListed;
+            var builder = new System.Text.StringBuilder();
+
+            for (var index = 0; index < listed; index++)
+            {
+                if (builder.Length > 0)
+                {
+                    builder.Append(',');
+                }
+
+                builder.Append(SanitizeVersion(versions[index]));
+            }
+
+            if (listed < versions.Count)
+            {
+                builder.Append(",+").Append(versions.Count - listed);
+            }
+
+            return builder.ToString();
+        }
+
         /// <summary>
         /// Keeps a server-supplied version string to the shape a version can have, so an
         /// unexpected value cannot introduce separators into the diagnostics line. Version

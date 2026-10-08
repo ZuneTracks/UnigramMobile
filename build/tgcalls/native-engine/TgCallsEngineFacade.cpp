@@ -26,6 +26,22 @@
 #include <windows.h>
 #include <stdlib.h>
 
+/// <summary>
+/// Receive-path packet counters defined in tgcalls' MediaManager. They answer the one
+/// question the playout buffer cannot: a silent call looks identical whether no media
+/// ever arrives, it arrives malformed, or it parses but no receive stream claims it.
+/// Counts only; nothing derived from packet contents crosses this boundary.
+///
+/// Declared at global scope on purpose. Reopening `namespace tgcalls` from inside the
+/// facade's own namespaces would declare a nested namespace that shadows the real one.
+/// </summary>
+namespace tgcalls {
+    extern std::atomic<uint32_t> g_diagIncomingAudioRtp;
+    extern std::atomic<uint32_t> g_diagIncomingAudioRtcp;
+    extern std::atomic<uint32_t> g_diagIncomingAudioParseFailed;
+    extern std::atomic<uint32_t> g_diagIncomingAudioUndemuxed;
+}
+
 namespace Unigram {
 namespace Native {
 namespace Calls {
@@ -860,6 +876,34 @@ private:
 };
 
 /// <summary>
+/// Snapshots and formats the tgcalls receive-path counters. Zeroed per call because the
+/// counters are process-global; otherwise a previous call's totals read as this one's.
+/// </summary>
+void ResetIncomingAudioCounters() {
+    ::tgcalls::g_diagIncomingAudioRtp.store(0, std::memory_order_relaxed);
+    ::tgcalls::g_diagIncomingAudioRtcp.store(0, std::memory_order_relaxed);
+    ::tgcalls::g_diagIncomingAudioParseFailed.store(0, std::memory_order_relaxed);
+    ::tgcalls::g_diagIncomingAudioUndemuxed.store(0, std::memory_order_relaxed);
+}
+
+std::string DescribeIncomingAudioCounters() {
+    // The managed diagnostics sanitizer replaces any run of six or more digits with
+    // "[redacted_number]", so an unbounded counter would erase itself from the log after
+    // roughly half an hour of call. Saturating below that threshold keeps the field
+    // readable; the diagnostic question is whether media arrives at all and how fast, not
+    // the exact total, and a saturated value still reads unambiguously as "a great many".
+    const auto clamp = [](uint32_t value) {
+        constexpr uint32_t kMax = 99999;
+        return std::to_string(value < kMax ? value : kMax);
+    };
+
+    return "rtp_in=" + clamp(::tgcalls::g_diagIncomingAudioRtp.load(std::memory_order_relaxed)) +
+        ";rtcp_in=" + clamp(::tgcalls::g_diagIncomingAudioRtcp.load(std::memory_order_relaxed)) +
+        ";rtp_bad=" + clamp(::tgcalls::g_diagIncomingAudioParseFailed.load(std::memory_order_relaxed)) +
+        ";rtp_undemux=" + clamp(::tgcalls::g_diagIncomingAudioUndemuxed.load(std::memory_order_relaxed));
+}
+
+/// <summary>
 /// Renders the render-endpoint names as a fixed-shape list so the endpoint a silent call
 /// is playing into can be identified from a diagnostics file. Device names describe
 /// hardware, not the user, and are sanitised anyway: every character outside
@@ -1280,6 +1324,10 @@ public:
 
         tgcalls::Register<tgcalls::InstanceImpl>();
 
+        // Counters are global to the process, so they are zeroed per call; otherwise a
+        // previous call's totals would be read as this one's.
+        ResetIncomingAudioCounters();
+
         auto encryptionKey = std::make_shared<std::array<uint8_t, tgcalls::EncryptionKey::kSize>>();
         std::copy(
             _configuration.encryptionKey.begin(),
@@ -1451,11 +1499,18 @@ public:
             module = _audioDeviceModule;
         }
 
+        // Emitted first, and on both exits. The managed sanitizer caps the status string,
+        // and these counters are the evidence the rest of the line exists to contextualise,
+        // so they must not be the fields that truncation drops. A missing audio device is
+        // also exactly when it matters whether RTP is arriving at all, because that is what
+        // separates "the device never came up" from "it came up and nothing feeds it".
+        const std::string counters = DescribeIncomingAudioCounters();
+
         if (!module) {
-            return "created=0";
+            return counters + ";created=0";
         }
 
-        std::string status = std::string("created=1;recording=") + (module->Recording() ? "1" : "0") +
+        std::string status = counters + ";created=1;recording=" + (module->Recording() ? "1" : "0") +
             ";playing=" + (module->Playing() ? "1" : "0");
 
         // Playout can report "playing" while nothing is audible, because the endpoint

@@ -1937,3 +1937,158 @@ version `26.9.6170.0`, `ProcessorArchitecture="arm"`; entry points `Unigram.App`
 
 6169 is retained as the rollback reference, since it is the last build confirmed working
 against Android.
+
+## 26.9.6171.0 — per-call diagnostic budgets
+
+`voip.version` now reports the complete negotiated list (`list=`) rather than only the
+head and a count, which is what finally closed the protocol-version question: every call,
+working or silent, reports `offered=1;list=5.0.0`. The TDLib ready-state library-version
+list carries the server's single decision, not a menu to choose from, so the Android call
+that carries audio and the iOS call that does not agree on the identical protocol.
+Version negotiation is therefore exonerated and should not be revisited.
+
+A diagnostics defect found while comparing two calls back-to-back was fixed at the same
+time. `_audioCallDiagnosticBudget` was a process-wide countdown that nothing replenished,
+so the first call of a launch spent it and the second recorded no `voip.ready`,
+`voip.transport` or `voip.signaling` evidence whatsoever — and the second call of a pair
+is normally the one under investigation. It is now reset per call. Per-message signalling
+lines were also reduced to the first occurrence, with running totals folded into the
+periodic summary as `sig_sent=` / `sig_recv=`; previously fifty near-identical lines
+consumed the entire budget.
+
+## 26.9.6173.0 — counting incoming audio RTP
+
+### What 6171 proved
+
+The iOS call establishes and stays established. `state=Established`, `signal_bars=4`,
+`sig_sent=18;sig_recv=18` holding equal across the whole call, microphone capture at
+normal levels, and — decisively — peer-driven `remote_audio` `Muted` → `Active`
+transitions. Those transitions travel in-band over the UDP encrypted connection, so both
+the TDLib-relayed signalling channel and the encrypted media transport demonstrably work
+bidirectionally with iOS. Yet `playout_peak_permille=0` on every sample, in both
+directions, while `playout_windows` keeps incrementing: the render callback is firing and
+the mixer is returning silence. The fault is confined to the audio RTP path.
+
+### The instrument
+
+From the playout buffer, three very different failures look identical — no media arrives,
+media arrives malformed, or media parses but no receive stream claims it. A new tgcalls
+patch (`patches/tgcalls-m123-incoming-audio-counters.patch`) adds four relaxed atomic
+counters to `MediaManager::receiveMessage`, which is where an `AudioDataMessage` is
+unwrapped and handed to the WebRTC call receiver:
+
+| Counter | Field | Incremented at |
+| --- | --- | --- |
+| `g_diagIncomingAudioRtp` | `rtp_in` | a packet parsed and was delivered to `DeliverRtpPacket` |
+| `g_diagIncomingAudioRtcp` | `rtcp_in` | the packet was RTCP |
+| `g_diagIncomingAudioParseFailed` | `rtp_bad` | `RtpPacketReceived::Parse` rejected it |
+| `g_diagIncomingAudioUndemuxed` | `rtp_undemux` | it parsed but the demuxer matched no receive stream |
+
+`rtp_undemux` is the undemuxable-packet callback that tgcalls previously discarded with a
+bare `return false`. It is the one signal that separates a transport fault from an SSRC or
+payload-type mismatch.
+
+The facade declares the counters `extern` at **global** scope and qualifies every use as
+`::tgcalls::`. Reopening `namespace tgcalls` from inside `Unigram::Native::Calls` declares
+a nested namespace that shadows the real one; the first attempt did exactly that and
+failed with `C2039: 'DefaultWrappedAudioDeviceModule': is not a member of
+'Unigram::Native::Calls::'anonymous-namespace'::tgcalls'`. The counters are process-global,
+so `Start()` zeroes them per call; otherwise the previous call's totals read as this one's.
+Only packet counts cross the boundary — nothing derived from packet contents.
+
+The values ride the existing `voip.media result=audio_level` line, which has its own
+per-call budget of 192, and are integers so the diagnostics redaction layer preserves them.
+
+### How to read the result
+
+- `rtp_in == 0` and `rtcp_in == 0` — no audio media arrives at all. The encrypted control
+  path works (proved above), so suspect the *unreliable* packet path in
+  `EncryptedConnection` specifically, and MTU.
+- `rtp_in == 0` with `rtp_bad > 0` — packets arrive but fail to parse; suspect header
+  extension map disagreement.
+- `rtp_in > 0` with `rtp_undemux > 0` — media arrives and parses but no receive stream
+  claims it; suspect SSRC demux or payload type.
+- `rtp_in > 0`, `rtp_undemux == 0`, playout still zero — delivery succeeds and the fault is
+  in Opus decode or the mixer in the WinUWP WebRTC fork.
+
+### Build-script change
+
+`Build-ModernCallsBridgeProof.ps1` now iterates a list of tgcalls patches instead of
+applying a single hard-coded one. The apply sequence is reverse-check (already applied →
+skip), then a plain `git apply`, then `--3way` as recovery. `--3way` cannot be the first
+attempt here: an earlier patch in the list leaves its file staged, and `--3way` then fails
+the whole run with `does not match index`.
+
+### Code-review fixes carried in this build
+
+- `sig_recv` counted only directly delivered signalling messages. For an incoming call the
+  peer's initial burst is buffered while the session starts and then flushed, so the bulk
+  was never counted and the metric could read far too low — or zero while signalling was
+  plainly arriving. `FlushPendingModernSignalingData` now counts what it flushes and
+  reports it as `count=` on the `result=flushed` line.
+- Budget reset moved from the `CallStateReady` branch to the first update carrying a new
+  call id. Diagnostics begin well before Ready, so a call that is declined, errors, or is
+  discarded while pending previously never reset at all — exactly the failures most worth
+  recording.
+- `ModernTdlibCompatibility`'s two budgets were also set once per process. Since
+  `WriteAudioCallVersionDiagnostic` is the only sink for the negotiated-version line, it
+  went permanently silent after roughly two dozen calls. Both are now replenished per call
+  via `ResetAudioCallDiagnosticBudgets()`.
+- First-occurrence signalling suppression is keyed on the call id rather than on the
+  message counter. Keying it on the counter raced the per-call reset: a late increment from
+  a torn-down call left the counter non-zero, so the next call's first message did not look
+  like the first and the only per-message evidence was lost. Comparing call ids can at worst
+  emit one extra line, which errs toward evidence.
+
+### Review fixes applied before shipping
+
+A review of the first cut found two defects that would have blunted the instrument itself:
+
+- The counters were appended **last** to the native audio-device status, and that status is
+  passed through `SanitizeErrorMessage`, whose default cap is 256 characters. The counters
+  were therefore the first fields truncation would drop. They are now emitted **first**, and
+  the managed call site raises the cap to 512. The cap bounds length, not redaction; every
+  redaction rule still runs.
+- The sanitizer also rewrites any run of six or more digits as `[redacted_number]`, so an
+  unbounded `rtp_in` would erase itself after roughly half an hour of call. The counters are
+  now saturated at 99999. The diagnostic question is whether media arrives and roughly how
+  fast, not the exact total.
+- `AudioDeviceStatus()` returned early with `created=0` when the audio device module was
+  unavailable, dropping the counters entirely — and that is precisely the state where it
+  matters whether RTP is arriving, since it separates "the device never came up" from "it
+  came up and nothing feeds it". Both exits now carry the counters.
+- The budget reset fired on any change of call id. TDLib interleaves late updates for a
+  discarded call with the first updates of its successor, so each alternation restored the
+  full budget during a call transition — the busiest logging window, and the one the cap
+  exists to bound. The immediately preceding call id is now remembered and skipped.
+- `git apply --3way` implies `--index`: on conflict it writes conflict markers into the
+  working tree and records conflicted index stages, then fails. Nothing undid that, so every
+  later build failed identically with no hint that the checkout needed resetting. The failure
+  path now reverts the files the patch touches and names the checkout in the error.
+
+Reviewed and found correct: the increment placement partitions every audio message exactly
+once (`rtcp_in + rtp_bad + rtp_in`, with `rtp_undemux ⊆ rtp_in`) and `MediaManager::receiveMessage`
+is the only audio receive path; the `extern` declarations bind correctly across the static-library
+boundary; relaxed atomics cannot tear and inter-field skew cannot change a diagnosis; the
+signalling flush path does not double-count, because a queued message returns before reaching
+the direct-delivery increment. One interpretation caveat: `rtcp_in` is incremented outside the
+worker-thread `BlockingCall`, so it means *arrived* rather than *delivered* — if that thread
+ever wedges, `rtcp_in` climbs while `rtp_in` stays 0.
+
+### Artifacts
+
+| File | SHA-256 | Bytes |
+| --- | --- | --- |
+| `Unigram_26.9.6173.0_ARM_ModernTgCalls_RtpCounters.appx` | `689FA32D3CABC6F0ED48E166B77969FBE1B62F6DE64D13CAF17A17922D59A803` | 57,515,391 |
+| `Unigram_26.9.6173.0_ARM_ModernTgCalls_RtpCounters_Sideload.zip` | `3AE5409BF7B269E0DD5968C16E7CD9F31FC6489ADBEEBEA08437856EF9B2FCDC` | 64,123,468 |
+| `Unigram_26.9.6173.0_ARM_ModernTgCalls_RtpCounters.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6173.0.map` | `F75BB0E0EB6172314B2E5BCFF971B66420E2D7A335A276A78798AC3D46E5ED3A` | 14,871,524 |
+
+Verified: signature chains to `DC409D7A-979D-42E5-AAA5-E9A0F674260F`; identity
+`49197Wirdschon.UnigramMobileTdlibExperimental`; version `26.9.6173.0`; architecture `arm`;
+background entry point `Unigram.Native.Tasks.NotificationTask`; 554 payload entries; no
+source, PFX or PDB in the package; packaged `ModernCallsBridge.dll` hash matches the built
+binary (`76C515B6…`); ZIP contains exactly 23 entries.
+
+26.9.6172.0 was built and verified but superseded by the review fixes above before it was
+ever handed over, so it was discarded rather than shipped; no two binaries share a version.
