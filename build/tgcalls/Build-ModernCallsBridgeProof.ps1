@@ -13,7 +13,7 @@ $tgCallsRoot = Join-Path $env:LOCALAPPDATA 'UnigramTdlibExperiment\tgcalls'
 $tgCallsPatches = @(
     @{ Path = Join-Path $PSScriptRoot 'patches\tgcalls-m123-winuwp-audio-device.patch'; Name = 'M123 audio-device compatibility' }
     @{ Path = Join-Path $PSScriptRoot 'patches\tgcalls-m123-incoming-audio-counters.patch'; Name = 'incoming audio receive-path counters' }
-    @{ Path = Join-Path $PSScriptRoot 'patches\tgcalls-m123-v2-uwp-arm-h264-bitrate.patch'; Name = 'V2 ARM UWP H.264 bitrate policy' }
+    @{ Path = Join-Path $PSScriptRoot 'patches\tgcalls-m123-v2-uwp-arm-h264-bitrate.patch'; Name = 'V2 ARM UWP H.264 bitrate policy'; ZeroContext = $true }
 )
 $expectedTgCallsCommit = '1c236c09f8d8569fead14bd68000618a52051225'
 $expectedZlibVersion = '1.3.2'
@@ -57,22 +57,27 @@ try {
             throw "The TgCalls $($patch.Name) patch was not found at '$($patch.Path)'."
         }
 
-        & git apply --reverse --check --ignore-whitespace $patch.Path 2>$null
+        $applyOptions = @('--ignore-whitespace')
+        if ($patch.ZeroContext) {
+            $applyOptions += '--unidiff-zero'
+        }
+
+        & git apply --reverse --check @applyOptions $patch.Path 2>$null
         if ($LASTEXITCODE -ne 0) {
             # A plain apply works whenever the tree is clean for this patch; --3way is the
             # recovery path and needs the blobs it references to be reachable, which is not
             # the case once an earlier patch has been staged over the same checkout.
-            & git apply --ignore-whitespace --whitespace=nowarn $patch.Path 2>$null
+            & git apply @applyOptions --whitespace=nowarn $patch.Path 2>$null
             if ($LASTEXITCODE -ne 0) {
                 # --3way implies --index: on conflict it writes conflict markers into the
                 # working tree and records conflicted index stages, and leaves them there
                 # when it fails. Without cleanup every later build fails identically --
                 # reverse-check fails, plain apply fails against the marker-laden file,
                 # --3way conflicts again -- with nothing to say the checkout needs resetting.
-                $touched = (& git apply --numstat --ignore-whitespace $patch.Path 2>$null |
+                $touched = (& git apply --numstat @applyOptions $patch.Path 2>$null |
                     ForEach-Object { ($_ -split "`t")[2] }) | Where-Object { $_ }
 
-                & git apply --3way --ignore-whitespace $patch.Path
+                & git apply --3way @applyOptions $patch.Path
                 if ($LASTEXITCODE -ne 0) {
                     foreach ($file in $touched) {
                         & git reset -q -- $file 2>$null
