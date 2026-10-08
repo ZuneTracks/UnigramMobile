@@ -31,6 +31,10 @@ namespace {
 constexpr int kPreferredWidth = 1280;
 constexpr int kPreferredHeight = 720;
 constexpr int kPreferredFps = 30;
+// The Windows 10 Mobile capture backend delivers the Lumia sensor's landscape
+// buffer without device orientation. Advertise the portrait correction through
+// both the V2 media state and WebRTC frame metadata.
+constexpr auto kPortraitRotation = webrtc::kVideoRotation_90;
 
 bool IsH264(const webrtc::SdpVideoFormat& format) {
     return format.name == "H264";
@@ -163,7 +167,7 @@ public:
 
         const auto aspectRatio = _aspectRatio.load(std::memory_order_acquire);
         if (aspectRatio <= 0.001f) {
-            _sink->OnFrame(frame);
+            ForwardPortraitFrame(frame);
             return;
         }
 
@@ -177,7 +181,7 @@ public:
             : static_cast<int>(originalWidth / aspectRatio);
 
         if ((width >= originalWidth && height >= originalHeight) || width <= 0 || height <= 0) {
-            _sink->OnFrame(frame);
+            ForwardPortraitFrame(frame);
             return;
         }
 
@@ -192,13 +196,25 @@ public:
         _sink->OnFrame(
             webrtc::VideoFrame::Builder()
                 .set_video_frame_buffer(buffer)
-                .set_rotation(webrtc::kVideoRotation_0)
+                .set_rotation(kPortraitRotation)
                 .set_timestamp_us(frame.timestamp_us())
                 .set_id(frame.id())
                 .build());
     }
 
 private:
+    void ForwardPortraitFrame(const webrtc::VideoFrame& frame) {
+        auto builder = webrtc::VideoFrame::Builder()
+            .set_video_frame_buffer(frame.video_frame_buffer())
+            .set_rotation(kPortraitRotation)
+            .set_timestamp_us(frame.timestamp_us())
+            .set_id(frame.id());
+        if (frame.has_update_rect()) {
+            builder.set_update_rect(frame.update_rect());
+        }
+        _sink->OnFrame(builder.build());
+    }
+
     void Start() {
         _failed = false;
         const auto info = std::unique_ptr<webrtc::VideoCaptureModule::DeviceInfo>(
@@ -347,7 +363,7 @@ public:
     }
 
     int getRotation() override {
-        return 0;
+        return 90;
     }
 
     void setOnFatalError(std::function<void()> error) override {
