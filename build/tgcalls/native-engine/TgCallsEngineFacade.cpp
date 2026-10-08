@@ -45,6 +45,15 @@ namespace tgcalls {
     extern std::atomic<uint32_t> g_diagIncomingAudioMaxBytes;
     extern std::atomic<uint32_t> g_diagOutgoingAudioRtp;
     extern std::atomic<uint32_t> g_diagOutgoingAudioRtcp;
+    extern std::atomic<int> g_diagAecEnabled;
+    extern std::atomic<int> g_diagAecMobileMode;
+    extern std::atomic<int> g_diagNoiseSuppressionEnabled;
+    extern std::atomic<int> g_diagGainControlEnabled;
+    extern std::atomic<int> g_diagAecResidualLikelihoodPermille;
+    extern std::atomic<int> g_diagAecResidualLikelihoodRecentMaxPermille;
+    extern std::atomic<int> g_diagAecEchoReturnLossDecibelTenths;
+    extern std::atomic<int> g_diagAecEchoReturnLossEnhancementDecibelTenths;
+    extern std::atomic<int> g_diagAecDelayMilliseconds;
 }
 
 namespace Unigram {
@@ -894,6 +903,60 @@ void ResetIncomingAudioCounters() {
     ::tgcalls::g_diagIncomingAudioMaxBytes.store(0, std::memory_order_relaxed);
     ::tgcalls::g_diagOutgoingAudioRtp.store(0, std::memory_order_relaxed);
     ::tgcalls::g_diagOutgoingAudioRtcp.store(0, std::memory_order_relaxed);
+    ::tgcalls::g_diagAecEnabled.store(-1, std::memory_order_relaxed);
+    ::tgcalls::g_diagAecMobileMode.store(-1, std::memory_order_relaxed);
+    ::tgcalls::g_diagNoiseSuppressionEnabled.store(-1, std::memory_order_relaxed);
+    ::tgcalls::g_diagGainControlEnabled.store(-1, std::memory_order_relaxed);
+    ::tgcalls::g_diagAecResidualLikelihoodPermille.store(-1, std::memory_order_relaxed);
+    ::tgcalls::g_diagAecResidualLikelihoodRecentMaxPermille.store(-1, std::memory_order_relaxed);
+    ::tgcalls::g_diagAecEchoReturnLossDecibelTenths.store(-10000, std::memory_order_relaxed);
+    ::tgcalls::g_diagAecEchoReturnLossEnhancementDecibelTenths.store(-10000, std::memory_order_relaxed);
+    ::tgcalls::g_diagAecDelayMilliseconds.store(-1, std::memory_order_relaxed);
+}
+
+std::string DescribeAudioProcessingDiagnostics() {
+    const auto aecEnabled = ::tgcalls::g_diagAecEnabled.load(std::memory_order_relaxed);
+    const auto mobileMode = ::tgcalls::g_diagAecMobileMode.load(std::memory_order_relaxed);
+    const auto noiseSuppression = ::tgcalls::g_diagNoiseSuppressionEnabled.load(std::memory_order_relaxed);
+    const auto gainControl = ::tgcalls::g_diagGainControlEnabled.load(std::memory_order_relaxed);
+
+    if (aecEnabled < 0 || mobileMode < 0 || noiseSuppression < 0 || gainControl < 0) {
+        return ";apm=pending";
+    }
+
+    const auto mode = aecEnabled == 0
+        ? "off"
+        : (mobileMode == 0 ? "aec3" : "aecm");
+    std::string result = ";apm=" + std::string(mode) +
+        ";apm_ns=" + (noiseSuppression == 0 ? "0" : "1") +
+        ";apm_agc=" + (gainControl == 0 ? "0" : "1");
+
+    const auto residual = ::tgcalls::g_diagAecResidualLikelihoodPermille.load(std::memory_order_relaxed);
+    const auto residualMax =
+        ::tgcalls::g_diagAecResidualLikelihoodRecentMaxPermille.load(std::memory_order_relaxed);
+    const auto echoReturnLoss =
+        ::tgcalls::g_diagAecEchoReturnLossDecibelTenths.load(std::memory_order_relaxed);
+    const auto echoReturnLossEnhancement =
+        ::tgcalls::g_diagAecEchoReturnLossEnhancementDecibelTenths.load(std::memory_order_relaxed);
+    const auto delay = ::tgcalls::g_diagAecDelayMilliseconds.load(std::memory_order_relaxed);
+
+    if (residual >= 0) {
+        result += ";aec_residual_pm=" + std::to_string(residual);
+    }
+    if (residualMax >= 0) {
+        result += ";aec_residual_max_pm=" + std::to_string(residualMax);
+    }
+    if (echoReturnLoss > -10000) {
+        result += ";aec_erl_db10=" + std::to_string(echoReturnLoss);
+    }
+    if (echoReturnLossEnhancement > -10000) {
+        result += ";aec_erle_db10=" + std::to_string(echoReturnLossEnhancement);
+    }
+    if (delay >= 0) {
+        result += ";aec_delay_ms=" + std::to_string(delay);
+    }
+
+    return result;
 }
 
 std::string DescribeIncomingAudioCounters() {
@@ -915,7 +978,8 @@ std::string DescribeIncomingAudioCounters() {
         ";rtcp_out=" + clamp(::tgcalls::g_diagOutgoingAudioRtcp.load(std::memory_order_relaxed)) +
         ";msg_max=" + clamp(::tgcalls::g_diagIncomingAudioMaxBytes.load(std::memory_order_relaxed)) +
         ";rtp_bad=" + clamp(::tgcalls::g_diagIncomingAudioParseFailed.load(std::memory_order_relaxed)) +
-        ";rtp_undemux=" + clamp(::tgcalls::g_diagIncomingAudioUndemuxed.load(std::memory_order_relaxed));
+        ";rtp_undemux=" + clamp(::tgcalls::g_diagIncomingAudioUndemuxed.load(std::memory_order_relaxed)) +
+        DescribeAudioProcessingDiagnostics();
 }
 
 enum class PlayoutDeviceKind {

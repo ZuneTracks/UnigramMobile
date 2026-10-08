@@ -2274,3 +2274,83 @@ Verification: signature OK; identity `49197Wirdschon.UnigramMobileTdlibExperimen
 version `26.9.6176.0`; architecture `arm`; background entry point
 `Unigram.Native.Tasks.NotificationTask` with `<Task Type="pushNotification" />`; display
 name `Unigram Mobile TDLib Experimental`; 554 payload entries; 0 forbidden files; 23-entry ZIP.
+
+## 26.9.6177.0 — AEC3 state and residual-echo telemetry
+
+### Upstream baseline and platform result
+
+The speakerphone echo report was checked directly against current upstream Unigram and
+its pinned TgCalls source before changing any signal-processing setting. Upstream creates
+the same `AudioOptions` and sender settings used by this build:
+
+- echo cancellation enabled;
+- noise suppression enabled;
+- automatic gain control enabled on non-iOS targets.
+
+The bridge also matches upstream's direct `setAudioOutputDevice` path introduced in
+6176. There is no additional Windows Mobile AEC policy in upstream to transplant.
+
+On this UWP ARM target, `AudioDeviceWindowsCore::BuiltInAECIsAvailable()` is false, so
+the active canceller must be WebRTC software AEC3. Forcing WebRTC's `mobile_mode` would
+replace AEC3 with the older AECM implementation; it is deliberately not used. Both
+capture and render streams are already tagged `AudioCategory_Communications` by the
+existing UWP patch. The diagnostics wrapper was also checked to forward both capture
+overloads and both render callbacks, preserving the AEC render reference.
+
+### Telemetry added
+
+The reproducible `tgcalls-m123-incoming-audio-counters.patch` now retains the
+already-created WebRTC `AudioProcessing` reference in `MediaManager`, samples its
+configuration and aggregate statistics on TgCalls' existing two-second worker-thread
+statistics cadence, then releases the reference during media-engine teardown.
+
+`voip.media result=audio_device` status now adds these compact fields:
+
+| Field | Meaning |
+| --- | --- |
+| `apm` | `aec3`, `aecm`, `off`, or `pending`; this identifies the actual configured echo canceller. |
+| `apm_ns`, `apm_agc` | Active noise suppression and gain-control configuration (`1`/`0`). |
+| `aec_residual_pm`, `aec_residual_max_pm` | Current/recent residual-echo likelihood, quantized to 0–1000. Higher values during speakerphone use mean the canceller detects remaining echo. |
+| `aec_erl_db10`, `aec_erle_db10` | Echo-return loss and enhancement in tenths of a decibel. |
+| `aec_delay_ms` | AEC's current delay estimate. |
+
+These values are aggregate DSP health metrics. The patch never logs, stores, transmits,
+or derives recoverable audio, PCM samples, device IDs/names, paths, message content,
+account data, tokens, or credentials. It does not change routing, media packets, output
+gain, or any AEC setting.
+
+### Device-test interpretation
+
+Make a normal Android call, switch from earpiece to speakerphone, and have the remote
+party speak continuously for at least ten seconds before exporting diagnostics. A healthy
+configuration should report `apm=aec3;apm_ns=1;apm_agc=1`. A high residual likelihood or
+poor/absent enhancement while `apm=aec3` proves the handset's acoustic path is exceeding
+software cancellation, which makes a bounded per-call speaker attenuation the appropriate
+next mitigation. `apm=off`, `apm=aecm`, or `pending` instead identifies a configuration
+or initialization fault to correct first.
+
+The iOS peer-originated RTP failure remains unrelated: it is not an appropriate
+acceptance test for this speakerphone/AEC diagnostic build.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `Unigram_26.9.6177.0_ARM_AecTelemetry_Sideload.zip` | `12B6134F481AB8896A56551A08CCCB9B92A86F7F24F83F4DD093DA23B8C31EF6` | 64,122,788 |
+| `Unigram_26.9.6177.0_ARM_AecTelemetry.appx` | `1ABD149803A732BD028FDBE69A9F2DF366836A94142231E4B9B4205E1AC86959` | 57,515,495 |
+| `Unigram_26.9.6177.0_ARM_AecTelemetry.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6177.0.map` | `23B27CA18DA00D07E4D0FD70828B9E12B9251D46BF02B053C25A9C187460E96F` | 14,898,629 |
+
+The packaged `ModernCallsBridge.dll` SHA-256 is
+`865DAA2670626F50AD20E9B8A5FADA8DAA4AC946CD9A1AD580497363DC860856`,
+which matches the rebuilt native bridge exactly.
+
+Verification: Release|ARM native bridge build and Release|ARM UWP APPX build succeeded;
+APPX signature verification passed; identity
+`49197Wirdschon.UnigramMobileTdlibExperimental`; version `26.9.6177.0`; architecture
+`arm`; `Unigram.Native.Tasks.NotificationTask` declares `pushNotification`; 555 payload
+entries; `Telegram.Td.dll`, `Telegram.Td.winmd`, and `ModernCallsBridge.dll` present; 0
+source-secret/PFX/PDB payload entries; and the sideload ZIP contains exactly 23 entries
+with four ARM dependency APPXs and no x86/x64/ARM64/Win32 or telemetry dependencies.
