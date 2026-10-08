@@ -2,12 +2,16 @@
 
 #include "Instance.h"
 #include "InstanceImpl.h"
+#include "StaticThreads.h"
+#include "VideoCaptureInterface.h"
 #include "v2/InstanceV2Impl.h"
 #include "v2/InstanceV2ReferenceImpl.h"
 
 #include "api/task_queue/task_queue_factory.h"
+#include "api/video/video_frame.h"
 #include "modules/audio_device/include/audio_device.h"
 #include "platform/PlatformInterface.h"
+#include "third_party/libyuv/include/libyuv.h"
 
 #include <algorithm>
 #include <array>
@@ -1515,6 +1519,63 @@ enum class StopWaitResult {
     Reentrant,
 };
 
+class VideoFrameOutputSink final : public rtc::VideoSinkInterface<webrtc::VideoFrame> {
+public:
+    using FrameCallback = std::function<void(int, int, std::vector<uint8_t>)>;
+
+    explicit VideoFrameOutputSink(FrameCallback callback)
+        : _callback(std::move(callback)) {
+    }
+
+    void OnFrame(const webrtc::VideoFrame& frame) override {
+        const auto now = std::chrono::steady_clock::now();
+        const auto previous = _lastDelivered.load(std::memory_order_relaxed);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - std::chrono::steady_clock::time_point(std::chrono::milliseconds(previous))).count();
+        if (elapsed < 66 || _pending.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
+
+        const auto buffer = frame.video_frame_buffer()->ToI420();
+        if (!buffer || buffer->width() <= 0 || buffer->height() <= 0) {
+            _pending.store(false, std::memory_order_release);
+            return;
+        }
+
+        const auto width = buffer->width();
+        const auto height = buffer->height();
+        auto pixels = std::vector<uint8_t>(static_cast<size_t>(width) * height * 4);
+        const auto result = libyuv::I420ToARGB(
+            buffer->DataY(),
+            buffer->StrideY(),
+            buffer->DataU(),
+            buffer->StrideU(),
+            buffer->DataV(),
+            buffer->StrideV(),
+            pixels.data(),
+            width * 4,
+            width,
+            height);
+        if (result != 0) {
+            _pending.store(false, std::memory_order_release);
+            return;
+        }
+
+        _lastDelivered.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()).count(), std::memory_order_relaxed);
+        _callback(width, height, std::move(pixels));
+    }
+
+    void Acknowledge() {
+        _pending.store(false, std::memory_order_release);
+    }
+
+private:
+    FrameCallback _callback;
+    std::atomic<bool> _pending{false};
+    std::atomic<int64_t> _lastDelivered{0};
+};
+
 class CallSession final : public std::enable_shared_from_this<CallSession> {
 public:
     static CallSessionPtr Create(
@@ -1593,6 +1654,20 @@ public:
         }
 
         const auto weak = std::weak_ptr<CallSession>(shared_from_this());
+        if (_configuration.isVideo) {
+            _videoCapture = tgcalls::VideoCaptureInterface::Create(
+                tgcalls::StaticThreads::getThreads(),
+                ToUtf8(_configuration.cameraDeviceId));
+            if (!_videoCapture) {
+                throw std::runtime_error("The UWP camera capture could not be created.");
+            }
+            _videoCapture->setOnFatalError([weak] {
+                if (const auto strong = weak.lock()) {
+                    strong->VideoCaptureFailed();
+                }
+            });
+        }
+
         auto descriptor = tgcalls::Descriptor{
             .version = ToUtf8(_configuration.version),
             .config = {
@@ -1610,6 +1685,7 @@ public:
             .rtcServers = std::move(rtcServers),
             .initialNetworkType = ToTgCallsNetworkType(_configuration.initialNetworkType),
             .encryptionKey = tgcalls::EncryptionKey(encryptionKey, _configuration.isOutgoing),
+            .videoCapture = _videoCapture,
             .stateUpdated = [weak](tgcalls::State state) {
                 if (const auto strong = weak.lock()) {
                     strong->StateChanged(ToFacadeState(state));
@@ -1625,9 +1701,10 @@ public:
                     strong->AudioLevelChanged(level);
                 }
             },
-            .remoteMediaStateUpdated = [weak](tgcalls::AudioState audio, tgcalls::VideoState) {
+            .remoteMediaStateUpdated = [weak](tgcalls::AudioState audio, tgcalls::VideoState video) {
                 if (const auto strong = weak.lock()) {
                     strong->RemoteAudioStateChanged(ToFacadeAudioState(audio));
+                    strong->RemoteVideoStateChanged(static_cast<VideoState>(video));
                 }
             },
             .signalingDataEmitted = [weak](const std::vector<uint8_t>& data) {
@@ -1713,6 +1790,66 @@ public:
         std::lock_guard<std::mutex> lock(_mutex);
         EnsureActive();
         _instance->setMuteMicrophone(value);
+    }
+
+    bool SupportsVideo() {
+        std::lock_guard<std::mutex> lock(_mutex);
+        EnsureActive();
+        return _instance->supportsVideo();
+    }
+
+    void SetVideoState(VideoState state) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        EnsureActive();
+        if (!_videoCapture) {
+            throw std::logic_error("The TgCalls session has no video capture.");
+        }
+        _videoCapture->setState(static_cast<tgcalls::VideoState>(state));
+    }
+
+    void SwitchVideoCaptureDevice(const std::wstring& deviceId) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        EnsureActive();
+        if (!_videoCapture) {
+            throw std::logic_error("The TgCalls session has no video capture.");
+        }
+        _videoCapture->switchToDevice(ToUtf8(deviceId), false);
+    }
+
+    void SetVideoOutputEnabled(bool local, bool enabled) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        EnsureActive();
+        auto& output = local ? _localVideoOutput : _remoteVideoOutput;
+        if (enabled && !output) {
+            const auto weak = std::weak_ptr<CallSession>(shared_from_this());
+            output = std::make_shared<VideoFrameOutputSink>(
+                [weak, local](int width, int height, std::vector<uint8_t> pixels) {
+                    if (const auto strong = weak.lock()) {
+                        strong->VideoFrameReceived(local, width, height, std::move(pixels));
+                    }
+                });
+        }
+
+        if (local) {
+            if (!_videoCapture) {
+                throw std::logic_error("The TgCalls session has no video capture.");
+            }
+            _videoCapture->setOutput(enabled ? output : nullptr);
+        } else {
+            _instance->setIncomingVideoOutput(enabled ? output : nullptr);
+        }
+
+        if (!enabled) {
+            output.reset();
+        }
+    }
+
+    void AcknowledgeVideoFrame(bool local) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        const auto& output = local ? _localVideoOutput : _remoteVideoOutput;
+        if (output) {
+            output->Acknowledge();
+        }
     }
 
     std::string SetAudioOutputEndpoint(bool speakerphone) {
@@ -1989,6 +2126,24 @@ private:
         }
     }
 
+    void RemoteVideoStateChanged(VideoState state) {
+        if (_callbacks.remoteVideoStateChanged) {
+            _callbacks.remoteVideoStateChanged(state);
+        }
+    }
+
+    void VideoCaptureFailed() {
+        if (_callbacks.videoCaptureFailed) {
+            _callbacks.videoCaptureFailed();
+        }
+    }
+
+    void VideoFrameReceived(bool local, int width, int height, std::vector<uint8_t> pixels) {
+        if (_callbacks.videoFrameReceived) {
+            _callbacks.videoFrameReceived(local, width, height, std::move(pixels));
+        }
+    }
+
     void AudioDeviceReport(const std::string& report) {
         if (_callbacks.audioDeviceReport) {
             _callbacks.audioDeviceReport(report);
@@ -2040,6 +2195,9 @@ private:
     std::atomic<int> _speakerPlayoutDeviceIndex{-1};
     webrtc::scoped_refptr<webrtc::AudioDeviceModule> _audioDeviceModule;
     CallConfiguration _configuration;
+    std::shared_ptr<tgcalls::VideoCaptureInterface> _videoCapture;
+    std::shared_ptr<VideoFrameOutputSink> _localVideoOutput;
+    std::shared_ptr<VideoFrameOutputSink> _remoteVideoOutput;
     std::unique_ptr<tgcalls::Instance> _instance;
     CallCallbacks _callbacks;
     bool _started = false;
@@ -2104,6 +2262,41 @@ void SetMuted(const CallSessionPtr& session, bool value) {
         throw std::invalid_argument("The TgCalls session is unavailable.");
     }
     session->SetMuted(value);
+}
+
+bool SupportsVideo(const CallSessionPtr& session) {
+    if (!session) {
+        throw std::invalid_argument("The TgCalls session is unavailable.");
+    }
+    return session->SupportsVideo();
+}
+
+void SetVideoState(const CallSessionPtr& session, VideoState state) {
+    if (!session) {
+        throw std::invalid_argument("The TgCalls session is unavailable.");
+    }
+    session->SetVideoState(state);
+}
+
+void SwitchVideoCaptureDevice(const CallSessionPtr& session, const std::wstring& deviceId) {
+    if (!session) {
+        throw std::invalid_argument("The TgCalls session is unavailable.");
+    }
+    session->SwitchVideoCaptureDevice(deviceId);
+}
+
+void SetVideoOutputEnabled(const CallSessionPtr& session, bool local, bool enabled) {
+    if (!session) {
+        throw std::invalid_argument("The TgCalls session is unavailable.");
+    }
+    session->SetVideoOutputEnabled(local, enabled);
+}
+
+void AcknowledgeVideoFrame(const CallSessionPtr& session, bool local) {
+    if (!session) {
+        return;
+    }
+    session->AcknowledgeVideoFrame(local);
 }
 
 std::string SetAudioOutputEndpoint(const CallSessionPtr& session, bool speakerphone) {

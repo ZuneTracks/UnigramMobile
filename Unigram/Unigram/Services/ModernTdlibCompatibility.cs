@@ -1162,7 +1162,7 @@ namespace Unigram.Services
             return new MessageSticker(sticker, false);
         }
 
-        public static Function CreateCall(long userId, CallProtocol protocol)
+        public static Function CreateCall(long userId, CallProtocol protocol, bool isVideo = false)
         {
             if (protocol == null)
             {
@@ -1172,7 +1172,7 @@ namespace Unigram.Services
             var request = new CreateCall();
             request.UserId = userId;
             request.Protocol = protocol;
-            request.IsVideo = false;
+            request.IsVideo = isVideo;
             return request;
         }
 

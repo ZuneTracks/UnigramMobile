@@ -46,7 +46,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="TgCallsEngineFacade.h" />
-    <ClCompile Include="AudioOnlyPlatform.cpp" />
+    <ClCompile Include="UwpCameraPlatform.cpp" />
     <ClCompile Include="TgCallsEngineFacade.cpp" />
     <ClCompile Include="$(TgCallsRoot)\tgcalls\AudioDeviceHelper.cpp" />
     <ClCompile Include="$(TgCallsRoot)\tgcalls\ChannelManager.cpp" />

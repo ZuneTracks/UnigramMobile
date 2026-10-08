@@ -60,6 +60,8 @@ struct CallConfiguration {
     bool allowTcp = false;
     int maxApiLayer = 0;
     bool isOutgoing = false;
+    bool isVideo = false;
+    std::wstring cameraDeviceId;
     NetworkType initialNetworkType = NetworkType::Unknown;
     std::vector<uint8_t> encryptionKey;
     std::vector<EndpointConfiguration> endpoints;
@@ -74,6 +76,12 @@ enum class RemoteAudioState {
     Active,
 };
 
+enum class VideoState {
+    Inactive,
+    Paused,
+    Active,
+};
+
 struct CallCallbacks {
     std::function<void(CallState)> stateChanged;
     std::function<void(std::vector<uint8_t>)> signalingData;
@@ -81,6 +89,9 @@ struct CallCallbacks {
     std::function<void(int)> signalBarsChanged;
     std::function<void(float)> audioLevelChanged;
     std::function<void(RemoteAudioState)> remoteAudioStateChanged;
+    std::function<void(VideoState)> remoteVideoStateChanged;
+    std::function<void()> videoCaptureFailed;
+    std::function<void(bool, int, int, std::vector<uint8_t>)> videoFrameReceived;
     // Reports the outcome of creating the platform audio device module as a short
     // diagnostic string built only from fixed keys, result codes and device counts.
     // It never carries a device name, identifier or path.
@@ -112,6 +123,11 @@ CallSessionPtr CreateCallSession(
 void StartCallSession(const CallSessionPtr& session);
 void ReceiveSignalingData(const CallSessionPtr& session, std::vector<uint8_t> data);
 void SetMuted(const CallSessionPtr& session, bool value);
+bool SupportsVideo(const CallSessionPtr& session);
+void SetVideoState(const CallSessionPtr& session, VideoState state);
+void SwitchVideoCaptureDevice(const CallSessionPtr& session, const std::wstring& deviceId);
+void SetVideoOutputEnabled(const CallSessionPtr& session, bool local, bool enabled);
+void AcknowledgeVideoFrame(const CallSessionPtr& session, bool local);
 /// <summary>
 /// Queues the selected physical output endpoint through TgCalls' own media-device path.
 /// Returns a fixed diagnostic token describing whether an earpiece/speaker index was

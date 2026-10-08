@@ -50,7 +50,7 @@
       <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
       <GenerateMapFile>true</GenerateMapFile>
       <MapExports>true</MapExports>
-      <AdditionalDependencies>TgCallsEngine.lib;webrtc.lib;z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>TgCallsEngine.lib;webrtc.lib;z.lib;mfplat.lib;mfreadwrite.lib;mfuuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(TgCallsEngineOutputRoot);$(WebRtcOutputRoot)\obj;$(ZlibRoot)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>

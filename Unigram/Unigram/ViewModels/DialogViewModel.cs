@@ -139,6 +139,7 @@ namespace Unigram.ViewModels
             ChatDeleteCommand = new RelayCommand(ChatDeleteExecute);
             ChatClearCommand = new RelayCommand(ChatClearExecute);
             CallCommand = new RelayCommand(CallExecute);
+            VideoCallCommand = new RelayCommand(VideoCallExecute);
             PinnedHideCommand = new RelayCommand(PinnedHideExecute);
             PinnedShowCommand = new RelayCommand(PinnedShowExecute);
             PinnedListCommand = new RelayCommand(PinnedListExecute);
@@ -3135,7 +3136,19 @@ namespace Unigram.ViewModels
         #region Call
 
         public RelayCommand CallCommand { get; }
-        private async void CallExecute()
+        public RelayCommand VideoCallCommand { get; }
+
+        private void CallExecute()
+        {
+            StartCallExecute(false);
+        }
+
+        private void VideoCallExecute()
+        {
+            StartCallExecute(true);
+        }
+
+        private async void StartCallExecute(bool isVideo)
         {
             var chat = _chat;
             if (chat == null)
@@ -3178,7 +3191,10 @@ namespace Unigram.ViewModels
 
             try
             {
-                var response = await ProtoService.SendAsync(ModernTdlibCompatibility.CreateCall(user.Id, ModernTdlibCompatibility.CreateAudioCallProtocol()));
+                var response = await ProtoService.SendAsync(ModernTdlibCompatibility.CreateCall(
+                    user.Id,
+                    ModernTdlibCompatibility.CreateAudioCallProtocol(),
+                    isVideo));
                 ModernTdlibCompatibility.LogAudioCallRequestResult("create", response);
                 if (response is Error error)
                 {

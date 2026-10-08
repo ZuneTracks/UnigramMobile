@@ -181,6 +181,10 @@
     <Grid Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" RequestedTheme="Dark">
         <!--<Image x:Name="Image" Source="http://i.imgur.com/kx2hM3N.jpg" Opacity="0.6" Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center"/>-->
         <Image x:Name="Image" Opacity="0.6" Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        <Image x:Name="RemoteVideo" Visibility="Collapsed" Stretch="UniformToFill" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+        <Border x:Name="LocalVideoPanel" Visibility="Collapsed" Width="112" Height="150" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="12" BorderBrush="White" BorderThickness="2">
+            <Image x:Name="LocalVideo" Stretch="UniformToFill"/>
+        </Border>
         <Border x:Name="BackgroundPanel" Background="Transparent"/>
 
         <Grid Padding="12,0">
@@ -282,6 +286,15 @@
                 Margin="0,0,12,0"
                 AutomationProperties.Name="{CustomResource AccDescrMuteMic}"
                 ToolTipService.ToolTip="{CustomResource AccDescrMuteMic}"/>
+            <controls:GlyphButton
+                x:Name="Camera"
+                Visibility="Collapsed"
+                Click="Camera_Click"
+                Glyph="&#xE722;"
+                FontFamily="{StaticResource TelegramThemeFontFamily}"
+                HorizontalAlignment="Right"
+                Margin="0,0,12,0"
+                Grid.Column="0"/>
 
             <Border x:Name="Close" Visibility="Collapsed" Background="#FFFFFF" CornerRadius="24" Grid.Column="1">
                 <controls:GlyphButton

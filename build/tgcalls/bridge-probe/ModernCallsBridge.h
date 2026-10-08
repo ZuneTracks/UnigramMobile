@@ -36,6 +36,12 @@ public enum class RemoteAudioState {
     Active,
 };
 
+public enum class VideoState {
+    Inactive,
+    Paused,
+    Active,
+};
+
 public ref class ReflectorEndpoint sealed {
 public:
     ReflectorEndpoint();
@@ -72,10 +78,22 @@ public:
     property bool AllowTcp;
     property int MaxApiLayer;
     property bool IsOutgoing;
+    property bool IsVideo;
+    property Platform::String^ CameraDeviceId;
     property NetworkType InitialNetworkType;
     property Windows::Foundation::Collections::IVector<unsigned char>^ EncryptionKey;
     property Windows::Foundation::Collections::IVector<ReflectorEndpoint^>^ ReflectorEndpoints;
     property Windows::Foundation::Collections::IVector<RtcServer^>^ RtcServers;
+};
+
+public ref class VideoFrame sealed {
+public:
+    VideoFrame();
+
+    property bool IsLocal;
+    property int Width;
+    property int Height;
+    property Windows::Storage::Streams::IBuffer^ Pixels;
 };
 
 public ref class AudioCallSession sealed {
@@ -87,6 +105,11 @@ public:
     void Start();
     void ReceiveSignalingData(Windows::Foundation::Collections::IVector<unsigned char>^ data);
     void SetMuted(bool value);
+    bool SupportsVideo();
+    void SetVideoState(VideoState value);
+    void SwitchVideoCaptureDevice(Platform::String^ deviceId);
+    void SetVideoOutputEnabled(bool local, bool enabled);
+    void AcknowledgeVideoFrame(bool local);
     Platform::String^ SetAudioOutputEndpoint(bool speakerphone);
     void SetNetworkType(NetworkType value);
     Platform::String^ GetAudioDeviceStatus();
@@ -108,6 +131,9 @@ public:
     event Windows::Foundation::EventHandler<int>^ SignalBarsChanged;
     event Windows::Foundation::EventHandler<float>^ AudioLevelChanged;
     event Windows::Foundation::EventHandler<RemoteAudioState>^ RemoteAudioStateChanged;
+    event Windows::Foundation::EventHandler<VideoState>^ RemoteVideoStateChanged;
+    event Windows::Foundation::EventHandler<Platform::Object^>^ VideoCaptureFailed;
+    event Windows::Foundation::EventHandler<VideoFrame^>^ VideoFrameReceived;
     event Windows::Foundation::EventHandler<Platform::String^>^ AudioDeviceReport;
 
 private:

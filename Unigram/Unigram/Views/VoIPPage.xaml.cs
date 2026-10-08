@@ -3,7 +3,10 @@ using Microsoft.Graphics.Canvas.Effects;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Numerics;
+using System.Runtime.InteropServices.WindowsRuntime;
 using Telegram.Td.Api;
 using Unigram.Common;
 using Unigram.Controls;
@@ -71,6 +74,11 @@ namespace Unigram.Views
 #endif
 
         private bool _disposed;
+#if MODERN_TGCALLS
+        private WriteableBitmap _localVideoBitmap;
+        private WriteableBitmap _remoteVideoBitmap;
+        private bool _modernCameraFront = true;
+#endif
 
         public OverlayPage Dialog { get; set; }
 
@@ -225,6 +233,90 @@ namespace Unigram.Views
                 _audioRoutingManager = null;
             }
         }
+
+#if MODERN_TGCALLS
+        public void RenderModernVideoFrame(ModernCalls.VideoFrame frame, Action acknowledge)
+        {
+            _ = Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Low, () =>
+            {
+                try
+                {
+                    if (!_disposed && frame != null && frame.Width > 0 && frame.Height > 0)
+                    {
+                        var bitmap = frame.IsLocal ? _localVideoBitmap : _remoteVideoBitmap;
+                        if (bitmap == null || bitmap.PixelWidth != frame.Width || bitmap.PixelHeight != frame.Height)
+                        {
+                            bitmap = new WriteableBitmap(frame.Width, frame.Height);
+                            if (frame.IsLocal)
+                            {
+                                _localVideoBitmap = bitmap;
+                                LocalVideo.Source = bitmap;
+                                LocalVideoPanel.Visibility = Visibility.Visible;
+                            }
+
+                            else
+                            {
+                                _remoteVideoBitmap = bitmap;
+                                RemoteVideo.Source = bitmap;
+                                RemoteVideo.Visibility = Visibility.Visible;
+                            }
+                        }
+
+                        if (frame.Pixels != null && frame.Pixels.Length == frame.Width * frame.Height * 4)
+                        {
+                            using (Stream source = frame.Pixels.AsStream())
+                            using (Stream stream = bitmap.PixelBuffer.AsStream())
+                            {
+                                stream.Position = 0;
+                                source.CopyTo(stream);
+                            }
+                            bitmap.Invalidate();
+                        }
+                    }
+                }
+                finally
+                {
+                    acknowledge?.Invoke();
+                }
+            });
+        }
+
+        public void EnableModernVideoControls()
+        {
+            Camera.Visibility = Visibility.Visible;
+        }
+
+        private async void Camera_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var devices = await Windows.Devices.Enumeration.DeviceInformation.FindAllAsync(
+                    Windows.Devices.Enumeration.DeviceClass.VideoCapture);
+                var targetPanel = _modernCameraFront
+                    ? Windows.Devices.Enumeration.Panel.Back
+                    : Windows.Devices.Enumeration.Panel.Front;
+                var target = devices.FirstOrDefault(x => x.EnclosureLocation?.Panel == targetPanel)
+                    ?? devices.FirstOrDefault(x => x.EnclosureLocation?.Panel != (_modernCameraFront
+                        ? Windows.Devices.Enumeration.Panel.Front
+                        : Windows.Devices.Enumeration.Panel.Back));
+                if (target == null)
+                {
+                    Logs.PushDiagnostics.Write("voip.video", "result=camera_switch;state=no_alternate_camera");
+                    return;
+                }
+
+                ModernVideoDeviceRequested?.Invoke(target.Id);
+                _modernCameraFront = target.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front;
+                Logs.PushDiagnostics.Write("voip.video", $"result=camera_switch;front={(_modernCameraFront ? 1 : 0)}");
+            }
+            catch (Exception error)
+            {
+                Logs.PushDiagnostics.Write(
+                    "voip.video",
+                    $"result=camera_switch;state=failed;hresult=0x{error.HResult:X8}");
+            }
+        }
+#endif
 
         public void Connect(VoIPControllerWrapper controller)
         {
@@ -834,6 +926,8 @@ namespace Unigram.Views
         /// A true return means the native media queue accepted the selection.
         /// </summary>
         public Func<bool, bool> ModernAudioOutputEndpointRequested { get; set; }
+
+        public Action<string> ModernVideoDeviceRequested { get; set; }
 #endif
 
         private async void AudioEndpointChanged(AudioRoutingManager sender, object args)

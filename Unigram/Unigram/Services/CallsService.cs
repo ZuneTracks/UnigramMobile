@@ -77,6 +77,8 @@ namespace Unigram.Services
         private const int ModernMicrophoneWaitMs = 8000;
         private static readonly object _microphoneLock = new object();
         private static Task<int> _microphoneTask;
+        private static readonly object _videoCaptureLock = new object();
+        private static Task<VideoCapturePreflight> _videoCaptureTask;
         private readonly object _modernAudioLevelLock = new object();
         private readonly object _modernCallbackFaultLock = new object();
         private readonly HashSet<string> _modernCallbackFaults = new HashSet<string>();
@@ -99,6 +101,12 @@ namespace Unigram.Services
         private ModernCalls.RemoteAudioState? _modernRemoteAudioState;
         private ModernCalls.CallState? _modernTransportState;
         private bool _modernMuted;
+
+        private sealed class VideoCapturePreflight
+        {
+            public int Result { get; set; }
+            public string DeviceId { get; set; }
+        }
 #endif
 
         private VoIPPage _callPage;
@@ -267,18 +275,18 @@ namespace Unigram.Services
 
             WriteAudioCallDiagnostic("voip.update", $"result=received;state={update.Call.State?.GetType().Name ?? "null"};outgoing={update.Call.IsOutgoing.ToString().ToLowerInvariant()};video={update.Call.IsVideo.ToString().ToLowerInvariant()}");
 
-            if (update.Call.IsVideo)
-            {
-                WriteAudioCallDiagnostic("voip.update", "result=ignored;reason=video_unsupported");
-                ProtoService.Send(ModernTdlibCompatibility.CreateDiscardCall(update.Call.Id, true, 0, 0));
-                return;
-            }
-
             if (update.Call.State is CallStatePending pending)
             {
 #if MODERN_TGCALLS
                 DisposeStaleModernCall(update.Call.Id);
-                BeginAcquireMicrophone();
+                if (update.Call.IsVideo)
+                {
+                    BeginAcquireVideoCapture();
+                }
+                else
+                {
+                    BeginAcquireMicrophone();
+                }
 #endif
                 if (update.Call.IsOutgoing && pending.IsCreated && pending.IsReceived)
                 {
@@ -679,6 +687,118 @@ namespace Unigram.Services
             return true;
         }
 
+        private void BeginAcquireVideoCapture()
+        {
+            lock (_videoCaptureLock)
+            {
+                if (_videoCaptureTask == null)
+                {
+                    _videoCaptureTask = AcquireVideoCaptureAsync();
+                }
+            }
+        }
+
+        private Task<VideoCapturePreflight> AcquireVideoCaptureAsync()
+        {
+            var completion = new TaskCompletionSource<VideoCapturePreflight>();
+            BeginOnUIThread(async () =>
+            {
+                var result = new VideoCapturePreflight();
+                Windows.Media.Capture.MediaCapture capture = null;
+                try
+                {
+                    var devices = await Windows.Devices.Enumeration.DeviceInformation.FindAllAsync(
+                        Windows.Devices.Enumeration.DeviceClass.VideoCapture);
+                    var device = devices.FirstOrDefault(x => x.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front)
+                        ?? devices.FirstOrDefault();
+                    if (device == null)
+                    {
+                        result.Result = -1;
+                    }
+                    else
+                    {
+                        capture = new Windows.Media.Capture.MediaCapture();
+                        await capture.InitializeAsync(new Windows.Media.Capture.MediaCaptureInitializationSettings
+                        {
+                            VideoDeviceId = device.Id,
+                            StreamingCaptureMode = Windows.Media.Capture.StreamingCaptureMode.AudioAndVideo,
+                            MediaCategory = Windows.Media.Capture.MediaCategory.Communications
+                        });
+                        result.DeviceId = device.Id;
+                        WriteModernMediaDiagnostic($"result=video_capture;acquired=1;front={(device.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front ? 1 : 0)}");
+                    }
+                }
+                catch (Exception error)
+                {
+                    result.Result = error.HResult == 0 ? -1 : error.HResult;
+                    WriteModernMediaDiagnostic($"result=video_capture;acquired=0;hresult=0x{result.Result:X8}");
+                }
+                finally
+                {
+                    capture?.Dispose();
+                    completion.TrySetResult(result);
+                }
+            });
+            return completion.Task;
+        }
+
+        private string WaitForVideoCapture()
+        {
+            BeginAcquireVideoCapture();
+            Task<VideoCapturePreflight> task;
+            lock (_videoCaptureLock)
+            {
+                task = _videoCaptureTask;
+            }
+
+            if (task == null || !task.Wait(ModernMicrophoneWaitMs) || task.Result.Result != 0 || string.IsNullOrEmpty(task.Result.DeviceId))
+            {
+                lock (_videoCaptureLock)
+                {
+                    _videoCaptureTask = null;
+                }
+                return null;
+            }
+            return task.Result.DeviceId;
+        }
+
+        private void OnModernVideoFrame(int callId, ModernCalls.AudioCallSession session, ModernCalls.VideoFrame frame)
+        {
+            if (frame == null || _modernCallId != callId || _modernController != session)
+            {
+                session?.AcknowledgeVideoFrame(frame?.IsLocal ?? false);
+                return;
+            }
+
+            var page = _callPage;
+            if (page == null)
+            {
+                session.AcknowledgeVideoFrame(frame.IsLocal);
+                return;
+            }
+
+            page.RenderModernVideoFrame(frame, () => session.AcknowledgeVideoFrame(frame.IsLocal));
+        }
+
+        private void SwitchModernVideoCaptureDevice(string deviceId)
+        {
+            var session = _modernController;
+            if (session == null || string.IsNullOrEmpty(deviceId))
+            {
+                return;
+            }
+
+            try
+            {
+                session.SwitchVideoCaptureDevice(deviceId);
+                WriteModernMediaDiagnostic("result=video_capture;state=device_switched");
+            }
+            catch (Exception error)
+            {
+                WriteModernMediaDiagnostic($"result=video_capture;state=device_switch_failed;hresult=0x{error.HResult:X8}");
+            }
+        }
+
         private static bool _modernCrashDiagnosticsEnabled;
 
         private void EnableModernCrashDiagnostics()
@@ -751,6 +871,7 @@ namespace Unigram.Services
                 AllowTcp = false,
                 MaxApiLayer = ready.Protocol.MaxLayer,
                 IsOutgoing = call.IsOutgoing,
+                IsVideo = call.IsVideo,
                 InitialNetworkType = ModernCalls.NetworkType.Unknown,
                 EncryptionKey = ready.EncryptionKey.ToList()
             };
@@ -837,7 +958,18 @@ namespace Unigram.Services
                 return false;
             }
 
-            if (!WaitForMicrophone())
+            string cameraDeviceId = null;
+            if (call.IsVideo)
+            {
+                cameraDeviceId = WaitForVideoCapture();
+                if (cameraDeviceId == null)
+                {
+                    WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=video_capture_unavailable;transport=modern_tgcalls");
+                    return false;
+                }
+                configuration.CameraDeviceId = cameraDeviceId;
+            }
+            else if (!WaitForMicrophone())
             {
                 WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=microphone_unavailable;transport=modern_tgcalls");
                 return false;
@@ -875,6 +1007,12 @@ namespace Unigram.Services
                     GuardModernCallback("audio_level", () => OnModernAudioLevelChanged(call.Id, level));
                 session.RemoteAudioStateChanged += (sender, state) =>
                     GuardModernCallback("remote_audio_state", () => OnModernRemoteAudioStateChanged(call.Id, state));
+                session.RemoteVideoStateChanged += (sender, state) =>
+                    GuardModernCallback("remote_video_state", () => WriteModernMediaDiagnostic($"result=remote_video;transport=modern_tgcalls;state={state}"));
+                session.VideoCaptureFailed += (sender, ignored) =>
+                    GuardModernCallback("video_capture_failed", () => WriteModernMediaDiagnostic("result=video_capture;transport=modern_tgcalls;state=failed"));
+                session.VideoFrameReceived += (sender, frame) =>
+                    GuardModernCallback("video_frame", () => OnModernVideoFrame(call.Id, session, frame));
 
                 _modernController = session;
                 _modernCallId = call.Id;
@@ -1658,6 +1796,13 @@ namespace Unigram.Services
 #if MODERN_TGCALLS
                         callPage.ModernMuteRequested = SetModernMuted;
                         callPage.ModernAudioOutputEndpointRequested = SetModernAudioOutputEndpoint;
+                        callPage.ModernVideoDeviceRequested = SwitchModernVideoCaptureDevice;
+                        if (call.IsVideo && _modernController != null && _modernCallId == call.Id)
+                        {
+                            callPage.EnableModernVideoControls();
+                            _modernController.SetVideoOutputEnabled(true, true);
+                            _modernController.SetVideoOutputEnabled(false, true);
+                        }
 
                         // The page can be created after the bridge already reported its
                         // transport state, so replay the latest values instead of waiting

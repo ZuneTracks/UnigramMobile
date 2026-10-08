@@ -2,6 +2,7 @@
 #include "TgCallsEngineFacade.h"
 #include <windows.h>
 #include <exception>
+#include <windows.storage.streams.h>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -19,6 +20,12 @@ namespace Proof {
 void EnsureUwpTlsSupport();
 
 namespace {
+
+MIDL_INTERFACE("905a0fe0-bc53-11df-8c49-001e4fc686da")
+IBufferByteAccess : public IUnknown {
+public:
+    virtual HRESULT STDMETHODCALLTYPE Buffer(byte** value) = 0;
+};
 
 struct SessionHolder {
     Unigram::Native::Calls::CallSessionPtr session;
@@ -80,6 +87,9 @@ AudioCallConfiguration::AudioCallConfiguration() {
     RtcServers = ref new Vector<RtcServer^>();
 }
 
+VideoFrame::VideoFrame() {
+}
+
 AudioCallSession^ AudioCallSession::Create(AudioCallConfiguration^ configuration) {
     if (configuration == nullptr) {
         throw ref new InvalidArgumentException(L"An audio call configuration is required.");
@@ -103,6 +113,10 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
     native.allowTcp = configuration->AllowTcp;
     native.maxApiLayer = configuration->MaxApiLayer;
     native.isOutgoing = configuration->IsOutgoing;
+    native.isVideo = configuration->IsVideo;
+    native.cameraDeviceId = configuration->CameraDeviceId == nullptr
+        ? L""
+        : configuration->CameraDeviceId->Data();
     native.initialNetworkType = ToNativeNetworkType(configuration->InitialNetworkType);
     native.encryptionKey = ToNativeBytes(configuration->EncryptionKey);
 
@@ -193,6 +207,46 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
             }
         }
     };
+    callbacks.remoteVideoStateChanged = [weakHolder](Unigram::Native::Calls::VideoState state) {
+        if (const auto holder = weakHolder.lock()) {
+            if (const auto owner = ResolveOwner(holder)) {
+                owner->RemoteVideoStateChanged(owner, static_cast<VideoState>(state));
+            }
+        }
+    };
+    callbacks.videoCaptureFailed = [weakHolder] {
+        if (const auto holder = weakHolder.lock()) {
+            if (const auto owner = ResolveOwner(holder)) {
+                owner->VideoCaptureFailed(owner, nullptr);
+            }
+        }
+    };
+    callbacks.videoFrameReceived = [weakHolder](
+            bool local,
+            int width,
+            int height,
+            std::vector<uint8_t> pixels) {
+        if (const auto holder = weakHolder.lock()) {
+            if (const auto owner = ResolveOwner(holder)) {
+                auto frame = ref new VideoFrame();
+                frame->IsLocal = local;
+                frame->Width = width;
+                frame->Height = height;
+                auto buffer = ref new Windows::Storage::Streams::Buffer(
+                    static_cast<unsigned int>(pixels.size()));
+                Microsoft::WRL::ComPtr<IBufferByteAccess> access;
+                reinterpret_cast<IInspectable*>(buffer)->QueryInterface(IID_PPV_ARGS(&access));
+                byte* data = nullptr;
+                if (FAILED(access->Buffer(&data))) {
+                    return;
+                }
+                std::memcpy(data, pixels.data(), pixels.size());
+                buffer->Length = static_cast<unsigned int>(pixels.size());
+                frame->Pixels = buffer;
+                owner->VideoFrameReceived(owner, frame);
+            }
+        }
+    };
     callbacks.audioDeviceReport = [weakHolder](std::string report) {
         if (const auto holder = weakHolder.lock()) {
             if (const auto owner = ResolveOwner(holder)) {
@@ -277,6 +331,57 @@ void AudioCallSession::SetMuted(bool value) {
     } catch (const std::exception& error) {
         throw ref new InvalidArgumentException(ToPlatformString(error));
     }
+}
+
+bool AudioCallSession::SupportsVideo() {
+    try {
+        const auto holder = GetSessionHolder(_holder);
+        return Unigram::Native::Calls::SupportsVideo(holder->session);
+    } catch (const std::exception& error) {
+        throw ref new InvalidArgumentException(ToPlatformString(error));
+    }
+}
+
+void AudioCallSession::SetVideoState(VideoState value) {
+    try {
+        const auto holder = GetSessionHolder(_holder);
+        Unigram::Native::Calls::SetVideoState(
+            holder->session,
+            static_cast<Unigram::Native::Calls::VideoState>(value));
+    } catch (const std::exception& error) {
+        throw ref new InvalidArgumentException(ToPlatformString(error));
+    }
+}
+
+void AudioCallSession::SwitchVideoCaptureDevice(String^ deviceId) {
+    if (deviceId == nullptr || deviceId->IsEmpty()) {
+        throw ref new InvalidArgumentException(L"A camera device identifier is required.");
+    }
+
+    try {
+        const auto holder = GetSessionHolder(_holder);
+        Unigram::Native::Calls::SwitchVideoCaptureDevice(holder->session, deviceId->Data());
+    } catch (const std::exception& error) {
+        throw ref new InvalidArgumentException(ToPlatformString(error));
+    }
+}
+
+void AudioCallSession::SetVideoOutputEnabled(bool local, bool enabled) {
+    try {
+        const auto holder = GetSessionHolder(_holder);
+        Unigram::Native::Calls::SetVideoOutputEnabled(holder->session, local, enabled);
+    } catch (const std::exception& error) {
+        throw ref new InvalidArgumentException(ToPlatformString(error));
+    }
+}
+
+void AudioCallSession::AcknowledgeVideoFrame(bool local) {
+    if (_holder == nullptr) {
+        return;
+    }
+
+    const auto holder = GetSessionHolder(_holder);
+    Unigram::Native::Calls::AcknowledgeVideoFrame(holder->session, local);
 }
 
 String^ AudioCallSession::SetAudioOutputEndpoint(bool speakerphone) {
