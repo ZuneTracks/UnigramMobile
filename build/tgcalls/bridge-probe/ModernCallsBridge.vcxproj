@@ -29,6 +29,7 @@
     <WebRtcOutputRoot Condition="'$(WebRtcOutputRoot)'==''">$(WebRtcRoot)\out\msvc\uwp\Release\arm</WebRtcOutputRoot>
     <TgCallsRoot Condition="'$(TgCallsRoot)'==''">$(LOCALAPPDATA)\UnigramTdlibExperiment\tgcalls</TgCallsRoot>
     <TgCallsEngineOutputRoot Condition="'$(TgCallsEngineOutputRoot)'==''">$(LOCALAPPDATA)\UnigramTdlibExperiment\bridge-probe\native-engine</TgCallsEngineOutputRoot>
+    <ZlibRoot Condition="'$(ZlibRoot)'==''">$(LOCALAPPDATA)\UnigramTdlibExperiment\vcpkg_installed\arm-uwp-dynamic-v141</ZlibRoot>
   </PropertyGroup>
   <PropertyGroup Condition="'$(OutputDirectory)'!=''">
     <OutDir>$(OutputDirectory)\</OutDir>
@@ -49,8 +50,8 @@
       <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
       <GenerateMapFile>true</GenerateMapFile>
       <MapExports>true</MapExports>
-      <AdditionalDependencies>TgCallsEngine.lib;webrtc.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(TgCallsEngineOutputRoot);$(WebRtcOutputRoot)\obj;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>TgCallsEngine.lib;webrtc.lib;z.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(TgCallsEngineOutputRoot);$(WebRtcOutputRoot)\obj;$(ZlibRoot)\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

@@ -2,6 +2,8 @@
 
 #include "Instance.h"
 #include "InstanceImpl.h"
+#include "v2/InstanceV2Impl.h"
+#include "v2/InstanceV2ReferenceImpl.h"
 
 #include "api/task_queue/task_queue_factory.h"
 #include "modules/audio_device/include/audio_device.h"
@@ -1482,6 +1484,8 @@ public:
         }
 
         tgcalls::Register<tgcalls::InstanceImpl>();
+        tgcalls::Register<tgcalls::InstanceV2Impl>();
+        tgcalls::Register<tgcalls::InstanceV2ReferenceImpl>();
 
         // Counters are global to the process, so they are zeroed per call; otherwise a
         // previous call's totals would be read as this one's.

@@ -76,14 +76,15 @@ namespace Unigram.Services
         // bridge is activated only after TDLib provides the ready-state server
         // configuration.
         //
-        // The bridge registers InstanceImpl alone, which claims exactly these two.
-        // They are not interchangeable: tgcalls' Meta::Create maps "5.0.0" to
-        // ProtocolVersion::V1 and "2.7.7" to V0, so both peers must land on the same
-        // string or the transport connects and then carries media neither side can
-        // decode. Order is part of the contract -- the server reads the offer newest
-        // first and reports its choice back as LibraryVersions[0] -- so this list is
-        // sorted newest first and must stay that way.
-        private static readonly string[] ModernTgCallsVersions = { "5.0.0", "2.7.7" };
+        // This matches upstream Unigram's registration of InstanceImpl,
+        // InstanceV2Impl, and InstanceV2ReferenceImpl. Order is part of the contract:
+        // the server reads the offer newest first and reports its choice back as
+        // LibraryVersions[0]. Both peers must run that exact selected version.
+        private static readonly string[] ModernTgCallsVersions =
+        {
+            "13.0.0", "12.0.0", "11.0.0", "10.0.0",
+            "9.0.0", "8.0.0", "7.0.0", "5.0.0", "2.7.7"
+        };
 #endif
 
         public static MessageTopic GetMessageTopic(long threadId)

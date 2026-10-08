@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$WebRtcRoot = 'C:\wrtcar\src',
-    [string]$OutputRoot = (Join-Path $env:LOCALAPPDATA 'UnigramTdlibExperiment\bridge-probe')
+    [string]$OutputRoot = (Join-Path $env:LOCALAPPDATA 'UnigramTdlibExperiment\bridge-probe'),
+    [string]$ZlibRoot = (Join-Path $env:LOCALAPPDATA 'UnigramTdlibExperiment\vcpkg_installed\arm-uwp-dynamic-v141')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,9 +15,25 @@ $tgCallsPatches = @(
     @{ Path = Join-Path $PSScriptRoot 'patches\tgcalls-m123-incoming-audio-counters.patch'; Name = 'incoming audio receive-path counters' }
 )
 $expectedTgCallsCommit = '1c236c09f8d8569fead14bd68000618a52051225'
+$expectedZlibVersion = '1.3.2'
 
 if (-not (Test-Path -LiteralPath (Join-Path $WebRtcRoot 'out\msvc\uwp\Release\arm\obj\webrtc.lib'))) {
     throw "Release ARM webrtc.lib was not found below '$WebRtcRoot'."
+}
+
+foreach ($path in @(
+    (Join-Path $ZlibRoot 'include\zlib.h'),
+    (Join-Path $ZlibRoot 'lib\z.lib')
+)) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "Pinned ARM UWP zlib input was not found at '$path'."
+    }
+}
+
+$zlibVersion = (Select-String -LiteralPath (Join-Path $ZlibRoot 'include\zlib.h') -Pattern '^#define ZLIB_VERSION "([^"]+)"' |
+    Select-Object -First 1).Matches.Groups[1].Value
+if ($zlibVersion -ne $expectedZlibVersion) {
+    throw "Unexpected zlib version '$zlibVersion'; expected '$expectedZlibVersion'."
 }
 
 if (-not (Test-Path -LiteralPath $tgCallsRoot)) {
@@ -72,12 +89,12 @@ finally {
 }
 
 $engineOutputRoot = Join-Path $OutputRoot 'native-engine'
-& $msbuild $engineProject /nologo /m /t:Rebuild /p:Configuration=Release /p:Platform=ARM /p:WebRtcRoot=$WebRtcRoot /p:TgCallsRoot=$tgCallsRoot /p:OutputDirectory=$engineOutputRoot
+& $msbuild $engineProject /nologo /m /t:Rebuild /p:Configuration=Release /p:Platform=ARM /p:WebRtcRoot=$WebRtcRoot /p:TgCallsRoot=$tgCallsRoot /p:ZlibRoot=$ZlibRoot /p:OutputDirectory=$engineOutputRoot
 if ($LASTEXITCODE -ne 0) {
     throw "The ARM UWP TgCalls engine library failed with exit code $LASTEXITCODE."
 }
 
-& $msbuild $project /nologo /m /t:Rebuild /p:Configuration=Release /p:Platform=ARM /p:WebRtcRoot=$WebRtcRoot /p:TgCallsEngineOutputRoot=$engineOutputRoot /p:OutputDirectory=$OutputRoot
+& $msbuild $project /nologo /m /t:Rebuild /p:Configuration=Release /p:Platform=ARM /p:WebRtcRoot=$WebRtcRoot /p:TgCallsEngineOutputRoot=$engineOutputRoot /p:ZlibRoot=$ZlibRoot /p:OutputDirectory=$OutputRoot
 if ($LASTEXITCODE -ne 0) {
     throw "The ARM UWP C++/CX bridge proof failed with exit code $LASTEXITCODE."
 }

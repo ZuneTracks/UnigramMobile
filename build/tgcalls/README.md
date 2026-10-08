@@ -2480,3 +2480,71 @@ architecture `arm`; and `Unigram.Native.Tasks.NotificationTask` declares
 payload. The sideload ZIP contains exactly 23 entries: installer scripts/resources, the
 APPX/certificate, and four ARM dependency APPXs with no x86, x64, ARM64, Win32, or
 telemetry dependencies.
+
+## 26.9.6180.0 — upstream V2 protocol support for iOS compatibility
+
+The 6179 iOS acceptance run confirmed that the corrected V1 relay mapping alone was
+not sufficient. In both iOS-to-W10M and W10M-to-iOS calls, the W10M bridge reached
+`Established`, reported active recording/playout, emitted RTP, and received RTCP
+feedback; however, incoming RTP and RTCP sender reports remained zero. This isolates
+the failure above UWP capture, rendering, routing, and V1 relay normalization.
+
+The previous bridge registered only upstream TgCalls `InstanceImpl`, advertising V0/V1
+versions `2.7.7` and `5.0.0`. Current upstream Unigram also registers
+`InstanceV2Impl` and `InstanceV2ReferenceImpl`; excluding them forced a newer iOS peer
+to the older V1 fallback even though the pinned source contains its current protocol
+implementations.
+
+6180 mirrors upstream's registration:
+
+| Native implementation | Advertised versions |
+| --- | --- |
+| `InstanceImpl` | `5.0.0`, `2.7.7` |
+| `InstanceV2Impl` | `13.0.0`, `12.0.0`, `9.0.0`, `8.0.0`, `7.0.0` |
+| `InstanceV2ReferenceImpl` | `11.0.0`, `10.0.0` |
+
+The managed offer is newest-first (`13.0.0` through `2.7.7`), and still reads only
+TDLib's negotiated `LibraryVersions[0]`; it never substitutes a locally supported
+version. The established `CallProtocol` connection layer remains the legacy
+controller's value of 92. No V1 routing, audio-device, AEC, codec, or speakerphone
+behavior was changed.
+
+The ARM native project now compiles the required upstream V2 signaling, ICE, SCTP, and
+content-negotiation source closure. V2 compressed signaling is linked against the
+already packaged, pinned ARM UWP dynamic zlib `1.3.2` import library from the TDLib
+build, not Chromium's bundled `1.3.0.1-motley` zlib. The bridge proof script validates
+the zlib header version and `z.lib` before either native project builds. `z.dll` is
+already a required TDLib payload and is now also the V2 bridge's import; `zlib1.dll`
+remains the same pinned bytes staged solely for RLottie's legacy import name.
+
+This is a protocol-compatibility build, not a claim that iOS media is fixed. For device
+acceptance, install 6180 and make one iOS-to-W10M and one W10M-to-iOS call with at
+least ten seconds of speech each way. The diagnostic must show a negotiated version in
+the V2 range, non-zero W10M `rtp_in`, `rtcp_sr`, and `playout_peak_permille`, plus
+audible W10M uplink on iOS. An established transport, RTCP feedback, or output RTP
+alone is not success evidence. Diagnostics continue to contain only bounded aggregate
+counts and state; they do not log signaling, keys, server data, accounts, tokens,
+paths, or media.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `Unigram_26.9.6180.0_ARM_UpstreamV2_IosCompatibility_Sideload.zip` | `EBF85D24F6EA9802DCFA161847548A5B858981E63C76B9AF1B28264949969D7D` | 65,009,201 |
+| `Unigram_26.9.6180.0_ARM_UpstreamV2_IosCompatibility.appx` | `D1D9C56006FEE621A5F7E9DBAEF2909F5C30829B3026C369B864243D5961DD1D` | 58,397,792 |
+| `Unigram_26.9.6180.0_ARM_UpstreamV2_IosCompatibility.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6180.0.map` | `8FFBF565B7D86CBE751AD0D25378759491E5CAA2C761286483945314704B4B0F` | 23,830,248 |
+
+The packaged `ModernCallsBridge.dll` SHA-256 is
+`51DB45866A29749111FE6F94C3AAAAF2AC96980210772273BB53C8619903172E`,
+matching the rebuilt bridge. Verification: the hardened native proof completed with
+zero errors; Release|ARM APPX build completed with zero errors; Authenticode status is
+valid; identity is `49197Wirdschon.UnigramMobileTdlibExperimental`; version
+`26.9.6180.0`; architecture `arm`; and `Unigram.Native.Tasks.NotificationTask`
+declares `pushNotification`. The APPX contains 555 entries, including TDLib, the V2
+bridge WinMD/DLL, `z.dll`, and `zlib1.dll`, with no source-secret, PFX, or PDB payload.
+The sideload ZIP has exactly 23 entries: installer scripts/resources, the APPX and
+certificate, and four ARM-only dependencies with no x86, x64, ARM64, Win32, or
+telemetry content.
