@@ -39,6 +39,30 @@ deterministic `i420.bin` packaging, which removes the native ARGB conversion
 and copy. Do not enable the remote sink or claim full preview support before
 the local-only device test succeeds.
 
+### Local-preview device acceptance
+
+Test a signed experimental APPX with `UseModernTgCalls=true` on a Lumia after
+installing only its matching ARM dependencies. The experimental package
+identity is intentionally distinct from the stable app, so it creates an
+isolated LocalState/database. Do not install it over the stable identity.
+
+Make one outgoing or incoming video call to a peer that can receive H.264
+video. The acceptance result is:
+
+1. the call reaches `Established` and keeps audio working;
+2. the local Lumia preview is visible and remains stable for at least one
+   camera switch, hangup, and retry;
+3. the peer still receives the Lumia camera stream with the expected
+   orientation; and
+4. the app does not terminate with `0xC0000005` during or after output
+   attachment.
+
+The Lumia remote-video area is intentionally blank in this stage because the
+remote native sink is disabled. Collect only the privacy-safe call diagnostics:
+they may contain fixed result/state tokens and HRESULTs, but must not contain
+credentials, signaling, phone numbers, user IDs, message content, tokens, or
+paths.
+
 The working upstream Unigram renderer is the implementation reference. It
 keeps `webrtc::VideoFrame` objects entirely native: a
 `rtc::VideoSinkInterface` coalesces frames on a per-sink render queue, uploads
