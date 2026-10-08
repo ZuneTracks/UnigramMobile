@@ -2193,3 +2193,84 @@ name `Unigram Mobile TDLib Experimental`; 554 payload entries; 0 forbidden files
 > 26.9.6174.0 was built and then discarded before shipping: a code review caught that the
 > first attempt at the routing fix, written on the stock-`ToggleButton` assumption, left the
 > button completely inert. No 26.9.6174.0 binary was ever handed over.
+
+## 26.9.6176.0 — upstream Unigram output-device integration
+
+### Upstream comparison
+
+The local UI-routing workaround was checked against the current upstream
+[Unigram](https://github.com/UnigramDev/Unigram) source before adding another guess.
+The comparison source is upstream `develop` at `b6eeb455251aa34cda8ba2256679cecf1fec4a03`
+(2026-09-24):
+
+- `Telegram.Native.Calls/VoipManager.cpp` constructs
+  `tgcalls::MediaDevicesConfig` with `audioInputId` and `audioOutputId`.
+- `Telegram.Native.Calls/VoipManager.idl` exposes `SetAudioOutputDevice(String id)`.
+- `VoipManager::SetAudioOutputDevice` forwards that value to
+  `tgcalls::Instance::setAudioOutputDevice`.
+- `Telegram/Services/Calls/VoipCall.cs` forwards output changes to that native method.
+
+The experimental bridge already owned a `tgcalls::Instance`, but had exposed only mute,
+network and diagnostics controls—there was no output-device control at all. 6176 adds
+that missing integration through the same `setAudioOutputDevice` path.
+
+On Windows 10 Mobile this TgCalls fork accepts a `#<index>` selector. The bridge learns
+the first classified earpiece and loudspeaker indices while it performs the *existing*
+bounded `DescribePlayoutDevices` enumeration at ADM construction; no UI-thread hardware
+enumeration is added. A rejected `AudioRoutingManager` request now queues the classified
+endpoint through TgCalls' media queue, which stops/reinitializes/restarts playout around
+the indexed selection. The page retains that queued intent so a subsequent ineffective
+`AudioEndpointChanged` notification cannot flip the glyph back.
+
+Expected diagnostics for a successful loudspeaker request:
+
+```text
+voip.media|result=audio_output;...;requested=speakerphone;queued=1;native=queued;target=speakerphone;index=1
+voip.media|result=audio_device;...;step=set_playout_device;phase=select;index=1
+voip.media|result=audio_device;...;step=set_playout_device;phase=end;faulted=0;code=0
+voip.ui|result=routing_changed;...;native_queued=1
+```
+
+`queued=0;native=unavailable` means the bounded enumeration could not classify the target
+on that hardware; no guessed ordinal is sent. A non-zero `code` from
+`set_playout_device` means the platform rejected the selection.
+
+### This does not fix the iOS media failure
+
+The 6175 instrumentation now provides the exact answer for the iOS call:
+
+```text
+iOS:     rtp_out=175; rtcp_fb=79; rtcp_sr=0; rtp_in=0; playout_peak_permille=0
+Android: rtp_out=224; rtcp_fb=100; rtcp_sr=5; rtp_in=228; playout_peak_permille>0
+```
+
+The iOS peer acknowledges our transport packets (`rtcp_fb`) but emits no Sender Report
+and no audio RTP. The W10M app therefore has no incoming audio to route or decode. This
+is separate from its physical output issue.
+
+Upstream's submodule is `TelegramMessenger/tgcalls` at
+`ec56af8daaed387ae8e522e28eae96c167431f49`. Comparing the experimental base
+`1c236c09f8d8569fead14bd68000618a52051225` with that revision shows exactly two
+upstream-only files: `tgcalls/platform/uwp/UwpScreenCapturer.cpp` and `.h`, from
+“Improve the UWP screen capturer.” All upstream iOS audio-device changes predate the
+experimental base, so bringing this submodule forward cannot fix an iOS peer that does
+not originate RTP.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | --- |
+| `Unigram_26.9.6176.0_ARM_UpstreamOutputRouting_Sideload.zip` | `E112A4696BDD7AB8C250EE624F27211363FE5203E92D9FA6996EBB1402E607CF` | 64,123,079 |
+| `Unigram_26.9.6176.0_ARM_UpstreamOutputRouting.appx` | `CE8C18F8CEEA5601747121EBD311600B09E6F5698284CE6982AEFBB9AC1CE5B7` | 57,514,409 |
+| `Unigram_26.9.6176.0_ARM_UpstreamOutputRouting.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6176.0.map` | `A179D891A98A94DF44D343CEE5C6B34A76369CE8C045EAAAC62038D4DDD69BEF` | 14,888,551 |
+
+Packaged `ModernCallsBridge.dll`: `C400754B32F88C862DA22BAE38827B61A74EC71E4C98792BB4EF7B542A6EEF49`
+(parity with the built bridge: True).
+
+Verification: signature OK; identity `49197Wirdschon.UnigramMobileTdlibExperimental`;
+version `26.9.6176.0`; architecture `arm`; background entry point
+`Unigram.Native.Tasks.NotificationTask` with `<Task Type="pushNotification" />`; display
+name `Unigram Mobile TDLib Experimental`; 554 payload entries; 0 forbidden files; 23-entry ZIP.

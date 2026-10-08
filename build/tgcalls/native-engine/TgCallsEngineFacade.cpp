@@ -918,6 +918,58 @@ std::string DescribeIncomingAudioCounters() {
         ";rtp_undemux=" + clamp(::tgcalls::g_diagIncomingAudioUndemuxed.load(std::memory_order_relaxed));
 }
 
+enum class PlayoutDeviceKind {
+    Other,
+    Earpiece,
+    Speaker,
+    Headset,
+};
+
+PlayoutDeviceKind ClassifyPlayoutDeviceName(const char* name) {
+    std::string lowered;
+    for (const auto* cursor = name; cursor != nullptr && *cursor != '\0'; ++cursor) {
+        const auto value = static_cast<unsigned char>(*cursor);
+        if (std::isalnum(value) != 0) {
+            lowered += static_cast<char>(std::tolower(value));
+        } else if (*cursor == ' ' || *cursor == '-' || *cursor == '_') {
+            lowered += ' ';
+        }
+    }
+
+    const auto contains = [&lowered](const char* needle) {
+        return lowered.find(needle) != std::string::npos;
+    };
+
+    if (contains("earpiece") || contains("handset") || contains("receiver")) {
+        return PlayoutDeviceKind::Earpiece;
+    }
+    if (contains("speaker") || contains("loud")) {
+        return PlayoutDeviceKind::Speaker;
+    }
+    if (contains("head") || contains("bluetooth")) {
+        return PlayoutDeviceKind::Headset;
+    }
+    return PlayoutDeviceKind::Other;
+}
+
+const char* ToDiagnosticDeviceKind(PlayoutDeviceKind kind) {
+    switch (kind) {
+    case PlayoutDeviceKind::Earpiece:
+        return "ear";
+    case PlayoutDeviceKind::Speaker:
+        return "spk";
+    case PlayoutDeviceKind::Headset:
+        return "hs";
+    default:
+        return "oth";
+    }
+}
+
+struct PlayoutDeviceIndices {
+    int earpiece = -1;
+    int speaker = -1;
+};
+
 /// <summary>
 /// Renders the render-endpoint names as a fixed-shape list so the endpoint a silent call
 /// is playing into can be identified from a diagnostics file. Device names describe
@@ -929,7 +981,10 @@ std::string DescribeIncomingAudioCounters() {
 /// the whole render device class and blocks on the async result, so the number of names
 /// read is capped to keep call setup bounded on a handset that reports many endpoints.
 /// </summary>
-std::string DescribePlayoutDevices(webrtc::AudioDeviceModule* module, int16_t count) {
+std::string DescribePlayoutDevices(
+        webrtc::AudioDeviceModule* module,
+        int16_t count,
+        PlayoutDeviceIndices* indices = nullptr) {
     if (module == nullptr || count <= 0) {
         return "none";
     }
@@ -939,23 +994,6 @@ std::string DescribePlayoutDevices(webrtc::AudioDeviceModule* module, int16_t co
     // classification survives because ':' breaks the token run, and it carries what the
     // diagnostic actually needs: which index is the earpiece and which the loudspeaker, so
     // a routing complaint can be checked against the endpoint that was really selected.
-    const auto classify = [](const std::string& lowered) -> const char* {
-        const auto contains = [&lowered](const char* needle) {
-            return lowered.find(needle) != std::string::npos;
-        };
-
-        if (contains("earpiece") || contains("handset") || contains("receiver")) {
-            return "ear";
-        }
-        if (contains("speaker") || contains("loud")) {
-            return "spk";
-        }
-        if (contains("head") || contains("bluetooth")) {
-            return "hs";
-        }
-        return "oth";
-    };
-
     constexpr int16_t kMaxNamedDevices = 4;
     const int16_t named = count < kMaxNamedDevices ? count : kMaxNamedDevices;
 
@@ -976,20 +1014,26 @@ std::string DescribePlayoutDevices(webrtc::AudioDeviceModule* module, int16_t co
         }
 
         name[webrtc::kAdmMaxDeviceNameSize - 1] = '\0';
+        const auto kind = ClassifyPlayoutDeviceName(name);
+        if (indices != nullptr) {
+            if (kind == PlayoutDeviceKind::Earpiece && indices->earpiece < 0) {
+                indices->earpiece = index;
+            } else if (kind == PlayoutDeviceKind::Speaker && indices->speaker < 0) {
+                indices->speaker = index;
+            }
+        }
+
         std::string sanitised;
-        std::string lowered;
         for (const char* cursor = name; *cursor != '\0' && sanitised.size() < 48; ++cursor) {
             const auto value = static_cast<unsigned char>(*cursor);
             if (std::isalnum(value) != 0) {
                 sanitised += *cursor;
-                lowered += static_cast<char>(std::tolower(value));
             } else if (*cursor == ' ' || *cursor == '-' || *cursor == '_') {
                 sanitised += '_';
-                lowered += ' ';
             }
         }
 
-        list += classify(lowered);
+        list += ToDiagnosticDeviceKind(kind);
         list += ":";
         list += sanitised.empty() ? "unnamed" : sanitised;
     }
@@ -1370,6 +1414,8 @@ public:
         // Counters are global to the process, so they are zeroed per call; otherwise a
         // previous call's totals would be read as this one's.
         ResetIncomingAudioCounters();
+        _earpiecePlayoutDeviceIndex.store(-1, std::memory_order_relaxed);
+        _speakerPlayoutDeviceIndex.store(-1, std::memory_order_relaxed);
 
         auto encryptionKey = std::make_shared<std::array<uint8_t, tgcalls::EncryptionKey::kSize>>();
         std::copy(
@@ -1458,6 +1504,7 @@ public:
                 // null, so creating it here changes no behaviour; it exists purely to make
                 // an audio device failure observable instead of silently muting the call.
                 auto report = std::string("created=0");
+                auto playoutDeviceIndices = PlayoutDeviceIndices{};
                 auto module = webrtc::AudioDeviceModule::Create(
                     webrtc::AudioDeviceModule::kPlatformDefaultAudio,
                     factory);
@@ -1468,7 +1515,10 @@ public:
                         const auto playoutDevices = module->PlayoutDevices();
                         report += ";playout_devices=" + std::to_string(playoutDevices);
                         report += ";recording_devices=" + std::to_string(module->RecordingDevices());
-                        report += ";playout_names=" + DescribePlayoutDevices(module.get(), playoutDevices);
+                        report += ";playout_names=" + DescribePlayoutDevices(
+                            module.get(),
+                            playoutDevices,
+                            &playoutDeviceIndices);
                     }
                 }
 
@@ -1494,6 +1544,9 @@ public:
                     // MediaManager's destructor own the last one, and the wrapper's own
                     // destruction is what signals that the capture endpoint is free.
                     strong->RetainAudioDeviceModule(result);
+                    strong->SetPlayoutDeviceIndices(
+                        playoutDeviceIndices.earpiece,
+                        playoutDeviceIndices.speaker);
                     strong->AudioDeviceReport(report);
                 }
                 return result;
@@ -1523,6 +1576,25 @@ public:
         std::lock_guard<std::mutex> lock(_mutex);
         EnsureActive();
         _instance->setMuteMicrophone(value);
+    }
+
+    std::string SetAudioOutputEndpoint(bool speakerphone) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        EnsureActive();
+
+        const auto index = speakerphone
+            ? _speakerPlayoutDeviceIndex.load(std::memory_order_acquire)
+            : _earpiecePlayoutDeviceIndex.load(std::memory_order_acquire);
+        const auto target = speakerphone ? "speakerphone" : "earpiece";
+        if (index < 0) {
+            return std::string("unavailable;target=") + target;
+        }
+
+        // This is the same API path current upstream Unigram uses for a selected
+        // AudioOutputId. The '#<index>' selector is resolved by TgCalls on its media
+        // queue, which stops and restarts playout around the device switch.
+        _instance->setAudioOutputDevice("#" + std::to_string(index));
+        return std::string("queued;target=") + target + ";index=" + std::to_string(index);
     }
 
     void SetNetworkType(NetworkType value) {
@@ -1771,6 +1843,11 @@ private:
         _audioDeviceModule = std::move(module);
     }
 
+    void SetPlayoutDeviceIndices(int earpiece, int speaker) {
+        _earpiecePlayoutDeviceIndex.store(earpiece, std::memory_order_release);
+        _speakerPlayoutDeviceIndex.store(speaker, std::memory_order_release);
+    }
+
     /// <summary>
     /// Releases only this session's reference. The device is deliberately not stopped or
     /// terminated here: tgcalls still owns a reference and is streaming into it, so the
@@ -1801,6 +1878,8 @@ private:
     std::atomic<bool> _audioDeviceCreated{false};
     std::atomic<bool> _audioDeviceReleased{false};
     std::atomic<bool> _faultReportingArmed{false};
+    std::atomic<int> _earpiecePlayoutDeviceIndex{-1};
+    std::atomic<int> _speakerPlayoutDeviceIndex{-1};
     webrtc::scoped_refptr<webrtc::AudioDeviceModule> _audioDeviceModule;
     CallConfiguration _configuration;
     std::unique_ptr<tgcalls::Instance> _instance;
@@ -1867,6 +1946,13 @@ void SetMuted(const CallSessionPtr& session, bool value) {
         throw std::invalid_argument("The TgCalls session is unavailable.");
     }
     session->SetMuted(value);
+}
+
+std::string SetAudioOutputEndpoint(const CallSessionPtr& session, bool speakerphone) {
+    if (!session) {
+        throw std::invalid_argument("The TgCalls session is unavailable.");
+    }
+    return session->SetAudioOutputEndpoint(speakerphone);
 }
 
 void SetNetworkType(const CallSessionPtr& session, NetworkType value) {

@@ -62,6 +62,13 @@ namespace Unigram.Views
         private DispatcherTimer _debugTimer;
         private DispatcherTimer _durationTimer;
         private AudioRoutingManager _audioRoutingManager;
+#if MODERN_TGCALLS
+        // AudioRoutingManager can acknowledge a request while leaving the TgCalls ADM on
+        // another physical output. Once the native selector has queued an indexed output,
+        // retain that known intent instead of letting the ineffective manager flip the
+        // glyph back on its next endpoint notification.
+        private bool? _modernAudioOutputSpeakerphone;
+#endif
 
         private bool _disposed;
 
@@ -755,15 +762,38 @@ namespace Unigram.Views
                 return;
             }
 
+#if MODERN_TGCALLS
+            var nativeQueued = false;
+            if (actual != requested &&
+                (requested == AudioRoutingEndpoint.Earpiece || requested == AudioRoutingEndpoint.Speakerphone))
+            {
+                nativeQueued = ModernAudioOutputEndpointRequested?.Invoke(
+                    requested == AudioRoutingEndpoint.Speakerphone) == true;
+                _modernAudioOutputSpeakerphone = nativeQueued
+                    ? requested == AudioRoutingEndpoint.Speakerphone
+                    : (bool?)null;
+            }
+#endif
+
             if (Routing != null)
             {
+#if MODERN_TGCALLS
+                Routing.IsChecked = nativeQueued
+                    ? requested == AudioRoutingEndpoint.Speakerphone
+                    : actual == AudioRoutingEndpoint.Speakerphone;
+#else
                 Routing.IsChecked = actual == AudioRoutingEndpoint.Speakerphone;
+#endif
             }
 
             Logs.PushDiagnostics.Write(
                 "voip.ui",
                 $"result=routing_changed;stage={stage};requested={requested};actual={actual}" +
-                $";available={manager.AvailableAudioEndpoints}");
+                $";available={manager.AvailableAudioEndpoints}"
+#if MODERN_TGCALLS
+                + $";native_queued={(nativeQueued ? 1 : 0)}"
+#endif
+                );
         }
 
         private bool _isMuted;
@@ -797,6 +827,13 @@ namespace Unigram.Views
         /// Supplied by CallsService so the mute toggle can reach the modern tgcalls session.
         /// </summary>
         public Action<bool> ModernMuteRequested { get; set; }
+
+        /// <summary>
+        /// Supplied by CallsService to select a physical earpiece or loudspeaker through
+        /// the active modern TgCalls session when AudioRoutingManager rejects the request.
+        /// A true return means the native media queue accepted the selection.
+        /// </summary>
+        public Func<bool, bool> ModernAudioOutputEndpointRequested { get; set; }
 #endif
 
         private async void AudioEndpointChanged(AudioRoutingManager sender, object args)
@@ -810,7 +847,12 @@ namespace Unigram.Views
             {
                 if (!_disposed && Routing != null && sender != null)
                 {
+#if MODERN_TGCALLS
+                    Routing.IsChecked = _modernAudioOutputSpeakerphone
+                        ?? sender.GetAudioEndpoint() == AudioRoutingEndpoint.Speakerphone;
+#else
                     Routing.IsChecked = sender.GetAudioEndpoint() == AudioRoutingEndpoint.Speakerphone;
+#endif
                 }
             });
         }

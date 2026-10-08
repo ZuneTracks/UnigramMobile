@@ -279,6 +279,17 @@ void AudioCallSession::SetMuted(bool value) {
     }
 }
 
+String^ AudioCallSession::SetAudioOutputEndpoint(bool speakerphone) {
+    try {
+        const auto holder = GetSessionHolder(_holder);
+        return ToPlatformString(Unigram::Native::Calls::SetAudioOutputEndpoint(
+            holder->session,
+            speakerphone));
+    } catch (const std::exception& error) {
+        throw ref new InvalidArgumentException(ToPlatformString(error));
+    }
+}
+
 void AudioCallSession::SetNetworkType(NetworkType value) {
     try {
         const auto holder = GetSessionHolder(_holder);

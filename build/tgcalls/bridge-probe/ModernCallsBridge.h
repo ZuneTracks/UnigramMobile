@@ -87,6 +87,7 @@ public:
     void Start();
     void ReceiveSignalingData(Windows::Foundation::Collections::IVector<unsigned char>^ data);
     void SetMuted(bool value);
+    Platform::String^ SetAudioOutputEndpoint(bool speakerphone);
     void SetNetworkType(NetworkType value);
     Platform::String^ GetAudioDeviceStatus();
     void Stop();

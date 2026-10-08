@@ -1014,6 +1014,43 @@ namespace Unigram.Services
             }
         }
 
+        /// <summary>
+        /// Selects the earpiece or loudspeaker through the active TgCalls media-device
+        /// path. This matches current upstream Unigram's output-device integration:
+        /// it passes an audio output identifier to TgCalls rather than relying on the
+        /// UI-level routing manager to alter an already-created audio device module.
+        /// </summary>
+        private bool SetModernAudioOutputEndpoint(bool speakerphone)
+        {
+            var session = _modernController;
+            var requested = speakerphone ? "speakerphone" : "earpiece";
+            if (session == null)
+            {
+                WriteAudioCallDiagnostic(
+                    "voip.media",
+                    $"result=audio_output;transport=modern_tgcalls;requested={requested};queued=0;reason=session_missing");
+                return false;
+            }
+
+            try
+            {
+                var nativeResult = session.SetAudioOutputEndpoint(speakerphone) ?? "unreadable";
+                var queued = nativeResult.StartsWith("queued;", StringComparison.Ordinal);
+                WriteAudioCallDiagnostic(
+                    "voip.media",
+                    $"result=audio_output;transport=modern_tgcalls;requested={requested};queued={(queued ? 1 : 0)}" +
+                    $";native={Logs.PushDiagnostics.SanitizeErrorMessage(nativeResult)}");
+                return queued;
+            }
+            catch (Exception error)
+            {
+                WriteAudioCallDiagnostic(
+                    "voip.media",
+                    $"result=audio_output;transport=modern_tgcalls;requested={requested};queued=0;hresult=0x{error.HResult:X8}");
+                return false;
+            }
+        }
+
         private void OnModernSignalBarsChanged(int callId, int bars)
         {
             if (_modernCallId != callId || _modernSignalBars == bars)
@@ -1593,6 +1630,7 @@ namespace Unigram.Services
                         callPage.Update(call, started);
 #if MODERN_TGCALLS
                         callPage.ModernMuteRequested = SetModernMuted;
+                        callPage.ModernAudioOutputEndpointRequested = SetModernAudioOutputEndpoint;
 
                         // The page can be created after the bridge already reported its
                         // transport state, so replay the latest values instead of waiting

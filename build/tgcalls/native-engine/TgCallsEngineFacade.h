@@ -112,6 +112,12 @@ CallSessionPtr CreateCallSession(
 void StartCallSession(const CallSessionPtr& session);
 void ReceiveSignalingData(const CallSessionPtr& session, std::vector<uint8_t> data);
 void SetMuted(const CallSessionPtr& session, bool value);
+/// <summary>
+/// Queues the selected physical output endpoint through TgCalls' own media-device path.
+/// Returns a fixed diagnostic token describing whether an earpiece/speaker index was
+/// available when the platform audio device module was created.
+/// </summary>
+std::string SetAudioOutputEndpoint(const CallSessionPtr& session, bool speakerphone);
 void SetNetworkType(const CallSessionPtr& session, NetworkType value);
 void StopCallSession(const CallSessionPtr& session);
 /// <summary>
