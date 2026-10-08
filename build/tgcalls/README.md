@@ -5,6 +5,50 @@ experimental ARM UWP private-call transport. It does not package a TgCalls
 binary, change `CallProtocol`, or replace the proven legacy `libtgvoip`
 fallback.
 
+## Video renderer status
+
+The experimental ARM bridge now negotiates V2 video, captures and sends H.264
+from the Lumia, and applies camera-orientation metadata. The CPU preview
+prototype is deliberately disabled:
+
+- It converted each native I420 frame to BGRA, copied it through a WinRT
+  `IBuffer`, and rendered it into a XAML `WriteableBitmap`.
+- Device diagnostics show that attaching just the *local* preview output,
+  with no remote output attached, consistently ends an otherwise established
+  video call with `0xC0000005` (`access=write;null_page=1`).
+- Calls with both preview outputs isolated remain established and remote peers
+  receive the Lumia camera, so signaling, capture, H.264 encoding, and video
+  transport are not the failing boundary.
+
+Do not re-enable `ModernVideoLocalPreviewEnabled` or
+`ModernVideoRemotePreviewEnabled` without replacing that CPU path and
+performing a fresh device test.
+
+The working upstream Unigram renderer is the implementation reference. It
+keeps `webrtc::VideoFrame` objects entirely native: a
+`rtc::VideoSinkInterface` coalesces frames on a per-sink render queue, uploads
+I420 planes to Direct2D bitmaps, and draws them to a
+`CompositionDrawingSurface` with a D2D pixel shader. Managed code owns only
+the `SpriteVisual` host and frame-size/state notifications; it never receives
+pixel buffers.
+
+That source cannot be copied as a component: its current project is C++/WinRT,
+ARM64/x64-only, has a 18362 minimum, and includes unrelated desktop/FFmpeg
+dependencies. The required composition interop
+(`ICompositorInterop` and `ICompositionDrawingSurfaceInterop`) is present in
+the 15063 SDK, and this app already links ARM D2D/D3D11 in
+`Unigram.Native.Media`. The next renderer work must therefore be a small
+C++/CX adaptation in the existing calls bridge:
+
+1. create a native composition-surface sink from a page-owned `SpriteVisual`;
+2. attach/detach it directly as TgCalls' local or incoming output, retaining
+   exactly one strong sink owner and passing `nullptr` on page/session teardown;
+3. coalesce and render I420 frames natively, including rotation, mirroring,
+   and device-replacement handling;
+4. generate and package the upstream-style `i420.bin` shader deterministically;
+5. prove native ARM linkage before one local-only device test, then test the
+   remote sink independently.
+
 ## Source pin
 
 The source checkout is intentionally external to this repository:

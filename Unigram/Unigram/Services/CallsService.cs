@@ -77,9 +77,10 @@ namespace Unigram.Services
         private const int ModernMicrophoneWaitMs = 8000;
         // The experimental CPU/WriteableBitmap preview path is isolated while native
         // capture/encoding is validated on Windows 10 Mobile.
-        // Test the UI-dispatched renderer one sink at a time. The prior CPU bridge crash
-        // happened when local and remote outputs were attached together.
-        private const bool ModernVideoLocalPreviewEnabled = true;
+        // The local CPU/WriteableBitmap sink still causes an access violation after the
+        // call establishes, even when it is the sole attached output. Keep both sinks
+        // isolated until a native renderer replaces this experimental path.
+        private const bool ModernVideoLocalPreviewEnabled = false;
         private const bool ModernVideoRemotePreviewEnabled = false;
         private const int ModernV2H264MaxBitrateKbps = 1536;
         private static readonly object _microphoneLock = new object();
