@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -857,6 +858,62 @@ private:
     uint64_t _windowFrames = 0;
     int32_t _windowPeak = 0;
 };
+
+/// <summary>
+/// Renders the render-endpoint names as a fixed-shape list so the endpoint a silent call
+/// is playing into can be identified from a diagnostics file. Device names describe
+/// hardware, not the user, and are sanitised anyway: every character outside
+/// [A-Za-z0-9 _-] is dropped and each name is truncated, so a renamed device cannot
+/// smuggle free text into the log.
+///
+/// Naming a device is not a cheap lookup in this WebRTC fork: every call re-enumerates
+/// the whole render device class and blocks on the async result, so the number of names
+/// read is capped to keep call setup bounded on a handset that reports many endpoints.
+/// </summary>
+std::string DescribePlayoutDevices(webrtc::AudioDeviceModule* module, int16_t count) {
+    if (module == nullptr || count <= 0) {
+        return "none";
+    }
+
+    constexpr int16_t kMaxNamedDevices = 4;
+    const int16_t named = count < kMaxNamedDevices ? count : kMaxNamedDevices;
+
+    std::string list;
+    for (int16_t index = 0; index < named; ++index) {
+        char name[webrtc::kAdmMaxDeviceNameSize] = {};
+        char guid[webrtc::kAdmMaxGuidSize] = {};
+        const auto result = module->PlayoutDeviceName(static_cast<uint16_t>(index), name, guid);
+
+        if (!list.empty()) {
+            list += "|";
+        }
+        list += std::to_string(index) + ":";
+
+        if (result != 0) {
+            list += "unavailable";
+            continue;
+        }
+
+        name[webrtc::kAdmMaxDeviceNameSize - 1] = '\0';
+        std::string sanitised;
+        for (const char* cursor = name; *cursor != '\0' && sanitised.size() < 48; ++cursor) {
+            const auto value = static_cast<unsigned char>(*cursor);
+            if (std::isalnum(value) != 0) {
+                sanitised += *cursor;
+            } else if (*cursor == ' ' || *cursor == '-' || *cursor == '_') {
+                sanitised += '_';
+            }
+        }
+        list += sanitised.empty() ? "unnamed" : sanitised;
+    }
+
+    if (named < count) {
+        list += "|+" + std::to_string(count - named);
+    }
+
+    return list;
+}
+
 /// <summary>
 /// Forwards every audio device module call to the real platform module, reporting only
 /// fixed step names and numeric result codes. No device names, identifiers, or audio
@@ -1317,8 +1374,10 @@ public:
                     const auto initialized = module->Init();
                     report = "created=1;init=" + std::to_string(initialized);
                     if (initialized == 0) {
-                        report += ";playout_devices=" + std::to_string(module->PlayoutDevices());
+                        const auto playoutDevices = module->PlayoutDevices();
+                        report += ";playout_devices=" + std::to_string(playoutDevices);
                         report += ";recording_devices=" + std::to_string(module->RecordingDevices());
+                        report += ";playout_names=" + DescribePlayoutDevices(module.get(), playoutDevices);
                     }
                 }
 

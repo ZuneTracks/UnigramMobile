@@ -1721,3 +1721,219 @@ version `26.9.6168.0`, `ProcessorArchitecture="arm"`; background entry point
 `Unigram.Native.Tasks.NotificationTask` present; `Telegram.Td.dll`, `Telegram.Td.winmd`
 and `ModernCallsBridge.dll` all present; zero `.pfx` / `Constants.Secret.cs` / `.pdb`
 entries; 23-file sideload ZIP (`.appxsym` and `TelemetryDependencies` excluded).
+
+## 26.9.6169.0 — the silent call: render stream tagged as "other sounds"
+
+The 6168 playout probe settled the question in one test. From the device log:
+
+```text
+voip.media|result=audio_level;...;playing=1;speaker_volume=100/100;speaker_mute=0;playout_peak_permille=827;playout_rate=48000
+```
+
+Peaks of 827, 637, 570 and 343 permille at 48 kHz, with the session unmuted at full
+volume. WebRTC was rendering loud, correct audio the whole time. Nothing upstream was
+broken: not decode, not the receive stream, not the network, not the audio track. The
+rendered samples were simply never reaching a speaker, which is why every ADM step had
+always reported `faulted=0;code=0`.
+
+### Root cause
+
+`InitMixer()` in `modules/audio_device/win/audio_device_core_win.cc` tagged the two
+directions of the call differently:
+
+```cpp
+if constexpr (DEVICE_CLASS == DeviceClass::DeviceClass_AudioCapture) {
+  properties.eCategory = AudioCategory_Communications;
+} else {
+  properties.eCategory = AudioCategory_Other;   // render
+}
+```
+
+Windows ducks streams tagged `AudioCategory_Other` while a communications stream is
+live, and the Windows 10 Mobile call audio policy mutes them outright. The app was
+therefore muting its own call audio: the capture stream declared a call in progress, and
+the render stream declared itself to be "other sounds" playing during that call.
+
+This explains every observation at once, including the asymmetry. Outbound audio always
+worked because capture was already tagged correctly, so the Android side heard
+everything. Only the inbound direction was silenced, and only on the handset.
+
+Fixed by tagging both directions as communications, which is also what upstream's newer
+core audio implementation (`core_audio_utility_win.cc`) does unconditionally. Persisted
+as `patches\webrtc-m123-winuwp-arm-render-communications-category.patch` and wired into
+`Build-WebRtcUwpArm.ps1`, so a clean WebRTC rebuild reproduces it; `webrtc.lib` must be
+rebuilt for the change to take effect.
+
+### Second defect: the speakerphone button never existed
+
+`VoIPPage.xaml` declared the routing toggle with `x:DeferLoadStrategy="Lazy"`, so the
+element was not realised until something called `FindName`, and nothing did. `OnLoaded`
+read it, found null, and took its early return:
+
+```text
+voip.ui|result=routing_skipped;reason=control_unavailable
+```
+
+That return happens before `AudioRoutingManager.GetDefault()`, so the deferral did not
+merely hide a button: it disabled call audio routing entirely. There was no earpiece or
+speakerphone control, and no `AudioEndpointChanged` subscription. The element now loads
+eagerly and starts `Collapsed`; `OnLoaded` still decides whether to show it, so an
+environment without the phone contract behaves as before.
+
+The control template binds `Text` to `CheckedGlyph` in both states, so the existing
+single-glyph declaration renders correctly.
+
+### Third change: endpoint names in diagnostics
+
+Module creation now reports `playout_names=0:<name>|1:<name>`, so the endpoint a silent
+call is playing into can be identified directly. Names describe hardware, not the user,
+and are sanitised regardless: every character outside `[A-Za-z0-9 _-]` is dropped and
+each name is truncated to 48 characters, so a renamed device cannot inject free text
+into the log.
+
+### Not a bug: the four emoji
+
+The four emoji above the caller's name are the call's encryption key fingerprint, which
+is standard Telegram behaviour. Both parties see the same four; reading them aloud
+confirms there is no man in the middle.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | --- |
+| `Unigram_26.9.6169.0_ARM_ModernTgCalls_AudioCategory_Sideload.zip` | `51FA851162399EF4BE2DC56DD94F78EDEC4537E0D70C47628C741C1BBF8AEE16` | 64,133,865 |
+| `Unigram_26.9.6169.0_ARM_ModernTgCalls_AudioCategory.appx` | `13E38539864616CDD8B7C6E9F930B1EDB3968A65A5EDC7BFEACFF5CBEE2E2D79` | 57,518,085 |
+| `Unigram_26.9.6169.0_ARM_ModernTgCalls_AudioCategory.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6169.0.map` | `C72255D25FB69C388C265FF76492CF4BECDEFF57FD602FEDE5809AE335ECC0A4` | 14,866,148 |
+
+Packed `ModernCallsBridge.dll`: `06EA2EC8E6AE6009D33BCAAFEAF8B345F1805B595A11F050D09E3CD34EE869B6`,
+hash-identical to the built binary in `bridge-probe\`.
+
+Verified: `signtool verify /pa` OK; identity `49197Wirdschon.UnigramMobileTdlibExperimental`,
+version `26.9.6169.0`, `ProcessorArchitecture="arm"`; background entry point
+`Unigram.Native.Tasks.NotificationTask` present; `Telegram.Td.dll`, `Telegram.Td.winmd`
+and `ModernCallsBridge.dll` present; zero `.pfx` / `Constants.Secret.cs` / `.pdb`
+entries; 23-file sideload ZIP.
+
+### What to check on the device
+
+1. Inbound audio from the Android handset is now audible.
+2. A speakerphone toggle appears to the right of the hang-up button and switches between
+   earpiece and loudspeaker.
+3. Mute still works (shipped in 6166, never device-tested).
+4. `playout_names=` in the log names both render endpoints.
+
+## 26.9.6170.0 — call protocol version negotiation
+
+### What 6169 settled
+
+Device testing confirmed both 6169 fixes.
+
+Calls to and from Android now carry audio in both directions. The render stream being
+tagged `AudioCategory_Other` was the whole of the inbound silence, and the log agrees:
+`playout_peak_permille` runs 163-781 across those calls, and the user hears them.
+
+The routing control also came back. `voip.ui|result=routing_ready;endpoint=Speakerphone;available=Earpiece, Speakerphone`
+replaced the old `routing_skipped;reason=control_unavailable`, and a later line in the
+same session shows `endpoint=Earpiece`, so the toggle is both present and effective.
+
+Two failures remain, and only one of them is ours.
+
+Calls between this build and another Windows 10 Mobile handset report that the peer must
+update Telegram. That handset runs the stable build on TDLib 1.7.10, which offers only
+libtgvoip. There is no shared protocol between libtgvoip and tgcalls, so this is expected
+and out of scope.
+
+Calls to and from iOS connect, hold, report four signal bars and report
+`remote_audio;state=Active`, and carry no audio in either direction.
+
+### Root cause candidate: we disagreed with the peer about which protocol to speak
+
+The iOS log is the opposite of the Android one. `playout_peak_permille` is `0` on every
+single sample across both iOS calls, while the microphone peak sits at its normal 3.4,
+so capture is healthy and the decoder is producing nothing at all. Transport is up;
+media is not. That is the signature of two peers running different wire protocols over a
+working connection.
+
+The bridge registers `InstanceImpl` alone, which claims versions `2.7.7` and `5.0.0`.
+Those are not aliases. `tgcalls::Meta::Create` in `Instance.cpp:42-46` maps `2.7.7` to
+`ProtocolVersion::V0` and `5.0.0` to `ProtocolVersion::V1`. Both peers must land on the
+same string.
+
+Comparing against UnigramDev/Unigram, the reference implementation, this build deviated
+from it in two places.
+
+The offer was ordered backwards. `VoipManager::Protocol()` sorts the registered versions
+numerically descending before offering them, with the comment "Server processes them
+newer to older". This build hardcoded `{ "2.7.7", "5.0.0" }`, which is ascending, so the
+offer advertised the older protocol as its preference.
+
+The reply was searched instead of read. The reference takes
+`ready.Protocol.LibraryVersions[0]` and nothing else: the ready-state list is the
+server's decision, not a menu. This build scanned the whole list for the first entry it
+recognised. That is identical to reading element zero whenever element zero is
+supported, and silently diverges the moment it is not, which is exactly how one peer ends
+up on V0 while the other runs V1.
+
+Both are now fixed. The offer is `{ "5.0.0", "2.7.7" }`, newest first, and selection
+reads the head and stops. A head this build does not implement no longer falls through to
+some other version: it is reported and declined, so the call drops to the legacy
+transport honestly rather than connecting into silence.
+
+### The diagnostic that will confirm or refute this
+
+One line per call, on its own budget so the shared call diagnostics cannot starve it:
+
+```text
+voip.version|result=negotiated;version=5.0.0;offered=2
+voip.version|result=unsupported;version=12.0.0;offered=8
+voip.version|result=unavailable;offered=0
+```
+
+This is the decisive line. `result=negotiated` with audible audio means the ordering was
+the defect and the matter is closed.
+
+`result=unsupported` means the server is negotiating a protocol this build does not
+implement, and names it. In that case the ordering was not the cause and the fix is to
+build and register `InstanceV2Impl` (versions `7.0.0`, `8.0.0`, `9.0.0`, `12.0.0`) or
+`InstanceV2ReferenceImpl` (`10.0.0`, `11.0.0`), neither of which is compiled into the
+bridge today. That is a substantially larger piece of work than this change, which is why
+the cheap and provably-correct alignment with the reference implementation comes first.
+
+`result=negotiated` with iOS still silent rules out version negotiation entirely and
+moves the search to codec or transport parameters.
+
+Version strings are protocol constants and carry nothing about the user. A server-supplied
+value is still reduced to digits and dots and capped at 16 characters before it reaches the
+log, so it cannot introduce separators into the line.
+
+### Also in this build
+
+`DescribePlayoutDevices` now names at most four render endpoints and appends `+N` for the
+remainder. Naming a device is not a cheap lookup in this WebRTC fork: every call
+re-enumerates the whole render device class and blocks on the result, so an unbounded loop
+put one blocking enumeration per endpoint on the call-setup path.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | --- |
+| `Unigram_26.9.6170.0_ARM_ModernTgCalls_VersionNegotiation_Sideload.zip` | `036002DE85CAAA983A10CE19C0B48A98AA63C54BC0C20A4CBE5EE5E71881A608` | 64,124,527 |
+| `Unigram_26.9.6170.0_ARM_ModernTgCalls_VersionNegotiation.appx` | `CA511F077E82DC71574843ABC94B746368C29D4AE2B880BFE365CFF1EA16409A` | 57,517,445 |
+| `Unigram_26.9.6170.0_ARM_ModernTgCalls_VersionNegotiation.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+| `ModernCallsBridge_26.9.6170.0.map` | `5A99E024CCDBD3755CD8DD89E13C9071965EC536D45055AF778C739156EC7B90` | 14,866,746 |
+
+Packed `ModernCallsBridge.dll`: `9B72D7E470EBFA8C7C30ECBB6717DB2804AED6316F264C4BD292AE93DF5E3FAC`,
+hash-identical to the built binary in `bridge-probe\`.
+
+Verified: `signtool verify /pa` OK; identity `49197Wirdschon.UnigramMobileTdlibExperimental`,
+version `26.9.6170.0`, `ProcessorArchitecture="arm"`; entry points `Unigram.App` and
+`Unigram.Native.Tasks.NotificationTask` present; 555 payload entries with zero `.pfx`,
+`Constants.Secret.cs`, `.pdb` or `.appxsym`; 23-file sideload ZIP.
+
+6169 is retained as the rollback reference, since it is the last build confirmed working
+against Android.

@@ -48,12 +48,26 @@ namespace Unigram.Services
         private const int LegacyVoipMinimumLayer = 65;
         private static int _audioCallDiagnosticBudget = 24;
 #if MODERN_TGCALLS
+        // Version negotiation gets its own budget. It is one line per call and the
+        // single most important thing in the log when a call connects but carries no
+        // audio, so it must not be starved by the shared call diagnostics.
+        private static int _audioCallVersionDiagnosticBudget = 24;
+#endif
+#if MODERN_TGCALLS
         // These are the registered versions from the pinned TgCalls source used by
         // the ARM bridge. Keeping the audited source-pin list in managed code
         // avoids loading WebRTC merely to construct a TDLib call request; the
         // bridge is activated only after TDLib provides the ready-state server
         // configuration.
-        private static readonly string[] ModernTgCallsVersions = { "2.7.7", "5.0.0" };
+        //
+        // The bridge registers InstanceImpl alone, which claims exactly these two.
+        // They are not interchangeable: tgcalls' Meta::Create maps "5.0.0" to
+        // ProtocolVersion::V1 and "2.7.7" to V0, so both peers must land on the same
+        // string or the transport connects and then carries media neither side can
+        // decode. Order is part of the contract -- the server reads the offer newest
+        // first and reports its choice back as LibraryVersions[0] -- so this list is
+        // sorted newest first and must stay that way.
+        private static readonly string[] ModernTgCallsVersions = { "5.0.0", "2.7.7" };
 #endif
 
         public static MessageTopic GetMessageTopic(long threadId)
@@ -1267,28 +1281,81 @@ namespace Unigram.Services
 #if MODERN_TGCALLS
             if (peerVersions == null || peerVersions.Count == 0)
             {
+                WriteAudioCallVersionDiagnostic("result=unavailable;offered=0");
                 return null;
             }
 
-            foreach (var peerVersion in peerVersions)
+            // Take the head and nothing else. The ready-state list is the server's
+            // decision, not a menu to search: every other client reads element zero,
+            // so scanning further down for something we happen to support is how one
+            // peer ends up on V0 while the other runs V1. That mismatch still
+            // connects and still reports signal bars, and then neither side can
+            // decode a single frame from the other.
+            var negotiated = peerVersions[0];
+            if (string.IsNullOrWhiteSpace(negotiated))
             {
-                if (string.IsNullOrWhiteSpace(peerVersion))
-                {
-                    continue;
-                }
+                WriteAudioCallVersionDiagnostic($"result=unavailable;offered={peerVersions.Count}");
+                return null;
+            }
 
-                foreach (var localVersion in ModernTgCallsVersions)
+            foreach (var localVersion in ModernTgCallsVersions)
+            {
+                if (string.Equals(negotiated, localVersion, StringComparison.Ordinal))
                 {
-                    if (string.Equals(peerVersion, localVersion, StringComparison.Ordinal))
-                    {
-                        return peerVersion;
-                    }
+                    WriteAudioCallVersionDiagnostic(
+                        $"result=negotiated;version={negotiated};offered={peerVersions.Count}");
+                    return negotiated;
                 }
             }
+
+            // The server picked something this build does not implement. Report it and
+            // let the caller fall back to the legacy transport; silently substituting a
+            // version we do support would produce the exact silent-call mismatch above.
+            WriteAudioCallVersionDiagnostic(
+                $"result=unsupported;version={SanitizeVersion(negotiated)};offered={peerVersions.Count}");
 #endif
 
             return null;
         }
+
+#if MODERN_TGCALLS
+        /// <summary>
+        /// Keeps a server-supplied version string to the shape a version can have, so an
+        /// unexpected value cannot introduce separators into the diagnostics line. Version
+        /// strings are protocol constants and carry nothing about the user.
+        /// </summary>
+        private static string SanitizeVersion(string version)
+        {
+            if (string.IsNullOrEmpty(version))
+            {
+                return "none";
+            }
+
+            var builder = new System.Text.StringBuilder(version.Length);
+            foreach (var character in version)
+            {
+                if (char.IsDigit(character) || character == '.')
+                {
+                    builder.Append(character);
+                }
+
+                if (builder.Length >= 16)
+                {
+                    break;
+                }
+            }
+
+            return builder.Length == 0 ? "unrecognised" : builder.ToString();
+        }
+
+        private static void WriteAudioCallVersionDiagnostic(string detail)
+        {
+            if (System.Threading.Interlocked.Decrement(ref _audioCallVersionDiagnosticBudget) >= 0)
+            {
+                PushDiagnostics.Write("voip.version", detail);
+            }
+        }
+#endif
 
         public static void LogAudioCallRequestResult(string operation, BaseObject response)
         {

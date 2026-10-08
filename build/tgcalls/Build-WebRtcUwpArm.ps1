@@ -20,6 +20,7 @@ $patches = @{
     Opus = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-scalar-opus.patch'
     AudioOnlyLibaom = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-audio-only-libaom.patch'
     AudioOnlyLibvpx = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-audio-only-libvpx.patch'
+    RenderCategory = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-render-communications-category.patch'
 }
 
 if (-not (Test-Path -LiteralPath $buildScript)) {
@@ -84,6 +85,7 @@ if ($boringSslTlsText.Contains('#if defined(_WIN64) || defined(_M_ARM)')) {
 Use-Patch (Join-Path $Src 'third_party') '__OPUS_PATCH__'
 Use-Patch $Src '__AUDIO_ONLY_LIBAOM_PATCH__'
 Use-Patch $Src '__AUDIO_ONLY_LIBVPX_PATCH__'
+Use-Patch $Src '__RENDER_CATEGORY_PATCH__'
 '@
 
 $patchInjection = $patchInjection.Replace('__RUST_PATCH__', $patches.Rust)
@@ -95,6 +97,7 @@ $patchInjection = $patchInjection.Replace('__BORINGSSL_PATCH__', $patches.Boring
 $patchInjection = $patchInjection.Replace('__OPUS_PATCH__', $patches.Opus)
 $patchInjection = $patchInjection.Replace('__AUDIO_ONLY_LIBAOM_PATCH__', $patches.AudioOnlyLibaom)
 $patchInjection = $patchInjection.Replace('__AUDIO_ONLY_LIBVPX_PATCH__', $patches.AudioOnlyLibvpx)
+$patchInjection = $patchInjection.Replace('__RENDER_CATEGORY_PATCH__', $patches.RenderCategory)
 
 $scriptText = $scriptText.Replace(
     '$vs = Get-VisualStudio',
@@ -110,7 +113,8 @@ if (-not $scriptText.Contains('enable_rust=false arm_version=6 arm_use_neon=fals
     -not $scriptText.Contains($patches.BoringSsl) -or
     -not $scriptText.Contains($patches.Opus) -or
     -not $scriptText.Contains($patches.AudioOnlyLibaom) -or
-    -not $scriptText.Contains($patches.AudioOnlyLibvpx)) {
+    -not $scriptText.Contains($patches.AudioOnlyLibvpx) -or
+    -not $scriptText.Contains($patches.RenderCategory)) {
     throw 'Unable to apply the ARM UWP compatibility configuration to the temporary build script.'
 }
 

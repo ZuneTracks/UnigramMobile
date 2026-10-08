@@ -313,7 +313,10 @@
                     ToolTipService.ToolTip="{CustomResource VoipEndCall}"/>
             </Border>
 
-            <controls:GlyphToggleButton x:Name="Routing" x:DeferLoadStrategy="Lazy" Click="Routing_Click" CheckedGlyph="&#xE767;" HorizontalAlignment="Left" Margin="12,0,0,0" Grid.Column="4"/>
+            <!-- Not deferred: OnLoaded reads this element to wire AudioRoutingManager, and
+                 a deferred element is still null at that point, which silently disabled
+                 both the speakerphone toggle and all call audio routing. -->
+            <controls:GlyphToggleButton x:Name="Routing" Visibility="Collapsed" Click="Routing_Click" CheckedGlyph="&#xE767;" HorizontalAlignment="Left" Margin="12,0,0,0" Grid.Column="4"/>
         </Grid>
     </Grid>
 </Page>
