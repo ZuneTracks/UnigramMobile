@@ -721,6 +721,9 @@ __declspec(noinline) int32_t InvokeGuarded(
 std::atomic<int> g_playoutPeakPermille{0};
 std::atomic<uint32_t> g_playoutSampleRate{0};
 std::atomic<uint64_t> g_playoutWindows{0};
+std::atomic<int> g_capturePeakPermille{0};
+std::atomic<uint32_t> g_captureSampleRate{0};
+std::atomic<uint64_t> g_captureWindows{0};
 
 /// <summary>
 /// Wraps the real audio transport so the playout stream can be measured. Only a peak
@@ -739,6 +742,9 @@ public:
         g_playoutPeakPermille.store(0, std::memory_order_relaxed);
         g_playoutSampleRate.store(0, std::memory_order_relaxed);
         g_playoutWindows.store(0, std::memory_order_release);
+        g_capturePeakPermille.store(0, std::memory_order_relaxed);
+        g_captureSampleRate.store(0, std::memory_order_relaxed);
+        g_captureWindows.store(0, std::memory_order_release);
     }
 
     int32_t RecordedDataIsAvailable(
@@ -752,6 +758,12 @@ public:
             uint32_t currentMicLevel,
             bool keyPressed,
             uint32_t& newMicLevel) override {
+        MeasureCapture(
+            static_cast<const int16_t*>(audioSamples),
+            nSamples,
+            nChannels,
+            samplesPerSec,
+            nBytesPerSample);
         return _inner->RecordedDataIsAvailable(
             audioSamples, nSamples, nBytesPerSample, nChannels, samplesPerSec,
             totalDelayMS, clockDrift, currentMicLevel, keyPressed, newMicLevel);
@@ -769,6 +781,12 @@ public:
             bool keyPressed,
             uint32_t& newMicLevel,
             absl::optional<int64_t> estimatedCaptureTimeNS) override {
+        MeasureCapture(
+            static_cast<const int16_t*>(audioSamples),
+            nSamples,
+            nChannels,
+            samplesPerSec,
+            nBytesPerSample);
         return _inner->RecordedDataIsAvailable(
             audioSamples, nSamples, nBytesPerSample, nChannels, samplesPerSec,
             totalDelayMS, clockDrift, currentMicLevel, keyPressed, newMicLevel,
@@ -841,6 +859,45 @@ public:
     }
 
 private:
+    void MeasureCapture(
+            const int16_t* samples,
+            size_t frames,
+            size_t channels,
+            uint32_t sampleRate,
+            size_t bytesPerSample) {
+        if (channels == 0 || bytesPerSample != sizeof(int16_t) * channels ||
+            samples == nullptr || frames == 0 || sampleRate == 0) {
+            return;
+        }
+
+        const size_t count = frames * channels;
+        int32_t peak = 0;
+        for (size_t i = 0; i < count; ++i) {
+            const int32_t value = samples[i] < 0 ? -static_cast<int32_t>(samples[i]) : samples[i];
+            if (value > peak) {
+                peak = value;
+            }
+        }
+
+        if (peak > _captureWindowPeak) {
+            _captureWindowPeak = peak;
+        }
+
+        _captureWindowFrames += frames;
+        if (_captureWindowFrames < static_cast<uint64_t>(sampleRate) * 2) {
+            return;
+        }
+
+        g_capturePeakPermille.store(
+            static_cast<int>((static_cast<int64_t>(_captureWindowPeak) * 1000) / 32768),
+            std::memory_order_relaxed);
+        g_captureSampleRate.store(sampleRate, std::memory_order_relaxed);
+        g_captureWindows.fetch_add(1, std::memory_order_release);
+
+        _captureWindowFrames = 0;
+        _captureWindowPeak = 0;
+    }
+
     /// <summary>
     /// Accumulates a peak over roughly two seconds of playout and publishes it as a
     /// permille of full scale, so a silent stream is distinguishable from a quiet one
@@ -886,9 +943,13 @@ private:
 
     webrtc::AudioTransport* _inner;
 
-    // Only ever touched on the render thread.
+    // Only touched on the render thread.
     uint64_t _windowFrames = 0;
     int32_t _windowPeak = 0;
+
+    // Only touched on the recording thread.
+    uint64_t _captureWindowFrames = 0;
+    int32_t _captureWindowPeak = 0;
 };
 
 /// <summary>
@@ -1750,6 +1811,17 @@ public:
                 ";playout_windows=" + std::to_string(windows);
         } else {
             status += ";playout_peak_permille=pending";
+        }
+
+        const auto captureWindows = g_captureWindows.load(std::memory_order_acquire);
+        if (captureWindows != 0) {
+            status += ";capture_peak_permille=" +
+                std::to_string(g_capturePeakPermille.load(std::memory_order_relaxed)) +
+                ";capture_rate=" +
+                std::to_string(g_captureSampleRate.load(std::memory_order_relaxed)) +
+                ";capture_windows=" + std::to_string(captureWindows);
+        } else {
+            status += ";capture_peak_permille=pending";
         }
 
         return status;

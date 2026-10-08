@@ -2554,19 +2554,21 @@ telemetry content.
 6180 added the upstream V2 implementations and preserves the supplied Windows audio
 device module for both `InstanceV2Impl` and `InstanceV2ReferenceImpl`. Its existing
 aggregate RTP/RTCP counters, however, were attached only to the V1 `MediaManager`
-receive path. A V2 call could therefore have reported misleading zero receive totals
-even when the native V2 transport delivered media.
+receive path.
 
-6181 records the same bounded, content-free receive measurements at V2's
+6181 also records bounded, content-free receive measurements at V2's
 `RtpPacketReceived_n` and `OnRtcpPacketReceived_n` callbacks: aggregate incoming
-RTP/RTCP counts, largest received packet, RTCP sender reports, and RTCP feedback. A V2
-counter is transport-wide if a call negotiates multiple media streams; this experiment's
-acceptance scope is audio-only. The V1 path continues to use the shared helpers and
-preserves malformed-RTP and undemuxed counters. No packet payload, ID, address,
-signaling, key, account, token, or path is stored or logged. Outbound V2 packet counts
-remain intentionally unspecified; device acceptance requires audible W10M uplink on
-iOS, and incoming media is evidenced by V2 `rtp_in`/`rtcp_sr` together with the
-existing audio-device playout aggregate.
+RTP/RTCP counts, largest received packet, RTCP sender reports, and RTCP feedback. The
+V1 path continues to use the shared helpers and preserves malformed-RTP and undemuxed
+counters. No packet payload, ID, address, signaling, key, account, token, or path is
+stored or logged.
+
+V2 device acceptance later established an important diagnostic boundary: version
+`8.0.0` delivered non-silent W10M playout while the V2 RTP callback counter remained
+zero. Therefore V2 `rtp_in` is supplementary transport evidence, not a condition for
+success. The acceptance criteria are negotiated V2, active recording/playout,
+non-silent `playout_peak_permille`, and audible media in both directions. Outbound V2
+packet counts remain intentionally unspecified.
 
 ### Artifacts
 
@@ -2588,6 +2590,51 @@ and 23,830,502 bytes.
 Verification: the hardened native bridge proof and the Release|ARM APPX build completed
 with zero errors; Authenticode status is valid; manifest identity is
 `49197Wirdschon.UnigramMobileTdlibExperimental`; version `26.9.6181.0`; architecture
+`arm`; and the push background entry point remains present. The APPX has 554 entries
+including TDLib, the V2 bridge WinMD/DLL, `z.dll`, and `zlib1.dll`, with no
+source-secret, PFX, or PDB payload. The sideload ZIP has exactly 23 entries and contains
+only installer resources, the APPX/certificate, and four ARM dependency APPXs.
+
+## 26.9.6182.0 — privacy-safe capture evidence
+
+The audio-device transport wrapper already reported a bounded playout peak. 6182 adds
+the matching capture-side aggregate: a two-second microphone peak amplitude, sample
+rate, and completed-window count. The wrapper reads 16-bit frames only long enough to
+compute a peak and forwards them immediately; it does not retain, serialize, or log
+audio samples. `capture_peak_permille` therefore confirms that the local W10M capture
+callback is receiving non-silent input without exposing message or call content.
+
+### Device acceptance result
+
+The supplied W10M/iOS device diagnostics confirmed the upstream V2 fix. Two calls
+negotiated `8.0.0`, reached `Established`, and reported active remote audio. W10M
+reported `recording=1`, `playing=1`, and non-silent playout peaks (including 560, 538,
+759, 582, and 301 permille at 16 kHz). RTCP sender-report and feedback totals increased
+through each call. The tester confirmed audible media in both iOS-to-W10M and
+W10M-to-iOS directions and confirmed speakerphone behavior is resolved. The log contains
+no V2 RTP callback increments, which is expected under the diagnostic boundary above
+and does not contradict the observed decoded playout.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `Unigram_26.9.6182.0_ARM_CaptureDiagnostics_Sideload.zip` | `48B5EC6BDD35AD0F57763F24C27F98BB5FEBEDCB2635D26A90DC3C35AA72F830` | 65,011,789 |
+| `Unigram_26.9.6182.0_ARM_CaptureDiagnostics.appx` | `6C78FDB90EA0D08B8FC407AC28A845F363FD88E9C563948159B8CE1305DA888C` | 58,401,682 |
+| `Unigram_26.9.6182.0_ARM_CaptureDiagnostics.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+
+The rebuilt/package-matching bridge SHA-256 is
+`58133AE47C515C3E9D484210583C3DF98FA7B90C3CD0FF73BF1CA7FCA145F6C2`.
+The non-package map at
+`%LOCALAPPDATA%\UnigramTdlibExperiment\bridge-probe\ModernCallsBridge.map` has SHA-256
+`7891C0EBC07F147F7085786872ED0BE892B8AC9ABFFABCD1ABE386FA404F4ACD`
+and 23,833,795 bytes.
+
+Verification: the hardened native bridge proof and Release|ARM APPX build completed
+with zero errors; Authenticode status is valid; manifest identity remains
+`49197Wirdschon.UnigramMobileTdlibExperimental`; version `26.9.6182.0`; architecture
 `arm`; and the push background entry point remains present. The APPX has 554 entries
 including TDLib, the V2 bridge WinMD/DLL, `z.dll`, and `zlib1.dll`, with no
 source-secret, PFX, or PDB payload. The sideload ZIP has exactly 23 entries and contains
