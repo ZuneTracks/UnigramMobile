@@ -75,6 +75,9 @@ namespace Unigram.Services
         private const float ModernAudibleLevel = 0.01f;
         private const int ModernMediaDiagnosticBudget = 192;
         private const int ModernMicrophoneWaitMs = 8000;
+        // The experimental CPU/WriteableBitmap preview path is isolated while native
+        // capture/encoding is validated on Windows 10 Mobile.
+        private const bool ModernVideoPreviewEnabled = false;
         private static readonly object _microphoneLock = new object();
         private static Task<int> _microphoneTask;
         private static readonly object _videoCaptureLock = new object();
@@ -1398,6 +1401,12 @@ namespace Unigram.Services
         {
             if (_modernVideoOutputsEnabled || _modernCallId != callId)
             {
+                return;
+            }
+
+            if (!ModernVideoPreviewEnabled)
+            {
+                WriteModernMediaDiagnostic("result=video_output;state=disabled;reason=preview_isolation");
                 return;
             }
 
