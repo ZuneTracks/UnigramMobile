@@ -182,11 +182,16 @@
         <!--<Image x:Name="Image" Source="http://i.imgur.com/kx2hM3N.jpg" Opacity="0.6" Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center"/>-->
         <Image x:Name="Image" Opacity="0.6" Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center"/>
         <Grid x:Name="RemoteVideo" Visibility="Collapsed" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
-        <Border x:Name="LocalVideoPanel" Visibility="Collapsed" Width="112" Height="150" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,12,60" Background="Transparent" BorderBrush="White" BorderThickness="2" PointerPressed="LocalVideoPanel_PointerPressed" PointerMoved="LocalVideoPanel_PointerMoved" PointerReleased="LocalVideoPanel_PointerReleased" PointerCanceled="LocalVideoPanel_PointerCanceled">
+        <Border x:Name="LocalVideoPanel" Visibility="Collapsed" Width="112" Height="150" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,12,60" Background="Transparent" BorderBrush="White" BorderThickness="2">
             <Border.RenderTransform>
                 <TranslateTransform x:Name="LocalVideoTransform"/>
             </Border.RenderTransform>
-            <Grid x:Name="LocalVideo" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+            <Grid>
+                <Grid x:Name="LocalVideo" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+                <Border x:Name="LocalVideoDragHandle" Background="#99000000" Height="24" VerticalAlignment="Top" PointerPressed="LocalVideoPanel_PointerPressed" PointerMoved="LocalVideoPanel_PointerMoved" PointerReleased="LocalVideoPanel_PointerReleased" PointerCanceled="LocalVideoPanel_PointerCanceled" PointerCaptureLost="LocalVideoPanel_PointerCaptureLost">
+                    <TextBlock Text="Drag" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+            </Grid>
         </Border>
         <Border x:Name="BackgroundPanel" Background="Transparent"/>
 

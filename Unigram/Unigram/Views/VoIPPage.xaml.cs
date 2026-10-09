@@ -233,9 +233,13 @@ namespace Unigram.Views
                 return;
             }
 
+            if (!LocalVideoDragHandle.CapturePointer(e.Pointer))
+            {
+                return;
+            }
+
             _localVideoPointerId = e.Pointer.PointerId;
             _localVideoPointerPosition = e.GetCurrentPoint(this).Position;
-            LocalVideoPanel.CapturePointer(e.Pointer);
             e.Handled = true;
         }
 
@@ -264,6 +268,17 @@ namespace Unigram.Views
             CompleteLocalVideoPointer(e);
         }
 
+        private void LocalVideoPanel_PointerCaptureLost(object sender, PointerRoutedEventArgs e)
+        {
+            if (_localVideoPointerId != e.Pointer.PointerId)
+            {
+                return;
+            }
+
+            _localVideoPointerId = null;
+            SnapLocalVideoPreview();
+        }
+
         private void CompleteLocalVideoPointer(PointerRoutedEventArgs e)
         {
             if (_localVideoPointerId != e.Pointer.PointerId)
@@ -271,15 +286,19 @@ namespace Unigram.Views
                 return;
             }
 
-            LocalVideoPanel.ReleasePointerCapture(e.Pointer);
+            LocalVideoDragHandle.ReleasePointerCapture(e.Pointer);
             _localVideoPointerId = null;
-            ClampLocalVideoPreview();
+            SnapLocalVideoPreview();
+            e.Handled = true;
+        }
 
+        private void SnapLocalVideoPreview()
+        {
+            ClampLocalVideoPreview();
             var minimumX = GetMinimumLocalPreviewTranslationX();
             var minimumY = GetMinimumLocalPreviewTranslationY();
             LocalVideoTransform.X = minimumX < 0 && LocalVideoTransform.X < minimumX / 2 ? minimumX : 0;
             LocalVideoTransform.Y = minimumY < 0 && LocalVideoTransform.Y < minimumY / 2 ? minimumY : 0;
-            e.Handled = true;
         }
 
         private void ClampLocalVideoPreview()
