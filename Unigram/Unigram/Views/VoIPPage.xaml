@@ -193,7 +193,7 @@
                 </Border>
             </Grid>
         </Border>
-        <Border x:Name="BackgroundPanel" Background="Transparent"/>
+        <Border x:Name="BackgroundPanel" Background="Transparent" IsHitTestVisible="False"/>
 
         <Border
             x:Name="CallDetailsPanel"

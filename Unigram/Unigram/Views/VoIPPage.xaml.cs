@@ -199,12 +199,17 @@ namespace Unigram.Views
 
         public void Dispose()
         {
-            _disposed = true;
+            if (_disposed)
+            {
+                return;
+            }
+
+            Logs.PushDiagnostics.Write("voip.ui", "stage=dispose_begin");
             _debugTimer.Stop();
             _durationTimer.Stop();
 #if MODERN_TGCALLS
-            ClearModernVideoOutputVisual(true);
-            ClearModernVideoOutputVisual(false);
+            ClearModernVideoOutputVisualCore(true);
+            ClearModernVideoOutputVisualCore(false);
 #endif
 
             if (_controller != null)
@@ -219,6 +224,9 @@ namespace Unigram.Views
                 _audioRoutingManager.AudioEndpointChanged -= AudioEndpointChanged;
                 _audioRoutingManager = null;
             }
+
+            _disposed = true;
+            Logs.PushDiagnostics.Write("voip.ui", "stage=dispose_end");
         }
 
         private void OnSizeChanged(object sender, SizeChangedEventArgs e)
@@ -361,6 +369,16 @@ namespace Unigram.Views
         }
 
         public void ClearModernVideoOutputVisual(bool local)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            ClearModernVideoOutputVisualCore(local);
+        }
+
+        private void ClearModernVideoOutputVisualCore(bool local)
         {
             if (local)
             {
