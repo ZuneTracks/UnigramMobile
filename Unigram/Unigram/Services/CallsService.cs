@@ -74,6 +74,7 @@ namespace Unigram.Services
         private readonly Dictionary<int, List<List<byte>>> _pendingModernSignalingData = new Dictionary<int, List<List<byte>>>();
         private const float ModernAudibleLevel = 0.01f;
         private string _modernVideoCaptureDeviceId;
+        private string _modernPendingVideoCaptureDeviceId;
         private const int ModernMediaDiagnosticBudget = 192;
         private const int ModernMicrophoneWaitMs = 8000;
         // The CPU/WriteableBitmap preview path is permanently replaced by native
@@ -782,15 +783,24 @@ namespace Unigram.Services
                 return false;
             }
 
+            if (System.Threading.Interlocked.CompareExchange(
+                    ref _modernPendingVideoCaptureDeviceId,
+                    deviceId,
+                    null) != null)
+            {
+                WriteModernMediaDiagnostic("result=video_capture;state=device_switch_pending");
+                return false;
+            }
+
             try
             {
                 session.SwitchVideoCaptureDevice(deviceId);
-                _modernVideoCaptureDeviceId = deviceId;
                 WriteModernMediaDiagnostic("result=video_capture;state=device_switch_requested;selector=uwp_id");
                 return true;
             }
             catch (Exception error)
             {
+                System.Threading.Interlocked.Exchange(ref _modernPendingVideoCaptureDeviceId, null);
                 WriteModernMediaDiagnostic($"result=video_capture;state=device_switch_failed;hresult=0x{error.HResult:X8}");
                 return false;
             }
@@ -1062,8 +1072,29 @@ namespace Unigram.Services
                     GuardModernCallback("video_capture_failed", () => WriteModernMediaDiagnostic("result=video_capture;transport=modern_tgcalls;state=failed"));
                 session.VideoCaptureSwitchCompleted += (sender, succeeded) =>
                     GuardModernCallback("video_capture_switch_completed", () =>
+                    {
+                        var deviceId = System.Threading.Interlocked.Exchange(
+                            ref _modernPendingVideoCaptureDeviceId,
+                            null);
+                        if (succeeded && !string.IsNullOrEmpty(deviceId))
+                        {
+                            _modernVideoCaptureDeviceId = deviceId;
+                            var callPage = _callPage;
+                            callPage?.Dispatcher.RunAsync(
+                                Windows.UI.Core.CoreDispatcherPriority.Normal,
+                                () => callPage.CompleteModernVideoCaptureDeviceSwitch(deviceId, true));
+                        }
+                        else
+                        {
+                            var callPage = _callPage;
+                            callPage?.Dispatcher.RunAsync(
+                                Windows.UI.Core.CoreDispatcherPriority.Normal,
+                                () => callPage.CompleteModernVideoCaptureDeviceSwitch(null, false));
+                        }
+
                         WriteModernMediaDiagnostic(
-                            $"result=video_capture;state=device_switch_{(succeeded ? "completed" : "failed")};selector=uwp_id"));
+                            $"result=video_capture;state=device_switch_{(succeeded ? "completed" : "failed")};selector=uwp_id");
+                    });
                 session.VideoOutputFailed += (sender, hresult) =>
                     GuardModernCallback("video_output", () =>
                         WriteModernMediaDiagnostic($"result=video_output;transport=modern_tgcalls;state=native_render_failed;hresult=0x{hresult:X8}"));
@@ -1571,6 +1602,7 @@ namespace Unigram.Services
 
             _modernCallId = 0;
             _modernVideoCaptureDeviceId = null;
+            _modernPendingVideoCaptureDeviceId = null;
             _modernCallStarting = false;
 
             try

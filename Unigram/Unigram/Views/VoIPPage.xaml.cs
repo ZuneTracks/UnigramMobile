@@ -425,8 +425,23 @@ namespace Unigram.Views
             _modernCameraDeviceId = deviceId;
         }
 
+        public void CompleteModernVideoCaptureDeviceSwitch(string deviceId, bool succeeded)
+        {
+            _modernCameraSwitchPending = false;
+            if (succeeded)
+            {
+                _modernCameraDeviceId = deviceId;
+            }
+        }
+
         private async void Camera_Click(object sender, RoutedEventArgs e)
         {
+            if (_modernCameraSwitchPending)
+            {
+                Logs.PushDiagnostics.Write("voip.video", "result=camera_switch;state=pending");
+                return;
+            }
+
             try
             {
                 var devices = await Windows.Devices.Enumeration.DeviceInformation.FindAllAsync(
@@ -445,13 +460,14 @@ namespace Unigram.Views
                     return;
                 }
 
+                _modernCameraSwitchPending = true;
                 if (ModernVideoDeviceRequested == null || !ModernVideoDeviceRequested(target.Id))
                 {
+                    _modernCameraSwitchPending = false;
                     Logs.PushDiagnostics.Write("voip.video", "result=camera_switch;state=not_ready");
                     return;
                 }
 
-                _modernCameraDeviceId = target.Id;
                 var targetIsFront = target.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front;
                 Logs.PushDiagnostics.Write("voip.video", $"result=camera_switch;front={(targetIsFront ? 1 : 0)}");
             }
@@ -978,6 +994,7 @@ namespace Unigram.Views
         }
 
 #if MODERN_TGCALLS
+        private bool _modernCameraSwitchPending;
         /// <summary>
         /// Supplied by CallsService so the mute toggle can reach the modern tgcalls session.
         /// </summary>
