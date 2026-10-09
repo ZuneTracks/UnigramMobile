@@ -2085,6 +2085,30 @@ namespace Unigram.Views
             }
         }
 
+        private void Message_Tapped(object sender, TappedRoutedEventArgs e)
+        {
+            if (ViewModel.SelectionMode != ListViewSelectionMode.None || sender is UIElement == false)
+            {
+                return;
+            }
+
+            var element = sender as FrameworkElement;
+            var message = element?.Tag as MessageViewModel;
+            if (message == null && sender is SelectorItem selector)
+            {
+                message = (selector.ContentTemplateRoot as FrameworkElement)?.Tag as MessageViewModel;
+            }
+
+            // Keep media, links, inline buttons, and reaction chips on their established tap paths.
+            if (!(message?.Content is MessageText) || e.OriginalSource is Button)
+            {
+                return;
+            }
+
+            e.Handled = true;
+            Message_ContextRequested(sender as UIElement, null);
+        }
+
         private async void Message_ContextRequested(UIElement sender, ContextRequestedEventArgs args)
         {
             var flyout = new MenuFlyout();
@@ -2117,7 +2141,7 @@ namespace Unigram.Views
                 return;
             }
 
-            if (args.TryGetPosition(Window.Current.Content as FrameworkElement, out Point point))
+            if (args != null && args.TryGetPosition(Window.Current.Content as FrameworkElement, out Point point))
             {
                 var children = VisualTreeHelper.FindElementsInHostCoordinates(point, element);
                 var textBlock = children.FirstOrDefault(x => x is RichTextBlock) as RichTextBlock;
@@ -2253,7 +2277,14 @@ namespace Unigram.Views
                 flyout.Items.RemoveAt(flyout.Items.Count - 1);
             }
 
-            args.ShowAt(flyout, sender as FrameworkElement);
+            if (args != null)
+            {
+                args.ShowAt(flyout, sender as FrameworkElement);
+            }
+            else
+            {
+                flyout.ShowAt(element ?? sender as FrameworkElement);
+            }
         }
 
         private static readonly string[] StandardReactionEmojis =

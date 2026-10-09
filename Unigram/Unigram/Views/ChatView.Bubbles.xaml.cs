@@ -1445,6 +1445,7 @@ namespace Unigram.Views
             SelectorItem item = new ChatListViewItem(Messages);
             item.ContentTemplate = _typeToTemplateMapping[typeName];
             item.Tag = typeName;
+            item.Tapped += Message_Tapped;
 
             // For some reason the event is available since Anniversary Update,
             // but the property has been added in April Update.

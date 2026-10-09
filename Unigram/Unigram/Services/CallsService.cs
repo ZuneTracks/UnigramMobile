@@ -792,6 +792,53 @@ namespace Unigram.Services
             }
         }
 
+        private bool ConfigureModernVideoControls(VoIPPage callPage, int callId)
+        {
+            if (callPage == null || _modernController == null || _modernCallId != callId)
+            {
+                return false;
+            }
+
+            callPage.ModernVideoDeviceRequested = SwitchModernVideoCaptureDevice;
+            callPage.SetModernVideoCaptureDevice(_modernVideoCaptureDeviceId);
+            callPage.EnableModernVideoControls();
+            return true;
+        }
+
+        private void EnableModernVideoControls(int callId)
+        {
+            var callPage = _callPage;
+            if (callPage == null)
+            {
+                WriteModernMediaDiagnostic("result=camera_controls;state=deferred");
+                return;
+            }
+
+            try
+            {
+                callPage.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, () =>
+                {
+                    try
+                    {
+                        WriteModernMediaDiagnostic(
+                            ConfigureModernVideoControls(callPage, callId)
+                                ? "result=camera_controls;state=enabled"
+                                : "result=camera_controls;state=not_ready");
+                    }
+                    catch (Exception error)
+                    {
+                        WriteModernMediaDiagnostic(
+                            $"result=camera_controls;state=failed;hresult=0x{error.HResult:X8}");
+                    }
+                });
+            }
+            catch (Exception error)
+            {
+                WriteModernMediaDiagnostic(
+                    $"result=camera_controls;state=dispatch_failed;hresult=0x{error.HResult:X8}");
+            }
+        }
+
         private static bool _modernCrashDiagnosticsEnabled;
 
         private void EnableModernCrashDiagnostics()
@@ -1018,6 +1065,10 @@ namespace Unigram.Services
                 _modernVideoCaptureDeviceId = cameraDeviceId;
                 _modernCallStarting = true;
                 session.Start();
+                if (call.IsVideo)
+                {
+                    EnableModernVideoControls(call.Id);
+                }
                 if (_modernMuted)
                 {
                     // The toggle can be flipped before the session exists, so re-apply it
@@ -1882,10 +1933,9 @@ namespace Unigram.Services
                         callPage.ModernMuteRequested = SetModernMuted;
                         callPage.ModernAudioOutputEndpointRequested = SetModernAudioOutputEndpoint;
                         callPage.ModernVideoDeviceRequested = SwitchModernVideoCaptureDevice;
-                        if (call.IsVideo && _modernController != null && _modernCallId == call.Id)
+                        if (call.IsVideo)
                         {
-                            callPage.SetModernVideoCaptureDevice(_modernVideoCaptureDeviceId);
-                            callPage.EnableModernVideoControls();
+                            ConfigureModernVideoControls(callPage, call.Id);
                         }
 
                         // The page can be created after the bridge already reported its
