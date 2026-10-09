@@ -31,6 +31,10 @@ namespace Unigram.Views
 {
     public sealed partial class VoIPPage : Page, IDisposable
     {
+        private const double LocalPreviewSideMargin = 12;
+        private const double LocalPreviewBottomClearance = 60;
+        private const double LocalPreviewTopClearance = 148;
+
         private Compositor _compositor;
 
         private readonly IProtoService _protoService;
@@ -212,6 +216,67 @@ namespace Unigram.Views
                 _audioRoutingManager.AudioEndpointChanged -= AudioEndpointChanged;
                 _audioRoutingManager = null;
             }
+        }
+
+        private void OnSizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            ClampLocalVideoPreview();
+        }
+
+        private void LocalVideoPanel_ManipulationDelta(object sender, ManipulationDeltaRoutedEventArgs e)
+        {
+            if (e.IsInertial)
+            {
+                e.Complete();
+                return;
+            }
+
+            LocalVideoTransform.X += e.Delta.Translation.X;
+            LocalVideoTransform.Y += e.Delta.Translation.Y;
+            ClampLocalVideoPreview();
+            e.Handled = true;
+        }
+
+        private void LocalVideoPanel_ManipulationCompleted(object sender, ManipulationCompletedRoutedEventArgs e)
+        {
+            ClampLocalVideoPreview();
+
+            var minimumX = GetMinimumLocalPreviewTranslationX();
+            var minimumY = GetMinimumLocalPreviewTranslationY();
+            LocalVideoTransform.X = minimumX < 0 && LocalVideoTransform.X < minimumX / 2 ? minimumX : 0;
+            LocalVideoTransform.Y = minimumY < 0 && LocalVideoTransform.Y < minimumY / 2 ? minimumY : 0;
+            e.Handled = true;
+        }
+
+        private void ClampLocalVideoPreview()
+        {
+            if (LocalVideoTransform == null || LocalVideoPanel == null ||
+                ActualWidth <= 0 || ActualHeight <= 0 ||
+                LocalVideoPanel.ActualWidth <= 0 || LocalVideoPanel.ActualHeight <= 0)
+            {
+                return;
+            }
+
+            LocalVideoTransform.X = Math.Max(
+                GetMinimumLocalPreviewTranslationX(),
+                Math.Min(0, LocalVideoTransform.X));
+            LocalVideoTransform.Y = Math.Max(
+                GetMinimumLocalPreviewTranslationY(),
+                Math.Min(0, LocalVideoTransform.Y));
+        }
+
+        private double GetMinimumLocalPreviewTranslationX()
+        {
+            return Math.Min(
+                0,
+                LocalPreviewSideMargin - (ActualWidth - LocalVideoPanel.ActualWidth - LocalPreviewSideMargin));
+        }
+
+        private double GetMinimumLocalPreviewTranslationY()
+        {
+            return Math.Min(
+                0,
+                LocalPreviewTopClearance - (ActualHeight - LocalVideoPanel.ActualHeight - LocalPreviewBottomClearance));
         }
 
 #if MODERN_TGCALLS
