@@ -23,6 +23,7 @@ using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Media.Imaging;
 using Windows.UI.Xaml.Shapes;
+using Point = Windows.Foundation.Point;
 #if MODERN_TGCALLS
 using ModernCalls = Unigram.Native.Calls.Proof;
 #endif
@@ -69,6 +70,8 @@ namespace Unigram.Views
 
         private bool _disposed;
         private bool _isLoaded;
+        private uint? _localVideoPointerId;
+        private Point _localVideoPointerPosition;
 #if MODERN_TGCALLS
         private SpriteVisual _localVideoVisual;
         private SpriteVisual _remoteVideoVisual;
@@ -223,22 +226,53 @@ namespace Unigram.Views
             ClampLocalVideoPreview();
         }
 
-        private void LocalVideoPanel_ManipulationDelta(object sender, ManipulationDeltaRoutedEventArgs e)
+        private void LocalVideoPanel_PointerPressed(object sender, PointerRoutedEventArgs e)
         {
-            if (e.IsInertial)
+            if (_localVideoPointerId != null)
             {
-                e.Complete();
                 return;
             }
 
-            LocalVideoTransform.X += e.Delta.Translation.X;
-            LocalVideoTransform.Y += e.Delta.Translation.Y;
+            _localVideoPointerId = e.Pointer.PointerId;
+            _localVideoPointerPosition = e.GetCurrentPoint(this).Position;
+            LocalVideoPanel.CapturePointer(e.Pointer);
+            e.Handled = true;
+        }
+
+        private void LocalVideoPanel_PointerMoved(object sender, PointerRoutedEventArgs e)
+        {
+            if (_localVideoPointerId != e.Pointer.PointerId)
+            {
+                return;
+            }
+
+            var position = e.GetCurrentPoint(this).Position;
+            LocalVideoTransform.X += position.X - _localVideoPointerPosition.X;
+            LocalVideoTransform.Y += position.Y - _localVideoPointerPosition.Y;
+            _localVideoPointerPosition = position;
             ClampLocalVideoPreview();
             e.Handled = true;
         }
 
-        private void LocalVideoPanel_ManipulationCompleted(object sender, ManipulationCompletedRoutedEventArgs e)
+        private void LocalVideoPanel_PointerReleased(object sender, PointerRoutedEventArgs e)
         {
+            CompleteLocalVideoPointer(e);
+        }
+
+        private void LocalVideoPanel_PointerCanceled(object sender, PointerRoutedEventArgs e)
+        {
+            CompleteLocalVideoPointer(e);
+        }
+
+        private void CompleteLocalVideoPointer(PointerRoutedEventArgs e)
+        {
+            if (_localVideoPointerId != e.Pointer.PointerId)
+            {
+                return;
+            }
+
+            LocalVideoPanel.ReleasePointerCapture(e.Pointer);
+            _localVideoPointerId = null;
             ClampLocalVideoPreview();
 
             var minimumX = GetMinimumLocalPreviewTranslationX();
