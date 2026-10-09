@@ -236,7 +236,7 @@ namespace Unigram.Views
 
         private void LocalVideoPanel_PointerPressed(object sender, PointerRoutedEventArgs e)
         {
-            if (_localVideoPointerId != null)
+            if (_disposed || _localVideoPointerId != null)
             {
                 return;
             }
@@ -248,12 +248,13 @@ namespace Unigram.Views
 
             _localVideoPointerId = e.Pointer.PointerId;
             _localVideoPointerPosition = e.GetCurrentPoint(this).Position;
+            Logs.PushDiagnostics.Write("voip.video", "result=preview_drag;state=pressed");
             e.Handled = true;
         }
 
         private void LocalVideoPanel_PointerMoved(object sender, PointerRoutedEventArgs e)
         {
-            if (_localVideoPointerId != e.Pointer.PointerId)
+            if (_disposed || _localVideoPointerId != e.Pointer.PointerId)
             {
                 return;
             }
@@ -284,7 +285,11 @@ namespace Unigram.Views
             }
 
             _localVideoPointerId = null;
-            SnapLocalVideoPreview();
+            if (!_disposed)
+            {
+                Logs.PushDiagnostics.Write("voip.video", "result=preview_drag;state=capture_lost");
+                SnapLocalVideoPreview();
+            }
         }
 
         private void CompleteLocalVideoPointer(PointerRoutedEventArgs e)
@@ -296,7 +301,11 @@ namespace Unigram.Views
 
             LocalVideoDragHandle.ReleasePointerCapture(e.Pointer);
             _localVideoPointerId = null;
-            SnapLocalVideoPreview();
+            if (!_disposed)
+            {
+                Logs.PushDiagnostics.Write("voip.video", "result=preview_drag;state=released");
+                SnapLocalVideoPreview();
+            }
             e.Handled = true;
         }
 
@@ -488,6 +497,13 @@ namespace Unigram.Views
 
             _call = call;
             _started = started;
+
+#if MODERN_TGCALLS
+            // The page is created from the initial pending Call update, several seconds
+            // before the modern native session exists. Visibility therefore belongs to the
+            // call model, not to the later session-start callback.
+            Camera.Visibility = call.IsVideo ? Visibility.Visible : Visibility.Collapsed;
+#endif
 
             //if (_state != call.State)
             //{
