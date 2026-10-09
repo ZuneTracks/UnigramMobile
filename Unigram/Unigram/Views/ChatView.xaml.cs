@@ -2186,6 +2186,10 @@ namespace Unigram.Views
                 message.UpdateWith(response as Message);
             }
 
+            var propertiesResponse = await ViewModel.ProtoService.SendAsync(
+                new GetMessageProperties(message.ChatId, message.Id));
+            message.UpdateMessageProperties(propertiesResponse);
+
             AvailableReactions availableReactions = null;
             if (!message.IsService())
             {

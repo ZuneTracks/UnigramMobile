@@ -190,6 +190,12 @@ namespace Unigram.ViewModels
             }
         }
 
+        public void UpdateMessageProperties(BaseObject properties)
+        {
+            _messageProperties = properties;
+            _messagePropertiesLoaded = true;
+        }
+
         public bool IsShareable()
         {
             var message = this;
