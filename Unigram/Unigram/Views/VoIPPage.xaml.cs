@@ -169,6 +169,7 @@ namespace Unigram.Views
         private void OnLoaded(object sender, RoutedEventArgs e)
         {
             _isLoaded = true;
+            ApplyCollapsedEmojiLayout();
 
             if (Routing == null)
             {
@@ -372,20 +373,32 @@ namespace Unigram.Views
 
             _blurVisual.Size = e.NewSize.ToVector2();
 
-            if (_collapsed && SmallPanel != null && LargeEmojiLabel != null)
+            if (_collapsed)
             {
-                var transform = SmallPanel.TransformToVisual(LargeEmojiLabel);
-                if (transform == null)
-                {
-                    return;
-                }
-                var position = transform.TransformPoint(new Point());
-
-                _descriptionVisual.Opacity = 0;
-                _largeVisual.Offset = new Vector3(position.ToVector2(), 0);
-                _largeVisual.Scale = new Vector3(0.5f);
-                _blurBrush.Properties.InsertScalar("Blur.BlurAmount", 0);
+                ApplyCollapsedEmojiLayout();
             }
+        }
+
+        private void ApplyCollapsedEmojiLayout()
+        {
+            if (_disposed || SmallPanel == null || LargeEmojiLabel == null ||
+                _descriptionVisual == null || _largeVisual == null || _blurBrush == null)
+            {
+                return;
+            }
+
+            var transform = SmallPanel.TransformToVisual(LargeEmojiLabel);
+            if (transform == null)
+            {
+                return;
+            }
+
+            var position = transform.TransformPoint(new Point());
+            _descriptionVisual.Opacity = 0;
+            _largeVisual.Offset = new Vector3(position.ToVector2(), 0);
+            _largeVisual.Scale = new Vector3(0.5f);
+            _blurBrush.Properties.InsertScalar("Blur.BlurAmount", 0);
+            CallDetailsPanel.Opacity = 1;
         }
 
         public void Update(Call call, DateTime started)
@@ -698,6 +711,7 @@ namespace Unigram.Views
             var transform = SmallPanel.TransformToVisual(LargeEmojiLabel);
             var position = transform.TransformPoint(new Point());
 
+            CallDetailsPanel.Opacity = 0;
             _descriptionVisual.Opacity = 0;
             _largeVisual.Offset = new Vector3(position.ToVector2(), 0);
             _largeVisual.Scale = new Vector3(0.5f);
@@ -746,6 +760,7 @@ namespace Unigram.Views
             var transform = SmallPanel.TransformToVisual(LargeEmojiLabel);
             var position = transform.TransformPoint(new Point());
 
+            CallDetailsPanel.Opacity = 1;
             var batch = _compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
             var opacityAnimation = _compositor.CreateScalarKeyFrameAnimation();
             var offsetAnimation = _compositor.CreateVector3KeyFrameAnimation();
