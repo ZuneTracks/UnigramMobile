@@ -1244,7 +1244,21 @@ public:
     int32_t InitMicrophone() override { return Guarded("init_microphone", &webrtc::AudioDeviceModule::InitMicrophone); }
     int32_t InitPlayout() override { return Guarded("init_playout", &webrtc::AudioDeviceModule::InitPlayout); }
     int32_t InitRecording() override {
-        return Guarded("init_recording", &webrtc::AudioDeviceModule::InitRecording);
+        std::lock_guard<std::mutex> lock(_recordingInitializationMutex);
+        if (_recordingInitializationFailed) {
+            // On the Idol 4S the platform module consistently reports that recording
+            // initialization is unavailable. Retrying the same native path later can
+            // fault asynchronously, while it cannot make recording available without
+            // a device change, so preserve the prior failure for this call.
+            Report("step=init_recording;phase=skipped_after_failure;faulted=0;code=-1");
+            return -1;
+        }
+
+        const auto result = Guarded("init_recording", &webrtc::AudioDeviceModule::InitRecording);
+        if (result != 0) {
+            _recordingInitializationFailed = true;
+        }
+        return result;
     }
     int32_t StartPlayout() override {
         const auto result = Guarded("start_playout", &webrtc::AudioDeviceModule::StartPlayout);
@@ -1482,7 +1496,9 @@ private:
     std::function<void()> _released;
     std::unique_ptr<PlayoutProbeAudioTransport> _playoutProbe;
     std::mutex _initializationMutex;
+    std::mutex _recordingInitializationMutex;
     bool _initialized = false;
+    bool _recordingInitializationFailed = false;
     bool _speakerVolumeCorrected = false;
 };
 std::string ToUtf8(const std::wstring& value) {
