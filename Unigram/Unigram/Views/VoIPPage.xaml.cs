@@ -1,5 +1,4 @@
 ﻿using libtgvoip;
-using Microsoft.Graphics.Canvas.Effects;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -24,7 +23,6 @@ using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Media.Imaging;
 using Windows.UI.Xaml.Shapes;
-using Point = Windows.Foundation.Point;
 #if MODERN_TGCALLS
 using ModernCalls = Unigram.Native.Calls.Proof;
 #endif
@@ -33,13 +31,7 @@ namespace Unigram.Views
 {
     public sealed partial class VoIPPage : Page, IDisposable
     {
-        private Visual _descriptionVisual;
-        private Visual _largeVisual;
-        private SpriteVisual _blurVisual;
-        private CompositionEffectBrush _blurBrush;
         private Compositor _compositor;
-
-        private bool _collapsed = true;
 
         private readonly IProtoService _protoService;
         private readonly ICacheService _cacheService;
@@ -105,34 +97,16 @@ namespace Unigram.Views
             LargeEmoji1.Source = null;
             LargeEmoji2.Source = null;
             LargeEmoji3.Source = null;
+            SmallEmoji0.Source = null;
+            SmallEmoji1.Source = null;
+            SmallEmoji2.Source = null;
+            SmallEmoji3.Source = null;
 
             #endregion
 
             #region Composition
 
-            _descriptionVisual = ElementCompositionPreview.GetElementVisual(DescriptionLabel);
-            _largeVisual = ElementCompositionPreview.GetElementVisual(LargePanel);
-            _compositor = _largeVisual.Compositor;
-
-            var graphicsEffect = new GaussianBlurEffect
-            {
-                Name = "Blur",
-                BlurAmount = 0,
-                BorderMode = EffectBorderMode.Hard,
-                Source = new CompositionEffectSourceParameter("backdrop")
-            };
-
-            var effectFactory = _compositor.CreateEffectFactory(graphicsEffect, new[] { "Blur.BlurAmount" });
-            var effectBrush = effectFactory.CreateBrush();
-            var backdrop = _compositor.CreateBackdropBrush();
-            effectBrush.SetSourceParameter("backdrop", backdrop);
-
-            _blurBrush = effectBrush;
-            _blurVisual = _compositor.CreateSpriteVisual();
-            _blurVisual.Brush = _blurBrush;
-
-            // Why does this crashes due to an access violation exception on certain devices?
-            ElementCompositionPreview.SetElementChildVisual(BlurPanel, _blurVisual);
+            _compositor = ElementCompositionPreview.GetElementVisual(LargePanel).Compositor;
             Logs.PushDiagnostics.Write("voip.ui", "stage=composition_ready");
 
             #endregion
@@ -169,7 +143,6 @@ namespace Unigram.Views
         private void OnLoaded(object sender, RoutedEventArgs e)
         {
             _isLoaded = true;
-            ApplyCollapsedEmojiLayout();
 
             if (Routing == null)
             {
@@ -356,50 +329,7 @@ namespace Unigram.Views
         //    Debug.WriteLine("TitleBar height: " + sender.Height);
 
         //    SmallEmojiLabel.Margin = new Thickness(sender.SystemOverlayLeftInset, 20, sender.SystemOverlayRightInset, 0);
-        //    OnSizeChanged(null, null);
         //}
-
-        private void OnSizeChanged(object sender, SizeChangedEventArgs e)
-        {
-            // The page raises its first SizeChanged as soon as it is measured, which can be
-            // before the composition visuals have been created and again after Dispose has
-            // torn them down. Both are ordinary, and neither justifies faulting the UI
-            // thread over work that is purely decorative.
-            if (_disposed || !_isLoaded || e == null || _blurVisual == null || _blurBrush == null ||
-                _descriptionVisual == null || _largeVisual == null)
-            {
-                return;
-            }
-
-            _blurVisual.Size = e.NewSize.ToVector2();
-
-            if (_collapsed)
-            {
-                ApplyCollapsedEmojiLayout();
-            }
-        }
-
-        private void ApplyCollapsedEmojiLayout()
-        {
-            if (_disposed || SmallPanel == null || LargeEmojiLabel == null ||
-                _descriptionVisual == null || _largeVisual == null || _blurBrush == null)
-            {
-                return;
-            }
-
-            var transform = SmallPanel.TransformToVisual(LargeEmojiLabel);
-            if (transform == null)
-            {
-                return;
-            }
-
-            var position = transform.TransformPoint(new Point());
-            _descriptionVisual.Opacity = 0;
-            _largeVisual.Offset = new Vector3(position.ToVector2(), 0);
-            _largeVisual.Scale = new Vector3(0.5f);
-            _blurBrush.Properties.InsertScalar("Blur.BlurAmount", 0);
-            CallDetailsPanel.Opacity = 1;
-        }
 
         public void Update(Call call, DateTime started)
         {
@@ -484,6 +414,8 @@ namespace Unigram.Views
                     var source = Emoji.BuildUri(_emojis[i]);
 
                     imageLarge.Source = new BitmapImage(new Uri(source));
+                    var imageSmall = FindName($"SmallEmoji{i}") as Image;
+                    imageSmall.Source = new BitmapImage(new Uri(source));
                 }
             }
 
@@ -708,82 +640,14 @@ namespace Unigram.Views
 
         private void SmallEmojiLabel_Tapped(object sender, TappedRoutedEventArgs e)
         {
-            var transform = SmallPanel.TransformToVisual(LargeEmojiLabel);
-            var position = transform.TransformPoint(new Point());
-
-            CallDetailsPanel.Opacity = 0;
-            _descriptionVisual.Opacity = 0;
-            _largeVisual.Offset = new Vector3(position.ToVector2(), 0);
-            _largeVisual.Scale = new Vector3(0.5f);
-            _blurBrush.Properties.InsertScalar("Blur.BlurAmount", 0);
-
-            var batch = _compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
-            var opacityAnimation = _compositor.CreateScalarKeyFrameAnimation();
-            var offsetAnimation = _compositor.CreateVector3KeyFrameAnimation();
-            var scaleAnimation = _compositor.CreateVector3KeyFrameAnimation();
-            var blurAnimation = _compositor.CreateScalarKeyFrameAnimation();
-
-            opacityAnimation.Duration = TimeSpan.FromMilliseconds(300);
-            offsetAnimation.Duration = TimeSpan.FromMilliseconds(300);
-            scaleAnimation.Duration = TimeSpan.FromMilliseconds(300);
-            blurAnimation.Duration = TimeSpan.FromMilliseconds(300);
-
-            opacityAnimation.InsertKeyFrame(1, 1);
-            offsetAnimation.InsertKeyFrame(1, new Vector3(0));
-            scaleAnimation.InsertKeyFrame(1, new Vector3(1));
-            blurAnimation.InsertKeyFrame(1, 20);
-
-            _descriptionVisual.StartAnimation("Opacity", opacityAnimation);
-            _largeVisual.StartAnimation("Offset", offsetAnimation);
-            _largeVisual.StartAnimation("Scale", scaleAnimation);
-            _blurBrush.Properties.StartAnimation("Blur.BlurAmount", blurAnimation);
-            _collapsed = false;
-
-            batch.End();
-
-            //var animation = ConnectedAnimationService.GetForCurrentView().PrepareToAnimate("EmojiAnimation", SmallEmojiLabel);
-            //if (animation != null)
-            //{
-            //    EmojifyPanel.Visibility = Visibility.Visible;
-            //    animation.TryStart(LargeEmojiLabel);
-            //}
+            CallDetailsPanel.Visibility = Visibility.Collapsed;
+            EmojifyPanel.Visibility = Visibility.Visible;
         }
 
         private void LargeEmojiLabel_Tapped(object sender, TappedRoutedEventArgs e)
         {
-            if (_descriptionVisual.Opacity == 0)
-            {
-                SmallEmojiLabel_Tapped(null, null);
-                return;
-            }
-
-            var transform = SmallPanel.TransformToVisual(LargeEmojiLabel);
-            var position = transform.TransformPoint(new Point());
-
-            CallDetailsPanel.Opacity = 1;
-            var batch = _compositor.CreateScopedBatch(CompositionBatchTypes.Animation);
-            var opacityAnimation = _compositor.CreateScalarKeyFrameAnimation();
-            var offsetAnimation = _compositor.CreateVector3KeyFrameAnimation();
-            var scaleAnimation = _compositor.CreateVector3KeyFrameAnimation();
-            var blurAnimation = _compositor.CreateScalarKeyFrameAnimation();
-
-            opacityAnimation.Duration = TimeSpan.FromMilliseconds(300);
-            offsetAnimation.Duration = TimeSpan.FromMilliseconds(300);
-            scaleAnimation.Duration = TimeSpan.FromMilliseconds(300);
-            blurAnimation.Duration = TimeSpan.FromMilliseconds(300);
-
-            opacityAnimation.InsertKeyFrame(1, 0);
-            offsetAnimation.InsertKeyFrame(1, new Vector3(position.ToVector2(), 0));
-            scaleAnimation.InsertKeyFrame(1, new Vector3(0.5f));
-            blurAnimation.InsertKeyFrame(1, 0);
-
-            _descriptionVisual.StartAnimation("Opacity", opacityAnimation);
-            _largeVisual.StartAnimation("Offset", offsetAnimation);
-            _largeVisual.StartAnimation("Scale", scaleAnimation);
-            _blurBrush.Properties.StartAnimation("Blur.BlurAmount", blurAnimation);
-            _collapsed = true;
-
-            batch.End();
+            EmojifyPanel.Visibility = Visibility.Collapsed;
+            CallDetailsPanel.Visibility = Visibility.Visible;
         }
 
         private void Close_Click(object sender, RoutedEventArgs e)
