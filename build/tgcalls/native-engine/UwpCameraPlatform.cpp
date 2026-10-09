@@ -20,10 +20,7 @@
 #include "rtc_base/logging.h"
 #include "rtc_base/ref_counted_object.h"
 
-#include <algorithm>
-#include <cctype>
 #include <cmath>
-#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -41,37 +38,6 @@ constexpr auto kPortraitRotation = webrtc::kVideoRotation_270;
 
 bool IsH264(const webrtc::SdpVideoFormat& format) {
     return format.name == "H264";
-}
-
-bool EqualsIgnoreCase(const std::string& left, const std::string& right) {
-    return left.size() == right.size() &&
-        std::equal(left.begin(), left.end(), right.begin(), [](char first, char second) {
-            return std::tolower(static_cast<unsigned char>(first)) ==
-                std::tolower(static_cast<unsigned char>(second));
-        });
-}
-
-bool IsIndexedDeviceSelector(const std::string& selector) {
-    return selector.compare(0, 10, "uwp-index:") == 0;
-}
-
-bool TryGetDeviceIndex(const std::string& selector, int* index) {
-    if (!IsIndexedDeviceSelector(selector) || selector.size() == 10) {
-        return false;
-    }
-
-    auto value = 0;
-    for (auto position = size_t{10}; position != selector.size(); ++position) {
-        const auto character = selector[position];
-        if (character < '0' || character > '9' ||
-            value > (std::numeric_limits<int>::max() - (character - '0')) / 10) {
-            return false;
-        }
-        value = value * 10 + (character - '0');
-    }
-
-    *index = value;
-    return true;
 }
 
 std::vector<webrtc::SdpVideoFormat> H264Formats() {
@@ -266,43 +232,28 @@ private:
             return false;
         }
 
-        const auto getId = [&info](int index) {
-            constexpr size_t kLengthLimit = 256;
-            char name[kLengthLimit] = {};
-            char id[kLengthLimit] = {};
-            return info->GetDeviceName(index, name, kLengthLimit, id, kLengthLimit) == 0
-                ? std::string(id)
-                : std::string();
-        };
-
-        if (IsIndexedDeviceSelector(_requestedDeviceId)) {
-            auto requestedIndex = 0;
-            if (!TryGetDeviceIndex(_requestedDeviceId, &requestedIndex) ||
-                requestedIndex < 0 ||
-                requestedIndex >= count ||
-                !Start(info.get(), getId(requestedIndex))) {
-                Fail();
-                return false;
+        // DeviceInformation.Id is the device identifier expected by WebRTC's WinRT
+        // backend. Re-enumerating and matching it here can select a different sensor
+        // when the collection changes between calls, so preserve it verbatim.
+        if (!_requestedDeviceId.empty() && _requestedDeviceId != "default") {
+            if (Start(info.get(), _requestedDeviceId)) {
+                return true;
             }
 
-            return true;
-        }
-
-        auto preferredId = std::string();
-        for (auto index = 0; index != count; ++index) {
-            const auto id = getId(index);
-            if (EqualsIgnoreCase(_requestedDeviceId, id) ||
-                (preferredId.empty() && (_requestedDeviceId.empty() || _requestedDeviceId == "default"))) {
-                preferredId = id;
-            }
-        }
-
-        if (Start(info.get(), preferredId)) {
-            return true;
+            Fail();
+            return false;
         }
 
         for (auto index = 0; index != count; ++index) {
-            if (Start(info.get(), getId(index))) {
+            char name[webrtc::kVideoCaptureDeviceNameLength] = {};
+            char id[webrtc::kVideoCaptureUniqueNameLength] = {};
+            if (info->GetDeviceName(
+                    index,
+                    name,
+                    sizeof(name),
+                    id,
+                    sizeof(id)) == 0 &&
+                Start(info.get(), id)) {
                 return true;
             }
         }
