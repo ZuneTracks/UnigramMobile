@@ -1,4 +1,5 @@
 #include "TgCallsEngineFacade.h"
+#include "UwpCameraCaptureControl.h"
 
 #include "Instance.h"
 #include "InstanceImpl.h"
@@ -1779,7 +1780,14 @@ public:
         if (!_videoCapture) {
             throw std::logic_error("The TgCalls session has no video capture.");
         }
-        _videoCapture->switchToDevice(ToUtf8(deviceId), false);
+
+        const auto selector = ToUtf8(deviceId);
+        _videoCapture->withNativeImplementation([selector](void* implementation) {
+            const auto capture = static_cast<UwpCameraCaptureControl*>(implementation);
+            if (capture != nullptr) {
+                capture->SwitchToDevice(selector);
+            }
+        });
     }
 
     void SetVideoOutput(bool local, VideoOutputPtr output) {

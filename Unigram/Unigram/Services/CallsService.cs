@@ -109,11 +109,14 @@ namespace Unigram.Services
         private ModernCalls.CallState? _modernTransportState;
         private bool _modernMuted;
         private bool _modernVideoOutputsEnabled;
+        private readonly Dictionary<string, string> _modernVideoCaptureSelectors = new Dictionary<string, string>();
 
         private sealed class VideoCapturePreflight
         {
             public int Result { get; set; }
             public string DeviceId { get; set; }
+            public string NativeDeviceSelector { get; set; }
+            public Dictionary<string, string> DeviceSelectors { get; set; }
         }
 #endif
 
@@ -717,8 +720,31 @@ namespace Unigram.Services
                 {
                     var devices = await Windows.Devices.Enumeration.DeviceInformation.FindAllAsync(
                         Windows.Devices.Enumeration.DeviceClass.VideoCapture);
-                    var device = devices.FirstOrDefault(x => x.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front)
-                        ?? devices.FirstOrDefault();
+                    Windows.Devices.Enumeration.DeviceInformation device = null;
+                    var deviceIndex = -1;
+                    var selectors = new Dictionary<string, string>();
+                    for (var index = 0; index < devices.Count; index++)
+                    {
+                        var candidate = devices[index];
+                        if (!string.IsNullOrEmpty(candidate.Id))
+                        {
+                            selectors[candidate.Id] = "uwp-index:" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        }
+
+                        if (device == null &&
+                            candidate.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front)
+                        {
+                            device = candidate;
+                            deviceIndex = index;
+                        }
+                    }
+
+                    if (device == null && devices.Count > 0)
+                    {
+                        device = devices[0];
+                        deviceIndex = 0;
+                    }
+
                     if (device == null)
                     {
                         result.Result = -1;
@@ -733,7 +759,9 @@ namespace Unigram.Services
                             MediaCategory = Windows.Media.Capture.MediaCategory.Communications
                         });
                         result.DeviceId = device.Id;
-                        WriteModernMediaDiagnostic($"result=video_capture;acquired=1;front={(device.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front ? 1 : 0)}");
+                        result.NativeDeviceSelector = "uwp-index:" + deviceIndex.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        result.DeviceSelectors = selectors;
+                        WriteModernMediaDiagnostic($"result=video_capture;acquired=1;front={(device.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front ? 1 : 0)};selector=index");
                     }
                 }
                 catch (Exception error)
@@ -750,7 +778,7 @@ namespace Unigram.Services
             return completion.Task;
         }
 
-        private string WaitForVideoCapture()
+        private VideoCapturePreflight WaitForVideoCapture()
         {
             BeginAcquireVideoCapture();
             Task<VideoCapturePreflight> task;
@@ -759,7 +787,11 @@ namespace Unigram.Services
                 task = _videoCaptureTask;
             }
 
-            if (task == null || !task.Wait(ModernMicrophoneWaitMs) || task.Result.Result != 0 || string.IsNullOrEmpty(task.Result.DeviceId))
+            if (task == null ||
+                !task.Wait(ModernMicrophoneWaitMs) ||
+                task.Result.Result != 0 ||
+                string.IsNullOrEmpty(task.Result.DeviceId) ||
+                string.IsNullOrEmpty(task.Result.NativeDeviceSelector))
             {
                 lock (_videoCaptureLock)
                 {
@@ -767,7 +799,7 @@ namespace Unigram.Services
                 }
                 return null;
             }
-            return task.Result.DeviceId;
+            return task.Result;
         }
 
         private bool SwitchModernVideoCaptureDevice(string deviceId)
@@ -778,11 +810,18 @@ namespace Unigram.Services
                 return false;
             }
 
+            string nativeDeviceSelector;
+            if (!_modernVideoCaptureSelectors.TryGetValue(deviceId, out nativeDeviceSelector))
+            {
+                WriteModernMediaDiagnostic("result=video_capture;state=device_switch_rejected;reason=selector_unavailable");
+                return false;
+            }
+
             try
             {
-                session.SwitchVideoCaptureDevice(deviceId);
+                session.SwitchVideoCaptureDevice(nativeDeviceSelector);
                 _modernVideoCaptureDeviceId = deviceId;
-                WriteModernMediaDiagnostic("result=video_capture;state=device_switched");
+                WriteModernMediaDiagnostic("result=video_capture;state=device_switched;selector=index");
                 return true;
             }
             catch (Exception error)
@@ -998,16 +1037,16 @@ namespace Unigram.Services
                 return false;
             }
 
-            string cameraDeviceId = null;
+            VideoCapturePreflight videoCapture = null;
             if (call.IsVideo)
             {
-                cameraDeviceId = WaitForVideoCapture();
-                if (cameraDeviceId == null)
+                videoCapture = WaitForVideoCapture();
+                if (videoCapture == null)
                 {
                     WriteAudioCallDiagnostic("voip.ready", "result=rejected;reason=video_capture_unavailable;transport=modern_tgcalls");
                     return false;
                 }
-                configuration.CameraDeviceId = cameraDeviceId;
+                configuration.CameraDeviceId = videoCapture.NativeDeviceSelector;
             }
             else if (!WaitForMicrophone())
             {
@@ -1062,7 +1101,15 @@ namespace Unigram.Services
 
                 _modernController = session;
                 _modernCallId = call.Id;
-                _modernVideoCaptureDeviceId = cameraDeviceId;
+                if (videoCapture != null)
+                {
+                    _modernVideoCaptureSelectors.Clear();
+                    foreach (var selector in videoCapture.DeviceSelectors)
+                    {
+                        _modernVideoCaptureSelectors[selector.Key] = selector.Value;
+                    }
+                    _modernVideoCaptureDeviceId = videoCapture.DeviceId;
+                }
                 _modernCallStarting = true;
                 session.Start();
                 if (call.IsVideo)

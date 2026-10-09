@@ -2,6 +2,7 @@
 #include "Instance.h"
 #include "VideoCaptureInterface.h"
 #include "VideoCapturerInterface.h"
+#include "UwpCameraCaptureControl.h"
 
 #include "api/media_stream_interface.h"
 #include "api/video/i420_buffer.h"
@@ -22,6 +23,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -47,6 +49,29 @@ bool EqualsIgnoreCase(const std::string& left, const std::string& right) {
             return std::tolower(static_cast<unsigned char>(first)) ==
                 std::tolower(static_cast<unsigned char>(second));
         });
+}
+
+bool IsIndexedDeviceSelector(const std::string& selector) {
+    return selector.compare(0, 10, "uwp-index:") == 0;
+}
+
+bool TryGetDeviceIndex(const std::string& selector, int* index) {
+    if (!IsIndexedDeviceSelector(selector) || selector.size() == 10) {
+        return false;
+    }
+
+    auto value = 0;
+    for (auto position = size_t{10}; position != selector.size(); ++position) {
+        const auto character = selector[position];
+        if (character < '0' || character > '9' ||
+            value > (std::numeric_limits<int>::max() - (character - '0')) / 10) {
+            return false;
+        }
+        value = value * 10 + (character - '0');
+    }
+
+    *index = value;
+    return true;
 }
 
 std::vector<webrtc::SdpVideoFormat> H264Formats() {
@@ -142,16 +167,18 @@ public:
         }
     }
 
-    void SetDeviceId(std::string deviceId) {
+    bool SetDeviceId(std::string deviceId) {
         if (_requestedDeviceId == deviceId) {
-            return;
+            return _state.load(std::memory_order_acquire) != VideoState::Active || _module != nullptr;
         }
 
         Stop();
         _requestedDeviceId = std::move(deviceId);
         if (_state.load(std::memory_order_acquire) == VideoState::Active) {
-            Start();
+            return Start();
         }
+
+        return true;
     }
 
     void SetPreferredCaptureAspectRatio(float aspectRatio) {
@@ -224,19 +251,19 @@ private:
         _sink->OnFrame(builder.build());
     }
 
-    void Start() {
+    bool Start() {
         _failed = false;
         const auto info = std::unique_ptr<webrtc::VideoCaptureModule::DeviceInfo>(
             webrtc::VideoCaptureFactory::CreateDeviceInfo());
         if (!info) {
             Fail();
-            return;
+            return false;
         }
 
         const auto count = info->NumberOfDevices();
         if (count <= 0) {
             Fail();
-            return;
+            return false;
         }
 
         const auto getId = [&info](int index) {
@@ -248,6 +275,19 @@ private:
                 : std::string();
         };
 
+        if (IsIndexedDeviceSelector(_requestedDeviceId)) {
+            auto requestedIndex = 0;
+            if (!TryGetDeviceIndex(_requestedDeviceId, &requestedIndex) ||
+                requestedIndex < 0 ||
+                requestedIndex >= count ||
+                !Start(info.get(), getId(requestedIndex))) {
+                Fail();
+                return false;
+            }
+
+            return true;
+        }
+
         auto preferredId = std::string();
         for (auto index = 0; index != count; ++index) {
             const auto id = getId(index);
@@ -258,16 +298,17 @@ private:
         }
 
         if (Start(info.get(), preferredId)) {
-            return;
+            return true;
         }
 
         for (auto index = 0; index != count; ++index) {
             if (Start(info.get(), getId(index))) {
-                return;
+                return true;
             }
         }
 
         Fail();
+        return false;
     }
 
     bool Start(webrtc::VideoCaptureModule::DeviceInfo* info, const std::string& deviceId) {
@@ -333,7 +374,9 @@ private:
     bool _failed = false;
 };
 
-class UwpCameraCapturerInterface final : public VideoCapturerInterface {
+class UwpCameraCapturerInterface final
+    : public VideoCapturerInterface
+    , public Unigram::Native::Calls::UwpCameraCaptureControl {
 public:
     UwpCameraCapturerInterface(
             rtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source,
@@ -376,6 +419,14 @@ public:
 
     void setOnFatalError(std::function<void()> error) override {
         _capturer->SetOnFatalError(std::move(error));
+    }
+
+    bool SwitchToDevice(std::string deviceSelector) override {
+        return _capturer->SetDeviceId(std::move(deviceSelector));
+    }
+
+    void withNativeImplementation(std::function<void(void*)> completion) override {
+        completion(static_cast<Unigram::Native::Calls::UwpCameraCaptureControl*>(this));
     }
 
 private:
