@@ -2186,6 +2186,20 @@ namespace Unigram.Views
                 message.UpdateWith(response as Message);
             }
 
+            AvailableReactions availableReactions = null;
+            if (!message.IsService())
+            {
+                var reactionsResponse = await ViewModel.ProtoService.SendAsync(
+                    new GetMessageAvailableReactions(message.ChatId, message.Id, 8));
+                availableReactions = reactionsResponse as AvailableReactions;
+                if (reactionsResponse is Error error)
+                {
+                    PushDiagnostics.Write(
+                        "message.reaction",
+                        $"result=available_failed;code={error.Code};message={PushDiagnostics.SanitizeErrorMessage(error.Message)}");
+                }
+            }
+
             if (message.SendingState is MessageSendingStateFailed || message.SendingState is MessageSendingStatePending)
             {
                 if (message.SendingState is MessageSendingStateFailed)
@@ -2203,7 +2217,7 @@ namespace Unigram.Views
                 flyout.CreateFlyoutItem(MessageReschedule_Loaded, ViewModel.MessageRescheduleCommand, message, Strings.Resources.MessageScheduleEditTime, new FontIcon { Glyph = Icons.Schedule });
 
                 // Generic
-                AddReactionPicker(flyout, message, chat);
+                AddReactionPicker(flyout, message, availableReactions);
                 flyout.CreateFlyoutItem(MessageReply_Loaded, ViewModel.MessageReplyCommand, message, Strings.Resources.Reply, new FontIcon { Glyph = Icons.Reply });
                 flyout.CreateFlyoutItem(MessageEdit_Loaded, ViewModel.MessageEditCommand, message, Strings.Resources.Edit, new FontIcon { Glyph = Icons.Edit });
                 flyout.CreateFlyoutItem(MessageThread_Loaded, ViewModel.MessageThreadCommand, message, message.InteractionInfo?.ReplyInfo?.ReplyCount > 0 ? Locale.Declension("ViewReplies", message.InteractionInfo.ReplyInfo.ReplyCount) : Strings.Resources.ViewThread, new FontIcon { Glyph = Icons.Thread, FontFamily = new FontFamily("ms-appx:///Assets/Fonts/Telegram.ttf#Telegram") });
@@ -2287,46 +2301,36 @@ namespace Unigram.Views
             }
         }
 
-        private static readonly string[] StandardReactionEmojis =
+        private void AddReactionPicker(
+            MenuFlyout flyout,
+            MessageViewModel message,
+            AvailableReactions reactions)
         {
-            "\U0001F44D",
-            "\u2764\uFE0F",
-            "\U0001F602",
-            "\U0001F62E",
-            "\U0001F622",
-            "\U0001F64F"
-        };
-
-        private void AddReactionPicker(MenuFlyout flyout, MessageViewModel message, Chat chat)
-        {
-            if (message.IsService())
+            if (reactions == null || reactions.UnavailabilityReason != null)
             {
                 return;
             }
 
-            IEnumerable<string> emojis;
-            if (chat.AvailableReactions is ChatAvailableReactionsSome some)
-            {
-                emojis = some.Reactions
-                    .OfType<ReactionTypeEmoji>()
-                    .Select(x => x.Emoji)
-                    .Take(StandardReactionEmojis.Length);
-            }
-            else if (chat.AvailableReactions is ChatAvailableReactionsAll)
-            {
-                emojis = StandardReactionEmojis;
-            }
-            else
-            {
-                return;
-            }
+            var emojis = new[]
+                {
+                    reactions.TopReactions,
+                    reactions.RecentReactions,
+                    reactions.PopularReactions
+                }
+                .Where(group => group != null)
+                .SelectMany(group => group)
+                .Where(reaction => reaction != null && !reaction.NeedsPremium)
+                .Select(reaction => reaction.Type as ReactionTypeEmoji)
+                .Where(reaction => !string.IsNullOrEmpty(reaction?.Emoji))
+                .Select(reaction => reaction.Emoji)
+                .Distinct();
 
             var picker = new MenuFlyoutSubItem
             {
                 Text = Strings.Resources.Emoji1
             };
 
-            foreach (var emoji in emojis.Distinct())
+            foreach (var emoji in emojis)
             {
                 var item = new MenuFlyoutItem
                 {
