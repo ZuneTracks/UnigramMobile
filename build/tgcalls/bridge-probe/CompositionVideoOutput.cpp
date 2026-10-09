@@ -241,14 +241,20 @@ HRESULT CompositionVideoOutput::RenderFrame(const webrtc::VideoFrame& frame) {
     switch (frame.rotation()) {
     case webrtc::kVideoRotation_90:
         finalSize = SIZE{height, width};
-        transform = D2D1::Matrix3x2F(0.0f, 1.0f, -1.0f, 0.0f, static_cast<float>(height), 0.0f);
+        transform = D2D1::Matrix3x2F::Rotation(
+            90.0f,
+            D2D1::Point2F(height / 2.0f, width / 2.0f));
         break;
     case webrtc::kVideoRotation_180:
-        transform = D2D1::Matrix3x2F(-1.0f, 0.0f, 0.0f, -1.0f, static_cast<float>(width), static_cast<float>(height));
+        transform = D2D1::Matrix3x2F::Rotation(
+            180.0f,
+            D2D1::Point2F(width / 2.0f, height / 2.0f));
         break;
     case webrtc::kVideoRotation_270:
         finalSize = SIZE{height, width};
-        transform = D2D1::Matrix3x2F(0.0f, -1.0f, 1.0f, 0.0f, 0.0f, static_cast<float>(width));
+        transform = D2D1::Matrix3x2F::Rotation(
+            270.0f,
+            D2D1::Point2F(height / 2.0f, width / 2.0f));
         break;
     default:
         break;
