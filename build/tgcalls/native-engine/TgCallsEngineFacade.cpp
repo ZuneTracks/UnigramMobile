@@ -1551,6 +1551,14 @@ RemoteAudioState ToFacadeAudioState(tgcalls::AudioState value) {
 
 }
 
+void SetCameraCaptureInflightStage(const char* stage) {
+    SetInflightStep("camera_capture", stage);
+}
+
+void ClearCameraCaptureInflightStage() {
+    ClearInflightStep();
+}
+
 enum class StopWaitResult {
     Drained,
     Timeout,
@@ -1589,6 +1597,11 @@ public:
         tgcalls::Register<tgcalls::InstanceImpl>();
         tgcalls::Register<tgcalls::InstanceV2Impl>();
         tgcalls::Register<tgcalls::InstanceV2ReferenceImpl>();
+        if (_configuration.isVideo && !_configuration.cameraDeviceId.empty()) {
+            SetCameraDeviceOrientationHint(
+                ToUtf8(_configuration.cameraDeviceId),
+                _configuration.cameraIsFront);
+        }
 
         // Counters are global to the process, so they are zeroed per call; otherwise a
         // previous call's totals would be read as this one's.
@@ -1790,7 +1803,7 @@ public:
         _videoCapture->setState(static_cast<tgcalls::VideoState>(state));
     }
 
-    void SwitchVideoCaptureDevice(const std::wstring& deviceId) {
+    void SwitchVideoCaptureDevice(const std::wstring& deviceId, bool isFrontCamera) {
         std::lock_guard<std::mutex> lock(_mutex);
         EnsureActive();
         if (!_videoCapture) {
@@ -1799,9 +1812,10 @@ public:
 
         const auto selector = ToUtf8(deviceId);
         const auto weak = std::weak_ptr<CallSession>(shared_from_this());
-        _videoCapture->withNativeImplementation([weak, selector](void* implementation) {
+        _videoCapture->withNativeImplementation([weak, selector, isFrontCamera](void* implementation) {
             const auto capture = static_cast<UwpCameraCaptureControl*>(implementation);
-            const auto succeeded = capture != nullptr && capture->SwitchToDevice(selector);
+            const auto succeeded =
+                capture != nullptr && capture->SwitchToDevice(selector, isFrontCamera);
             if (const auto strong = weak.lock()) {
                 strong->VideoCaptureSwitchCompleted(succeeded);
             }
@@ -2254,11 +2268,14 @@ void SetVideoState(const CallSessionPtr& session, VideoState state) {
     session->SetVideoState(state);
 }
 
-void SwitchVideoCaptureDevice(const CallSessionPtr& session, const std::wstring& deviceId) {
+void SwitchVideoCaptureDevice(
+    const CallSessionPtr& session,
+    const std::wstring& deviceId,
+    bool isFrontCamera) {
     if (!session) {
         throw std::invalid_argument("The TgCalls session is unavailable.");
     }
-    session->SwitchVideoCaptureDevice(deviceId);
+    session->SwitchVideoCaptureDevice(deviceId, isFrontCamera);
 }
 
 void SetVideoOutput(const CallSessionPtr& session, bool local, VideoOutputPtr output) {

@@ -73,6 +73,7 @@ struct CallConfiguration {
     bool isOutgoing = false;
     bool isVideo = false;
     std::wstring cameraDeviceId;
+    bool cameraIsFront = true;
     NetworkType initialNetworkType = NetworkType::Unknown;
     std::vector<uint8_t> encryptionKey;
     std::vector<EndpointConfiguration> endpoints;
@@ -136,7 +137,10 @@ void ReceiveSignalingData(const CallSessionPtr& session, std::vector<uint8_t> da
 void SetMuted(const CallSessionPtr& session, bool value);
 bool SupportsVideo(const CallSessionPtr& session);
 void SetVideoState(const CallSessionPtr& session, VideoState state);
-void SwitchVideoCaptureDevice(const CallSessionPtr& session, const std::wstring& deviceId);
+void SwitchVideoCaptureDevice(
+    const CallSessionPtr& session,
+    const std::wstring& deviceId,
+    bool isFrontCamera);
 /// <summary>
 /// Attaches a native video sink directly to TgCalls. The bridge remains the strong owner
 /// of the sink; TgCalls keeps only weak references and receives nullptr on teardown.

@@ -80,6 +80,7 @@ public:
     property bool IsOutgoing;
     property bool IsVideo;
     property Platform::String^ CameraDeviceId;
+    property bool CameraIsFront;
     property NetworkType InitialNetworkType;
     property Windows::Foundation::Collections::IVector<unsigned char>^ EncryptionKey;
     property Windows::Foundation::Collections::IVector<ReflectorEndpoint^>^ ReflectorEndpoints;
@@ -97,7 +98,7 @@ public:
     void SetMuted(bool value);
     bool SupportsVideo();
     void SetVideoState(VideoState value);
-    void SwitchVideoCaptureDevice(Platform::String^ deviceId);
+    void SwitchVideoCaptureDevice(Platform::String^ deviceId, bool isFrontCamera);
     void SetVideoOutput(
         bool local,
         Platform::Object^ visual,

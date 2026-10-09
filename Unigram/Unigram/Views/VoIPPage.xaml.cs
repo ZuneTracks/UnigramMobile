@@ -460,15 +460,16 @@ namespace Unigram.Views
                     return;
                 }
 
+                var targetIsFront = target.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front;
                 _modernCameraSwitchPending = true;
-                if (ModernVideoDeviceRequested == null || !ModernVideoDeviceRequested(target.Id))
+                if (ModernVideoDeviceRequested == null ||
+                    !ModernVideoDeviceRequested(target.Id, targetIsFront))
                 {
                     _modernCameraSwitchPending = false;
                     Logs.PushDiagnostics.Write("voip.video", "result=camera_switch;state=not_ready");
                     return;
                 }
 
-                var targetIsFront = target.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front;
                 Logs.PushDiagnostics.Write("voip.video", $"result=camera_switch;front={(targetIsFront ? 1 : 0)}");
             }
             catch (Exception error)
@@ -1007,7 +1008,7 @@ namespace Unigram.Views
         /// </summary>
         public Func<bool, bool> ModernAudioOutputEndpointRequested { get; set; }
 
-        public Func<string, bool> ModernVideoDeviceRequested { get; set; }
+        public Func<string, bool, bool> ModernVideoDeviceRequested { get; set; }
 #endif
 
         private async void AudioEndpointChanged(AudioRoutingManager sender, object args)

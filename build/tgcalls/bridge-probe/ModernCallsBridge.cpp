@@ -126,6 +126,7 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
     native.cameraDeviceId = configuration->CameraDeviceId == nullptr
         ? L""
         : configuration->CameraDeviceId->Data();
+    native.cameraIsFront = configuration->CameraIsFront;
     native.initialNetworkType = ToNativeNetworkType(configuration->InitialNetworkType);
     native.encryptionKey = ToNativeBytes(configuration->EncryptionKey);
 
@@ -352,14 +353,19 @@ void AudioCallSession::SetVideoState(VideoState value) {
     }
 }
 
-void AudioCallSession::SwitchVideoCaptureDevice(String^ deviceId) {
+void AudioCallSession::SwitchVideoCaptureDevice(
+    String^ deviceId,
+    bool isFrontCamera) {
     if (deviceId == nullptr || deviceId->IsEmpty()) {
         throw ref new InvalidArgumentException(L"A camera device identifier is required.");
     }
 
     try {
         const auto holder = GetSessionHolder(_holder);
-        Unigram::Native::Calls::SwitchVideoCaptureDevice(holder->session, deviceId->Data());
+        Unigram::Native::Calls::SwitchVideoCaptureDevice(
+            holder->session,
+            deviceId->Data(),
+            isFrontCamera);
     } catch (const std::exception& error) {
         throw ref new InvalidArgumentException(ToPlatformString(error));
     }

@@ -21,12 +21,46 @@
 #include "rtc_base/ref_counted_object.h"
 
 #include <cmath>
+#include <atomic>
 #include <memory>
 #include <limits>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include <windows.h>
+
+namespace Unigram {
+namespace Native {
+namespace Calls {
+namespace {
+
+std::mutex g_cameraOrientationHintsMutex;
+std::unordered_map<std::string, bool> g_cameraOrientationHints;
+
+}
+
+void SetCameraDeviceOrientationHint(
+        const std::string& deviceSelector,
+        bool isFrontCamera) {
+    if (deviceSelector.empty()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_cameraOrientationHintsMutex);
+    g_cameraOrientationHints[deviceSelector] = isFrontCamera;
+}
+
+bool IsFrontCameraDevice(const std::string& deviceSelector) {
+    std::lock_guard<std::mutex> lock(g_cameraOrientationHintsMutex);
+    const auto hint = g_cameraOrientationHints.find(deviceSelector);
+    return hint == g_cameraOrientationHints.end() || hint->second;
+}
+
+}
+}
+}
 
 namespace tgcalls {
 namespace {
@@ -34,10 +68,27 @@ namespace {
 constexpr int kPreferredWidth = 1280;
 constexpr int kPreferredHeight = 720;
 constexpr int kPreferredFps = 30;
-// The Windows 10 Mobile capture backend delivers the Lumia sensor's landscape
-// buffer without device orientation. Advertise the portrait correction through
-// both the V2 media state and WebRTC frame metadata.
-constexpr auto kPortraitRotation = webrtc::kVideoRotation_270;
+// Mobile camera buffers lack orientation metadata. The front and rear sensors are
+// mounted in opposite directions, so their portrait corrections differ by 180 degrees.
+constexpr auto kFrontPortraitRotation = webrtc::kVideoRotation_270;
+constexpr auto kBackPortraitRotation = webrtc::kVideoRotation_90;
+
+webrtc::VideoRotation RotationForDevice(const std::string& deviceId) {
+    return Unigram::Native::Calls::IsFrontCameraDevice(deviceId)
+        ? kFrontPortraitRotation
+        : kBackPortraitRotation;
+}
+
+class CameraCaptureOperationScope {
+public:
+    void SetStage(const char* stage) {
+        Unigram::Native::Calls::SetCameraCaptureInflightStage(stage);
+    }
+
+    ~CameraCaptureOperationScope() {
+        Unigram::Native::Calls::ClearCameraCaptureInflightStage();
+    }
+};
 
 bool IsH264(const webrtc::SdpVideoFormat& format) {
     return format.name == "H264";
@@ -173,19 +224,26 @@ public:
     }
 
     bool SetDeviceId(std::string deviceId) {
+        const auto rotation = static_cast<int>(RotationForDevice(deviceId));
         if (_requestedDeviceId == deviceId) {
+            _rotation.store(rotation, std::memory_order_release);
             return _state.load(std::memory_order_acquire) != VideoState::Active || _module != nullptr;
         }
+
+        CameraCaptureOperationScope operation;
 
         // A WinRT reader that has not finished stopping must not be followed immediately
         // by another MediaCapture initialization. On Windows 10 Mobile that can leave
         // two camera lifecycles overlapping and terminate the app.
+        operation.SetStage("stop");
         if (!Stop()) {
             return false;
         }
 
         _requestedDeviceId = std::move(deviceId);
+        _rotation.store(rotation, std::memory_order_release);
         if (_state.load(std::memory_order_acquire) == VideoState::Active) {
+            operation.SetStage("start");
             return Start();
         }
 
@@ -205,6 +263,10 @@ public:
 
     std::pair<int, int> resolution() const {
         return _dimensions;
+    }
+
+    int rotation() const {
+        return _rotation.load(std::memory_order_acquire);
     }
 
     void OnFrame(const webrtc::VideoFrame& frame) override {
@@ -243,7 +305,7 @@ public:
         _sink->OnFrame(
             webrtc::VideoFrame::Builder()
                 .set_video_frame_buffer(buffer)
-                .set_rotation(kPortraitRotation)
+                .set_rotation(static_cast<webrtc::VideoRotation>(rotation()))
                 .set_timestamp_us(frame.timestamp_us())
                 .set_id(frame.id())
                 .build());
@@ -253,7 +315,7 @@ private:
     void ForwardPortraitFrame(const webrtc::VideoFrame& frame) {
         auto builder = webrtc::VideoFrame::Builder()
             .set_video_frame_buffer(frame.video_frame_buffer())
-            .set_rotation(kPortraitRotation)
+            .set_rotation(static_cast<webrtc::VideoRotation>(rotation()))
             .set_timestamp_us(frame.timestamp_us())
             .set_id(frame.id());
         if (frame.has_update_rect()) {
@@ -383,6 +445,7 @@ private:
     std::pair<int, int> _dimensions{ kPreferredWidth, kPreferredHeight };
     std::function<void()> _error;
     std::atomic<float> _aspectRatio{0.0f};
+    std::atomic<int> _rotation{static_cast<int>(kFrontPortraitRotation)};
     bool _failed = false;
 };
 
@@ -426,14 +489,17 @@ public:
     }
 
     int getRotation() override {
-        return 270;
+        return _capturer->rotation();
     }
 
     void setOnFatalError(std::function<void()> error) override {
         _capturer->SetOnFatalError(std::move(error));
     }
 
-    bool SwitchToDevice(std::string deviceSelector) override {
+    bool SwitchToDevice(std::string deviceSelector, bool isFrontCamera) override {
+        Unigram::Native::Calls::SetCameraDeviceOrientationHint(
+            deviceSelector,
+            isFrontCamera);
         return _capturer->SetDeviceId(std::move(deviceSelector));
     }
 

@@ -75,6 +75,7 @@ namespace Unigram.Services
         private const float ModernAudibleLevel = 0.01f;
         private string _modernVideoCaptureDeviceId;
         private string _modernPendingVideoCaptureDeviceId;
+        private int _modernPendingVideoCaptureIsFront;
         private const int ModernMediaDiagnosticBudget = 192;
         private const int ModernMicrophoneWaitMs = 8000;
         // The CPU/WriteableBitmap preview path is permanently replaced by native
@@ -114,6 +115,7 @@ namespace Unigram.Services
         {
             public int Result { get; set; }
             public string DeviceId { get; set; }
+            public bool IsFrontCamera { get; set; }
         }
 #endif
 
@@ -735,7 +737,8 @@ namespace Unigram.Services
                             MediaCategory = Windows.Media.Capture.MediaCategory.Communications
                         });
                         result.DeviceId = device.Id;
-                        WriteModernMediaDiagnostic($"result=video_capture;acquired=1;front={(device.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front ? 1 : 0)};selector=uwp_id");
+                        result.IsFrontCamera = device.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front;
+                        WriteModernMediaDiagnostic($"result=video_capture;acquired=1;front={(result.IsFrontCamera ? 1 : 0)};selector=uwp_id");
                     }
                 }
                 catch (Exception error)
@@ -775,7 +778,7 @@ namespace Unigram.Services
             return task.Result;
         }
 
-        private bool SwitchModernVideoCaptureDevice(string deviceId)
+        private bool SwitchModernVideoCaptureDevice(string deviceId, bool isFrontCamera)
         {
             var session = _modernController;
             if (session == null || string.IsNullOrEmpty(deviceId))
@@ -792,15 +795,21 @@ namespace Unigram.Services
                 return false;
             }
 
+            System.Threading.Interlocked.Exchange(
+                ref _modernPendingVideoCaptureIsFront,
+                isFrontCamera ? 1 : 0);
+
             try
             {
-                session.SwitchVideoCaptureDevice(deviceId);
-                WriteModernMediaDiagnostic("result=video_capture;state=device_switch_requested;selector=uwp_id");
+                session.SwitchVideoCaptureDevice(deviceId, isFrontCamera);
+                WriteModernMediaDiagnostic(
+                    $"result=video_capture;state=device_switch_requested;front={(isFrontCamera ? 1 : 0)};selector=uwp_id");
                 return true;
             }
             catch (Exception error)
             {
                 System.Threading.Interlocked.Exchange(ref _modernPendingVideoCaptureDeviceId, null);
+                System.Threading.Interlocked.Exchange(ref _modernPendingVideoCaptureIsFront, 0);
                 WriteModernMediaDiagnostic($"result=video_capture;state=device_switch_failed;hresult=0x{error.HResult:X8}");
                 return false;
             }
@@ -1022,6 +1031,7 @@ namespace Unigram.Services
                     return false;
                 }
                 configuration.CameraDeviceId = videoCapture.DeviceId;
+                configuration.CameraIsFront = videoCapture.IsFrontCamera;
             }
             else if (!WaitForMicrophone())
             {
@@ -1076,6 +1086,9 @@ namespace Unigram.Services
                         var deviceId = System.Threading.Interlocked.Exchange(
                             ref _modernPendingVideoCaptureDeviceId,
                             null);
+                        var isFrontCamera = System.Threading.Interlocked.Exchange(
+                            ref _modernPendingVideoCaptureIsFront,
+                            0) != 0;
                         if (succeeded && !string.IsNullOrEmpty(deviceId))
                         {
                             _modernVideoCaptureDeviceId = deviceId;
@@ -1093,7 +1106,7 @@ namespace Unigram.Services
                         }
 
                         WriteModernMediaDiagnostic(
-                            $"result=video_capture;state=device_switch_{(succeeded ? "completed" : "failed")};selector=uwp_id");
+                            $"result=video_capture;state=device_switch_{(succeeded ? "completed" : "failed")};front={(isFrontCamera ? 1 : 0)};selector=uwp_id");
                     });
                 session.VideoOutputFailed += (sender, hresult) =>
                     GuardModernCallback("video_output", () =>
@@ -1603,6 +1616,7 @@ namespace Unigram.Services
             _modernCallId = 0;
             _modernVideoCaptureDeviceId = null;
             _modernPendingVideoCaptureDeviceId = null;
+            _modernPendingVideoCaptureIsFront = 0;
             _modernCallStarting = false;
 
             try
