@@ -1,5 +1,5 @@
 diff --git a/modules/video_capture/windows/help_functions_winrt.cc b/modules/video_capture/windows/help_functions_winrt.cc
-index 2884e43eb7..7283611703 100644
+index 2884e43eb7..139f9f4aad 100644
 --- a/modules/video_capture/windows/help_functions_winrt.cc
 +++ b/modules/video_capture/windows/help_functions_winrt.cc
 @@ -13,6 +13,7 @@
@@ -14,8 +14,8 @@ index 2884e43eb7..7283611703 100644
  HRESULT GetMediaCaptureWithInitSettingsUWP(
      _In_ IMediaCaptureInitializationSettings* initialization_settings,
      _COM_Outptr_ IMediaCapture** pp_media_capture) {
-+  constexpr DWORD kUiDispatchTimeoutMs = 1500;
-+  constexpr DWORD kInitializationTimeoutMs = 2500;
++  constexpr DWORD kUiDispatchTimeoutMs = 750;
++  constexpr DWORD kInitializationTimeoutMs = 1500;
 +
 +  struct InitializationState {
 +    Event action_created;
@@ -240,3 +240,67 @@ index 2884e43eb7..7283611703 100644
    }
 
    return hr;
+diff --git a/modules/video_capture/windows/help_functions_winrt.h b/modules/video_capture/windows/help_functions_winrt.h
+index 3d20c65698..61a4e536cf 100644
+--- a/modules/video_capture/windows/help_functions_winrt.h
++++ b/modules/video_capture/windows/help_functions_winrt.h
+@@ -60,7 +60,8 @@ HRESULT WaitForAsyncAction(
+
+ template <typename T>
+ HRESULT WaitForAsyncOperation(
+-    _In_ ::ABI::Windows::Foundation::IAsyncOperation<T>* p_async_op) {
++    _In_ ::ABI::Windows::Foundation::IAsyncOperation<T>* p_async_op,
++    _In_ DWORD timeout_ms = 180000) {
+   using ::ABI::Windows::Foundation::AsyncStatus;
+   using ::ABI::Windows::Foundation::IAsyncInfo;
+   using ::ABI::Windows::Foundation::IAsyncOperation;
+@@ -70,7 +71,6 @@ HRESULT WaitForAsyncOperation(
+
+   HRESULT hr = S_OK;
+   HRESULT hr_async_error = S_OK;
+-  const DWORD timeout_ms = 180000;
+   Microsoft::WRL::ComPtr<IAsyncOperation<T>> async_op(p_async_op);
+   Microsoft::WRL::ComPtr<IAsyncInfo> async_info;
+   std::shared_ptr<HANDLE> event_completed_handle_ptr = NULL;
+diff --git a/modules/video_capture/windows/video_capture_winrt.cc b/modules/video_capture/windows/video_capture_winrt.cc
+index 706327bfc3..0dfd6ccee7 100644
+--- a/modules/video_capture/windows/video_capture_winrt.cc
++++ b/modules/video_capture/windows/video_capture_winrt.cc
+@@ -143,6 +143,8 @@ VideoCaptureWinRTInternal::~VideoCaptureWinRTInternal() {
+
+ HRESULT VideoCaptureWinRTInternal::StartCapture(
+     const VideoCaptureCapability& capability) {
++  constexpr DWORD kFrameReaderSetupTimeoutMs = 1250;
++
+   HRESULT hr = S_OK;
+   ComPtr<IMediaCaptureInitializationSettings> initialization_settings;
+   ComPtr<IMediaFrameSource> media_frame_source;
+@@ -338,7 +340,7 @@ HRESULT VideoCaptureWinRTInternal::StartCapture(
+       }
+
+       if (SUCCEEDED(hr)) {
+-        hr = WaitForAsyncAction(async_action.Get());
++        hr = WaitForAsyncAction(async_action.Get(), kFrameReaderSetupTimeoutMs);
+       }
+
+       break;
+@@ -369,7 +371,8 @@ HRESULT VideoCaptureWinRTInternal::StartCapture(
+   }
+
+   if (SUCCEEDED(hr)) {
+-    hr = WaitForAsyncOperation(async_operation.Get());
++    hr = WaitForAsyncOperation(async_operation.Get(),
++                               kFrameReaderSetupTimeoutMs);
+   }
+
+   // Assigns a new media frame reader
+@@ -397,7 +400,8 @@ HRESULT VideoCaptureWinRTInternal::StartCapture(
+   }
+
+   if (SUCCEEDED(hr)) {
+-    hr = WaitForAsyncOperation(async_media_frame_reader_start_status.Get());
++    hr = WaitForAsyncOperation(async_media_frame_reader_start_status.Get(),
++                               kFrameReaderSetupTimeoutMs);
+   }
+
+   if (SUCCEEDED(hr)) {

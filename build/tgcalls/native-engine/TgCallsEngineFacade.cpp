@@ -1553,10 +1553,16 @@ RemoteAudioState ToFacadeAudioState(tgcalls::AudioState value) {
 
 void SetCameraCaptureInflightStage(const char* stage) {
     SetInflightStep("camera_capture", stage);
+    if (g_inflightMarker != nullptr) {
+        FlushViewOfFile(const_cast<char*>(g_inflightMarker), kInflightMarkerSize);
+    }
 }
 
 void ClearCameraCaptureInflightStage() {
     ClearInflightStep();
+    if (g_inflightMarker != nullptr) {
+        FlushViewOfFile(const_cast<char*>(g_inflightMarker), kInflightMarkerSize);
+    }
 }
 
 enum class StopWaitResult {
