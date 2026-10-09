@@ -71,17 +71,24 @@ namespace Unigram.ViewModels.SignIn
 
                             if (qrmode == QrCodeMode.Primary)
                             {
-                                ProtoService.Send(new RequestQrCodeAuthentication(), qrResult =>
+                                if (authState is AuthorizationStateWaitPhoneNumber)
                                 {
-                                    if (qrResult is Error error)
+                                    ProtoService.Send(new RequestQrCodeAuthentication(), qrResult =>
                                     {
-                                        PushDiagnostics.Write(
-                                            "signin.qr",
-                                            $"result=failed;code={error.Code};message={PushDiagnostics.SanitizeErrorMessage(error.Message)}");
+                                        if (qrResult is Error error)
+                                        {
+                                            PushDiagnostics.Write(
+                                                "signin.qr",
+                                                $"result=failed;code={error.Code};message={PushDiagnostics.SanitizeErrorMessage(error.Message)}");
 
-                                        BeginOnUIThread(() => Delegate?.UpdateQrCodeMode(QrCodeMode.Secondary));
-                                    }
-                                });
+                                            BeginOnUIThread(() => Delegate?.UpdateQrCodeMode(QrCodeMode.Secondary));
+                                        }
+                                    });
+                                }
+                                else
+                                {
+                                    _sessionService.RequestQrCodeAuthentication();
+                                }
                             }
 
                             return;
