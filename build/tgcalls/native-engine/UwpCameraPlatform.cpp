@@ -177,7 +177,13 @@ public:
             return _state.load(std::memory_order_acquire) != VideoState::Active || _module != nullptr;
         }
 
-        Stop();
+        // A WinRT reader that has not finished stopping must not be followed immediately
+        // by another MediaCapture initialization. On Windows 10 Mobile that can leave
+        // two camera lifecycles overlapping and terminate the app.
+        if (!Stop()) {
+            return false;
+        }
+
         _requestedDeviceId = std::move(deviceId);
         if (_state.load(std::memory_order_acquire) == VideoState::Active) {
             return Start();
@@ -350,15 +356,16 @@ private:
         return true;
     }
 
-    void Stop() {
+    bool Stop() {
         _failed = false;
         if (!_module) {
-            return;
+            return true;
         }
 
-        _module->StopCapture();
+        const auto stopped = _module->StopCapture() == 0;
         _module->DeRegisterCaptureDataCallback();
         _module = nullptr;
+        return stopped;
     }
 
     void Fail() {
