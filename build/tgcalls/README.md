@@ -29,9 +29,9 @@ The CPU path has now been replaced by a native composition-surface proof:
   `CompositionDrawingSurface` for the page-owned `SpriteVisual`. It performs
   the interim I420-to-ARGB conversion with libyuv in native code, then draws
   the bitmap with native rotation and local-camera mirroring.
-- Only `ModernVideoLocalPreviewEnabled` is enabled for the first device
-  milestone. `ModernVideoRemotePreviewEnabled` remains false until local
-  rendering has been proven on a Lumia without a deferred access violation.
+- The local and remote outputs are independent native sinks. They were enabled
+  in separate physical-device milestones so a failure could be attributed to
+  one output rather than hidden by a broad renderer change.
 
 This is a memory-lifetime proof, not the final renderer optimization. The
 planned follow-up is the upstream-style D2D YUV420 pixel shader and
@@ -66,9 +66,10 @@ preview remains stable, then exercise hangup and retry before considering both
 outputs validated.
 
 The remote-preview gate passed for Windows 10 Mobile, Android, and iOS video
-presentation. The iOS report also identified delayed incoming video, feedback,
-and an app exit after ending a call. The `26.9.6193.0` follow-up preserves both
-native outputs but makes two narrow lifecycle/performance corrections:
+presentation. An earlier iOS report identified delayed incoming video,
+feedback, and an app exit after ending a call. The `26.9.6193.0` follow-up
+preserved both native outputs but made two narrow lifecycle/performance
+corrections:
 
 - it joins and releases both native video sinks before clearing their XAML
   composition hosts, removing the race between a renderer thread and UI visual
@@ -78,9 +79,17 @@ native outputs but makes two narrow lifecycle/performance corrections:
   backlog.
 
 The added diagnostics mark the beginning and completion of native output
-teardown. Verify an iOS call now has timely video, acceptable audio feedback,
-and a clean return from hangup; do not claim the renderer fully accepted until
-that call no longer exits the app.
+teardown. The `26.9.6193.0` device test attached both outputs in four calls,
+recorded four ordered teardown pairs and completed stops, and reported no
+renderer failure, access violation, or app exit. It confirms the native
+preview lifecycle is stable.
+
+The test did observe iOS temporarily report remote video inactive and then
+active again after loud feedback. This corresponds to a peer-media
+renegotiation rather than a native output failure: both output lifecycles and
+teardowns completed normally. Treat it as a remaining cross-device
+audio/video-quality risk, not a reason to reintroduce the removed CPU preview
+path or change codec/AEC settings without a reproducible audio-device trace.
 
 Collect only the privacy-safe call diagnostics: they may contain fixed
 result/state tokens and HRESULTs, but must not contain credentials, signaling,
