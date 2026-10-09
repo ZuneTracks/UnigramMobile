@@ -1217,8 +1217,28 @@ public:
         }
     }
 
-    int32_t Init() override { return Guarded("init", &webrtc::AudioDeviceModule::Init); }
-    int32_t Terminate() override { return Guarded("terminate", &webrtc::AudioDeviceModule::Terminate); }
+    int32_t Init() override {
+        std::lock_guard<std::mutex> lock(_initializationMutex);
+        if (_initialized) {
+            Report("step=init;phase=already_initialized;faulted=0;code=0");
+            return 0;
+        }
+
+        const auto result = Guarded("init", &webrtc::AudioDeviceModule::Init);
+        if (result == 0) {
+            _initialized = true;
+        }
+        return result;
+    }
+
+    int32_t Terminate() override {
+        std::lock_guard<std::mutex> lock(_initializationMutex);
+        const auto result = Guarded("terminate", &webrtc::AudioDeviceModule::Terminate);
+        if (result == 0) {
+            _initialized = false;
+        }
+        return result;
+    }
     int32_t InitSpeaker() override { return Guarded("init_speaker", &webrtc::AudioDeviceModule::InitSpeaker); }
     int32_t InitMicrophone() override { return Guarded("init_microphone", &webrtc::AudioDeviceModule::InitMicrophone); }
     int32_t InitPlayout() override { return Guarded("init_playout", &webrtc::AudioDeviceModule::InitPlayout); }
@@ -1460,6 +1480,8 @@ private:
     std::function<void(const std::string&)> _report;
     std::function<void()> _released;
     std::unique_ptr<PlayoutProbeAudioTransport> _playoutProbe;
+    std::mutex _initializationMutex;
+    bool _initialized = false;
     bool _speakerVolumeCorrected = false;
 };
 std::string ToUtf8(const std::wstring& value) {
@@ -1664,20 +1686,6 @@ public:
                 auto module = webrtc::AudioDeviceModule::Create(
                     webrtc::AudioDeviceModule::kPlatformDefaultAudio,
                     factory);
-                if (module) {
-                    const auto initialized = module->Init();
-                    report = "created=1;init=" + std::to_string(initialized);
-                    if (initialized == 0) {
-                        const auto playoutDevices = module->PlayoutDevices();
-                        report += ";playout_devices=" + std::to_string(playoutDevices);
-                        report += ";recording_devices=" + std::to_string(module->RecordingDevices());
-                        report += ";playout_names=" + DescribePlayoutDevices(
-                            module.get(),
-                            playoutDevices,
-                            &playoutDeviceIndices);
-                    }
-                }
-
                 webrtc::scoped_refptr<webrtc::AudioDeviceModule> result = module;
                 if (module) {
                     result = rtc::make_ref_counted<DiagnosticAudioDeviceModule>(
@@ -1692,6 +1700,22 @@ public:
                                 strong->NotifyAudioDeviceReleased();
                             }
                         });
+
+                    // TgCalls calls Init more than once during media setup. Initializing
+                    // through the idempotent wrapper keeps the platform capture module to
+                    // one recording-thread initialization instead of pre-initializing the
+                    // raw module and then repeating it in each TgCalls phase.
+                    const auto initialized = result->Init();
+                    report = "created=1;init=" + std::to_string(initialized);
+                    if (initialized == 0) {
+                        const auto playoutDevices = result->PlayoutDevices();
+                        report += ";playout_devices=" + std::to_string(playoutDevices);
+                        report += ";recording_devices=" + std::to_string(result->RecordingDevices());
+                        report += ";playout_names=" + DescribePlayoutDevices(
+                            result.get(),
+                            playoutDevices,
+                            &playoutDeviceIndices);
+                    }
                 }
 
                 if (const auto strong = weak.lock()) {

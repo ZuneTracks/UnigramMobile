@@ -20,6 +20,7 @@
 #include "rtc_base/ref_counted_object.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -38,6 +39,14 @@ constexpr auto kPortraitRotation = webrtc::kVideoRotation_270;
 
 bool IsH264(const webrtc::SdpVideoFormat& format) {
     return format.name == "H264";
+}
+
+bool EqualsIgnoreCase(const std::string& left, const std::string& right) {
+    return left.size() == right.size() &&
+        std::equal(left.begin(), left.end(), right.begin(), [](char first, char second) {
+            return std::tolower(static_cast<unsigned char>(first)) ==
+                std::tolower(static_cast<unsigned char>(second));
+        });
 }
 
 std::vector<webrtc::SdpVideoFormat> H264Formats() {
@@ -242,7 +251,7 @@ private:
         auto preferredId = std::string();
         for (auto index = 0; index != count; ++index) {
             const auto id = getId(index);
-            if (_requestedDeviceId == id ||
+            if (EqualsIgnoreCase(_requestedDeviceId, id) ||
                 (preferredId.empty() && (_requestedDeviceId.empty() || _requestedDeviceId == "default"))) {
                 preferredId = id;
             }
