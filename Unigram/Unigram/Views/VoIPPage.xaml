@@ -194,7 +194,20 @@
                 <RowDefinition MinHeight="72"/>
             </Grid.RowDefinitions>
             <!--<TextBlock x:Name="FromLabel" Tapped="DebugString_Tapped" Text="Fela Ameghino" TextAlignment="Center" Style="{StaticResource SubheaderTextBlockStyle}" VerticalAlignment="Bottom"/>-->
-            <TextBlock x:Name="FromLabel" Tapped="DebugString_Tapped" TextAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Style="{StaticResource SubheaderTextBlockStyle}" VerticalAlignment="Bottom"/>
+            <Border
+                x:Name="SmallEmojiLabel"
+                Grid.Row="0"
+                Background="#66000000"
+                CornerRadius="18"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Bottom"
+                Margin="0,0,0,54"
+                Tapped="SmallEmojiLabel_Tapped"
+                AutomationProperties.Name="{CustomResource EncryptionKey}"
+                ToolTipService.ToolTip="{CustomResource EncryptionKey}">
+                <StackPanel x:Name="SmallPanel" Orientation="Horizontal" Width="108" Height="24" Margin="12,6"/>
+            </Border>
+            <TextBlock x:Name="FromLabel" Tapped="DebugString_Tapped" TextAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Style="{StaticResource SubheaderTextBlockStyle}" VerticalAlignment="Bottom" Margin="0,0,0,28"/>
             <TextBlock x:Name="DurationLabel" Opacity="0" Text="00:00" TextAlignment="Center" Style="{StaticResource BodyTextBlockStyle}" Grid.Row="1"/>
 
             <Grid Grid.Row="1">
@@ -235,11 +248,7 @@
             </Grid>
         </Grid>
 
-        <Border x:Name="SmallEmojiLabel" Background="Transparent" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0">
-            <StackPanel x:Name="SmallPanel" Orientation="Horizontal" Width="108" Height="24" Margin="12,6"/>
-        </Border>
-
-        <Border x:Name="BlurPanel" Background="Transparent"/>
+        <Border x:Name="BlurPanel" Background="Transparent" IsHitTestVisible="False"/>
 
         <Grid x:Name="EmojifyPanel">
             <Grid Padding="12,0">
