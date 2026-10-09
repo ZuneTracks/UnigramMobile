@@ -327,7 +327,7 @@ private:
     webrtc::VideoCaptureCapability _capability;
     std::atomic<VideoState> _state{VideoState::Inactive};
     std::string _requestedDeviceId;
-    std::pair<int, int> _dimensions;
+    std::pair<int, int> _dimensions{ kPreferredWidth, kPreferredHeight };
     std::function<void()> _error;
     std::atomic<float> _aspectRatio{0.0f};
     bool _failed = false;
@@ -345,7 +345,6 @@ public:
         , _stateUpdated(std::move(stateUpdated)) {
         _capturer = std::make_unique<UwpCameraCapturer>(_sink);
         _capturer->SetDeviceId(std::move(deviceId));
-        _capturer->SetState(VideoState::Active);
         outResolution = _capturer->resolution();
     }
 
