@@ -1060,6 +1060,10 @@ namespace Unigram.Services
                     GuardModernCallback("remote_video_state", () => WriteModernMediaDiagnostic($"result=remote_video;transport=modern_tgcalls;state={state}"));
                 session.VideoCaptureFailed += (sender, ignored) =>
                     GuardModernCallback("video_capture_failed", () => WriteModernMediaDiagnostic("result=video_capture;transport=modern_tgcalls;state=failed"));
+                session.VideoCaptureSwitchCompleted += (sender, succeeded) =>
+                    GuardModernCallback("video_capture_switch_completed", () =>
+                        WriteModernMediaDiagnostic(
+                            $"result=video_capture;state=device_switch_{(succeeded ? "completed" : "failed")};selector=uwp_id"));
                 session.VideoOutputFailed += (sender, hresult) =>
                     GuardModernCallback("video_output", () =>
                         WriteModernMediaDiagnostic($"result=video_output;transport=modern_tgcalls;state=native_render_failed;hresult=0x{hresult:X8}"));

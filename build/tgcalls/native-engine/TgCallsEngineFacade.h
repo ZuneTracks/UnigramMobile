@@ -102,6 +102,7 @@ struct CallCallbacks {
     std::function<void(RemoteAudioState)> remoteAudioStateChanged;
     std::function<void(VideoState)> remoteVideoStateChanged;
     std::function<void()> videoCaptureFailed;
+    std::function<void(bool)> videoCaptureSwitchCompleted;
     // Reports the outcome of creating the platform audio device module as a short
     // diagnostic string built only from fixed keys, result codes and device counts.
     // It never carries a device name, identifier or path.

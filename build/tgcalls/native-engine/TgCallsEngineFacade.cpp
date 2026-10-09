@@ -1782,10 +1782,12 @@ public:
         }
 
         const auto selector = ToUtf8(deviceId);
-        _videoCapture->withNativeImplementation([selector](void* implementation) {
+        const auto weak = std::weak_ptr<CallSession>(shared_from_this());
+        _videoCapture->withNativeImplementation([weak, selector](void* implementation) {
             const auto capture = static_cast<UwpCameraCaptureControl*>(implementation);
-            if (capture != nullptr) {
-                capture->SwitchToDevice(selector);
+            const auto succeeded = capture != nullptr && capture->SwitchToDevice(selector);
+            if (const auto strong = weak.lock()) {
+                strong->VideoCaptureSwitchCompleted(succeeded);
             }
         });
     }
@@ -2093,6 +2095,12 @@ private:
     void VideoCaptureFailed() {
         if (_callbacks.videoCaptureFailed) {
             _callbacks.videoCaptureFailed();
+        }
+    }
+
+    void VideoCaptureSwitchCompleted(bool succeeded) {
+        if (_callbacks.videoCaptureSwitchCompleted) {
+            _callbacks.videoCaptureSwitchCompleted(succeeded);
         }
     }
 

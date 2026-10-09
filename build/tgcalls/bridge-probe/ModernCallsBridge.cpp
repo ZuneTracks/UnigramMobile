@@ -92,6 +92,14 @@ void AudioCallSession::ReportVideoOutputFailure(int result) {
     }
 }
 
+void AudioCallSession::ReportVideoCaptureSwitchResult(bool succeeded) {
+    try {
+        VideoCaptureSwitchCompleted(this, succeeded);
+    } catch (Platform::Exception^) {
+        OutputDebugStringW(L"ModernCallsBridge video capture switch notification failed.\n");
+    }
+}
+
 AudioCallSession^ AudioCallSession::Create(AudioCallConfiguration^ configuration) {
     if (configuration == nullptr) {
         throw ref new InvalidArgumentException(L"An audio call configuration is required.");
@@ -219,6 +227,13 @@ AudioCallSession::AudioCallSession(AudioCallConfiguration^ configuration) : _hol
         if (const auto holder = weakHolder.lock()) {
             if (const auto owner = ResolveOwner(holder)) {
                 owner->VideoCaptureFailed(owner, nullptr);
+            }
+        }
+    };
+    callbacks.videoCaptureSwitchCompleted = [weakHolder](bool succeeded) {
+        if (const auto holder = weakHolder.lock()) {
+            if (const auto owner = ResolveOwner(holder)) {
+                owner->ReportVideoCaptureSwitchResult(succeeded);
             }
         }
     };

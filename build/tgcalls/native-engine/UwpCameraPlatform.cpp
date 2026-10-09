@@ -22,8 +22,11 @@
 
 #include <cmath>
 #include <memory>
+#include <limits>
 #include <string>
 #include <utility>
+
+#include <windows.h>
 
 namespace tgcalls {
 namespace {
@@ -38,6 +41,42 @@ constexpr auto kPortraitRotation = webrtc::kVideoRotation_270;
 
 bool IsH264(const webrtc::SdpVideoFormat& format) {
     return format.name == "H264";
+}
+
+bool SetFallbackDeviceId(
+        webrtc::VideoCaptureCapability* capability,
+        const std::string& deviceId) {
+    if (deviceId.empty() ||
+        deviceId.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+
+    const auto length = MultiByteToWideChar(
+        CP_UTF8,
+        MB_ERR_INVALID_CHARS,
+        deviceId.data(),
+        static_cast<int>(deviceId.size()),
+        nullptr,
+        0);
+    if (length <= 0) {
+        return false;
+    }
+
+    std::wstring wideId(static_cast<size_t>(length), L'\0');
+    if (MultiByteToWideChar(
+            CP_UTF8,
+            MB_ERR_INVALID_CHARS,
+            deviceId.data(),
+            static_cast<int>(deviceId.size()),
+            wideId.data(),
+            length) != length) {
+        return false;
+    }
+
+    capability->profile_id = std::move(wideId);
+    capability->media_capture_video_profile.Reset();
+    capability->record_media_description.Reset();
+    return true;
 }
 
 std::vector<webrtc::SdpVideoFormat> H264Formats() {
@@ -279,11 +318,26 @@ private:
         requested.width = kPreferredWidth;
         requested.height = kPreferredHeight;
         requested.maxFPS = kPreferredFps;
-        info->GetBestMatchedCapability(_module->CurrentDeviceName(), requested, _capability);
-        if (_capability.width == 0 || _capability.height == 0 || _capability.maxFPS == 0) {
+        _capability = webrtc::VideoCaptureCapability();
+        const auto capabilityIndex = info->GetBestMatchedCapability(
+            _module->CurrentDeviceName(),
+            requested,
+            _capability);
+        if (capabilityIndex < 0 ||
+            _capability.width == 0 ||
+            _capability.height == 0 ||
+            _capability.maxFPS == 0) {
             _capability.width = kPreferredWidth;
             _capability.height = kPreferredHeight;
             _capability.maxFPS = kPreferredFps;
+            _capability.videoType = webrtc::VideoType::kI420;
+        }
+
+        if (_capability.profile_id.empty() && !SetFallbackDeviceId(&_capability, deviceId)) {
+            RTC_LOG(LS_ERROR) << "Failed to preserve the UWP camera device identifier.";
+            _module->DeRegisterCaptureDataCallback();
+            _module = nullptr;
+            return false;
         }
 
         if (_module->StartCapture(_capability) != 0) {

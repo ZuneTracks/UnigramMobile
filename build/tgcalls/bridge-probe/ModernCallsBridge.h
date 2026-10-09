@@ -126,12 +126,14 @@ public:
     event Windows::Foundation::EventHandler<RemoteAudioState>^ RemoteAudioStateChanged;
     event Windows::Foundation::EventHandler<VideoState>^ RemoteVideoStateChanged;
     event Windows::Foundation::EventHandler<Platform::Object^>^ VideoCaptureFailed;
+    event Windows::Foundation::EventHandler<bool>^ VideoCaptureSwitchCompleted;
     event Windows::Foundation::EventHandler<int>^ VideoOutputFailed;
     event Windows::Foundation::EventHandler<Platform::String^>^ AudioDeviceReport;
 
 private:
     AudioCallSession(AudioCallConfiguration^ configuration);
     Platform::String^ DrainSession();
+    void ReportVideoCaptureSwitchResult(bool succeeded);
     void ReportVideoOutputFailure(int result);
     void* _holder;
 };
