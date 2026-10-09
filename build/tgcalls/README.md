@@ -65,6 +65,23 @@ gate: verify incoming peer video appears in the main call area while the local
 preview remains stable, then exercise hangup and retry before considering both
 outputs validated.
 
+The remote-preview gate passed for Windows 10 Mobile, Android, and iOS video
+presentation. The iOS report also identified delayed incoming video, feedback,
+and an app exit after ending a call. The `26.9.6193.0` follow-up preserves both
+native outputs but makes two narrow lifecycle/performance corrections:
+
+- it joins and releases both native video sinks before clearing their XAML
+  composition hosts, removing the race between a renderer thread and UI visual
+  detachment during hangup; and
+- it reuses the renderer's native BGRA buffer instead of allocating one for
+  every I420 frame, reducing 32-bit ARM heap pressure and avoidable render
+  backlog.
+
+The added diagnostics mark the beginning and completion of native output
+teardown. Verify an iOS call now has timely video, acceptable audio feedback,
+and a clean return from hangup; do not claim the renderer fully accepted until
+that call no longer exits the app.
+
 Collect only the privacy-safe call diagnostics: they may contain fixed
 result/state tokens and HRESULTs, but must not contain credentials, signaling,
 phone numbers, user IDs, message content, tokens, or paths.

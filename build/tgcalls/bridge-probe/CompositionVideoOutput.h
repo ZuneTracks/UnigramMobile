@@ -69,6 +69,7 @@ private:
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> _bitmap;
     D2D1_SIZE_U _bitmapSize{0, 0};
     SIZE _surfaceSize{0, 0};
+    std::vector<uint8_t> _pixels;
 
     std::mutex _frameMutex;
     std::condition_variable _frameReady;

@@ -162,6 +162,7 @@ void CompositionVideoOutput::Close() {
     std::lock_guard<std::mutex> lock(_frameMutex);
     _latestFrame.reset();
     _bitmap.Reset();
+    _pixels.clear();
     _surfaceInterop.Reset();
     _surface = nullptr;
     _graphicsDevice = nullptr;
@@ -221,7 +222,10 @@ HRESULT CompositionVideoOutput::RenderFrame(const webrtc::VideoFrame& frame) {
         return E_OUTOFMEMORY;
     }
 
-    auto pixels = std::vector<uint8_t>(bytes);
+    if (_pixels.size() != bytes) {
+        _pixels.resize(bytes);
+    }
+
     if (libyuv::I420ToARGB(
             buffer->DataY(),
             buffer->StrideY(),
@@ -229,7 +233,7 @@ HRESULT CompositionVideoOutput::RenderFrame(const webrtc::VideoFrame& frame) {
             buffer->StrideU(),
             buffer->DataV(),
             buffer->StrideV(),
-            pixels.data(),
+            _pixels.data(),
             width * 4,
             width,
             height) != 0) {
@@ -287,7 +291,7 @@ HRESULT CompositionVideoOutput::RenderFrame(const webrtc::VideoFrame& frame) {
         _bitmap.Reset();
         drawResult = context->CreateBitmap(
             D2D1::SizeU(static_cast<UINT32>(width), static_cast<UINT32>(height)),
-            pixels.data(),
+            _pixels.data(),
             width * 4,
             &properties,
             &_bitmap);
@@ -295,7 +299,7 @@ HRESULT CompositionVideoOutput::RenderFrame(const webrtc::VideoFrame& frame) {
             _bitmapSize = D2D1::SizeU(static_cast<UINT32>(width), static_cast<UINT32>(height));
         }
     } else {
-        drawResult = _bitmap->CopyFromMemory(nullptr, pixels.data(), width * 4);
+        drawResult = _bitmap->CopyFromMemory(nullptr, _pixels.data(), width * 4);
     }
 
     if (SUCCEEDED(drawResult)) {

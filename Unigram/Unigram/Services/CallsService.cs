@@ -1513,22 +1513,18 @@ namespace Unigram.Services
                 }
 
                 var callPage = _callPage;
-                if (callPage != null)
-                {
-                    callPage.BeginOnUIThread(() =>
-                    {
-                        callPage.ClearModernVideoOutputVisual(true);
-                        callPage.ClearModernVideoOutputVisual(false);
-                    });
-                }
-
                 var elapsed = System.Diagnostics.Stopwatch.StartNew();
                 string teardown;
                 try
                 {
-                    // Teardown returns the outcome, so nothing is read back off the
-                    // instance after Dispose has destroyed its members.
+                    // The native session detaches both outputs and joins their render
+                    // threads. Do that before removing their XAML hosts: otherwise a
+                    // composition thread can still draw into a visual the UI released.
+                    WriteModernMediaDiagnostic(
+                        "result=video_output;state=teardown_begin;local=1;remote=1");
                     teardown = controller.Teardown();
+                    WriteModernMediaDiagnostic(
+                        "result=video_output;state=teardown_end;local=1;remote=1");
                 }
                 catch (Exception error)
                 {
@@ -1537,6 +1533,15 @@ namespace Unigram.Services
 
                 controller.Dispose();
                 elapsed.Stop();
+
+                if (callPage != null)
+                {
+                    callPage.BeginOnUIThread(() =>
+                    {
+                        callPage.ClearModernVideoOutputVisual(true);
+                        callPage.ClearModernVideoOutputVisual(false);
+                    });
+                }
 
                 // Teardown blocks until tgcalls has destroyed the audio device, so a
                 // "timeout" here means the next call would start against a microphone
