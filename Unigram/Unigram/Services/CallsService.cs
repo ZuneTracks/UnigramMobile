@@ -75,11 +75,11 @@ namespace Unigram.Services
         private const float ModernAudibleLevel = 0.01f;
         private const int ModernMediaDiagnosticBudget = 192;
         private const int ModernMicrophoneWaitMs = 8000;
-        // The CPU/WriteableBitmap preview path is permanently replaced by the native
-        // composition-surface sink. Start with the local sink only; remote presentation
-        // remains gated until local rendering has a physical-device result.
+        // The CPU/WriteableBitmap preview path is permanently replaced by native
+        // composition-surface sinks. Local rendering passed physical-device validation;
+        // test the incoming sink as the next isolated renderer milestone.
         private const bool ModernVideoLocalPreviewEnabled = true;
-        private const bool ModernVideoRemotePreviewEnabled = false;
+        private const bool ModernVideoRemotePreviewEnabled = true;
         private const int ModernV2H264MaxBitrateKbps = 1536;
         private static readonly object _microphoneLock = new object();
         private static Task<int> _microphoneTask;

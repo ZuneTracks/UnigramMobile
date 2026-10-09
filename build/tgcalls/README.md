@@ -57,11 +57,17 @@ video. The acceptance result is:
 4. the app does not terminate with `0xC0000005` during or after output
    attachment.
 
-The Lumia remote-video area is intentionally blank in this stage because the
-remote native sink is disabled. Collect only the privacy-safe call diagnostics:
-they may contain fixed result/state tokens and HRESULTs, but must not contain
-credentials, signaling, phone numbers, user IDs, message content, tokens, or
-paths.
+The local-only milestone passed on `26.9.6191.0`: the preview was centered,
+the native output attached, and several calls stopped cleanly without a new
+access violation. The next package enables the independent remote native sink
+alongside the validated local sink. It must be treated as a separate device
+gate: verify incoming peer video appears in the main call area while the local
+preview remains stable, then exercise hangup and retry before considering both
+outputs validated.
+
+Collect only the privacy-safe call diagnostics: they may contain fixed
+result/state tokens and HRESULTs, but must not contain credentials, signaling,
+phone numbers, user IDs, message content, tokens, or paths.
 
 The working upstream Unigram renderer is the implementation reference. It
 keeps `webrtc::VideoFrame` objects entirely native: a
