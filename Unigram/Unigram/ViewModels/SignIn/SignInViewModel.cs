@@ -53,41 +53,42 @@ namespace Unigram.ViewModels.SignIn
                 IsLoading = false;
                 Delegate?.UpdateQrCodeMode(QrCodeMode.Loading);
             }
-            else if (waitState && (mode != NavigationMode.Refresh || authState is AuthorizationStateWaitPhoneNumber))
+            else if (waitState && mode != NavigationMode.Refresh)
             {
-                IsLoading = false;
-
-                Delegate?.UpdateQrCodeMode(QrCodeMode.Primary);
-                ProtoService.Send(new RequestQrCodeAuthentication(), result =>
-                {
-                    if (result is Error)
-                    {
-                        BeginOnUIThread(() => Delegate?.UpdateQrCodeMode(QrCodeMode.Secondary));
-                    }
-                });
+                SetAuthorizationLoading(false);
+                Delegate?.UpdateQrCodeMode(QrCodeMode.Loading);
 
                 ProtoService.Send(new GetApplicationConfig(), result =>
                 {
                     if (result is JsonValueObject json)
                     {
-                        var camera = json.GetNamedBoolean("qr_login_camera", false);
-                        var code = json.GetNamedString("qr_login_code", "disabled");
+                        var camera = json.GetNamedBoolean("qr_login_camera", true);
+                        var code = json.GetNamedString("qr_login_code", "primary");
 
                         if (camera && Enum.TryParse(code, true, out QrCodeMode qrmode))
                         {
                             BeginOnUIThread(() => Delegate?.UpdateQrCodeMode(qrmode));
 
+                            if (qrmode == QrCodeMode.Primary)
+                            {
+                                ProtoService.Send(new RequestQrCodeAuthentication(), qrResult =>
+                                {
+                                    if (qrResult is Error error)
+                                    {
+                                        PushDiagnostics.Write(
+                                            "signin.qr",
+                                            $"result=failed;code={error.Code};message={PushDiagnostics.SanitizeErrorMessage(error.Message)}");
+
+                                        BeginOnUIThread(() => Delegate?.UpdateQrCodeMode(QrCodeMode.Secondary));
+                                    }
+                                });
+                            }
+
                             return;
                         }
                     }
 
-                    BeginOnUIThread(() =>
-                    {
-                        if (ProtoService.AuthorizationState is AuthorizationStateWaitPhoneNumber)
-                        {
-                            Delegate?.UpdateQrCodeMode(QrCodeMode.Secondary);
-                        }
-                    });
+                    BeginOnUIThread(() => Delegate?.UpdateQrCodeMode(QrCodeMode.Disabled));
                 });
             }
             else if (authState is AuthorizationStateWaitOtherDeviceConfirmation waitOtherDeviceConfirmation)
@@ -209,7 +210,7 @@ namespace Unigram.ViewModels.SignIn
                 }
             }
 
-            IsLoading = true;
+            SetAuthorizationLoading(true);
 
             await _notificationsService.CloseAsync();
 
@@ -234,7 +235,10 @@ namespace Unigram.ViewModels.SignIn
             var response = await request;
             if (response is Error error)
             {
-                IsLoading = false;
+                SetAuthorizationLoading(false);
+                PushDiagnostics.Write(
+                    "signin.phone",
+                    $"result=failed;code={error.Code};message={PushDiagnostics.SanitizeErrorMessage(error.Message)}");
 
                 if (error.TypeEquals(ErrorType.PHONE_NUMBER_INVALID))
                 {
@@ -271,6 +275,12 @@ namespace Unigram.ViewModels.SignIn
                     await MessagePopup.ShowAsync(error.Message, Strings.Resources.AppName, Strings.Resources.OK);
                 }
             }
+        }
+
+        private void SetAuthorizationLoading(bool value)
+        {
+            IsLoading = value;
+            SendCommand.RaiseCanExecuteChanged();
         }
 
         public RelayCommand ProxyCommand { get; }
