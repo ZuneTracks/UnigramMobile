@@ -312,7 +312,9 @@
                 Glyph="&#xE722;"
                 FontFamily="{StaticResource TelegramThemeFontFamily}"
                 HorizontalAlignment="Right"
-                Margin="0,0,12,0"
+                Margin="0,0,68,0"
+                AutomationProperties.Name="{CustomResource AccDescrSwitchCamera}"
+                ToolTipService.ToolTip="{CustomResource AccDescrSwitchCamera}"
                 Grid.Column="0"/>
 
             <Border x:Name="Close" Visibility="Collapsed" Background="#FFFFFF" CornerRadius="24" Grid.Column="1">

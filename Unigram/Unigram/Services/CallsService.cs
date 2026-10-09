@@ -73,6 +73,7 @@ namespace Unigram.Services
         private volatile bool _modernCallStarting;
         private readonly Dictionary<int, List<List<byte>>> _pendingModernSignalingData = new Dictionary<int, List<List<byte>>>();
         private const float ModernAudibleLevel = 0.01f;
+        private string _modernVideoCaptureDeviceId;
         private const int ModernMediaDiagnosticBudget = 192;
         private const int ModernMicrophoneWaitMs = 8000;
         // The CPU/WriteableBitmap preview path is permanently replaced by native
@@ -769,22 +770,25 @@ namespace Unigram.Services
             return task.Result.DeviceId;
         }
 
-        private void SwitchModernVideoCaptureDevice(string deviceId)
+        private bool SwitchModernVideoCaptureDevice(string deviceId)
         {
             var session = _modernController;
             if (session == null || string.IsNullOrEmpty(deviceId))
             {
-                return;
+                return false;
             }
 
             try
             {
                 session.SwitchVideoCaptureDevice(deviceId);
+                _modernVideoCaptureDeviceId = deviceId;
                 WriteModernMediaDiagnostic("result=video_capture;state=device_switched");
+                return true;
             }
             catch (Exception error)
             {
                 WriteModernMediaDiagnostic($"result=video_capture;state=device_switch_failed;hresult=0x{error.HResult:X8}");
+                return false;
             }
         }
 
@@ -1011,6 +1015,7 @@ namespace Unigram.Services
 
                 _modernController = session;
                 _modernCallId = call.Id;
+                _modernVideoCaptureDeviceId = cameraDeviceId;
                 _modernCallStarting = true;
                 session.Start();
                 if (_modernMuted)
@@ -1503,6 +1508,7 @@ namespace Unigram.Services
             var controller = System.Threading.Interlocked.Exchange(ref _modernController, null);
 
             _modernCallId = 0;
+            _modernVideoCaptureDeviceId = null;
             _modernCallStarting = false;
 
             try
@@ -1878,6 +1884,7 @@ namespace Unigram.Services
                         callPage.ModernVideoDeviceRequested = SwitchModernVideoCaptureDevice;
                         if (call.IsVideo && _modernController != null && _modernCallId == call.Id)
                         {
+                            callPage.SetModernVideoCaptureDevice(_modernVideoCaptureDeviceId);
                             callPage.EnableModernVideoControls();
                         }
 

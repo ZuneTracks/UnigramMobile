@@ -75,7 +75,7 @@ namespace Unigram.Views
 #if MODERN_TGCALLS
         private SpriteVisual _localVideoVisual;
         private SpriteVisual _remoteVideoVisual;
-        private bool _modernCameraFront = true;
+        private string _modernCameraDeviceId;
 #endif
 
         public OverlayPage Dialog { get; set; }
@@ -411,28 +411,40 @@ namespace Unigram.Views
             Camera.Visibility = Visibility.Visible;
         }
 
+        public void SetModernVideoCaptureDevice(string deviceId)
+        {
+            _modernCameraDeviceId = deviceId;
+        }
+
         private async void Camera_Click(object sender, RoutedEventArgs e)
         {
             try
             {
                 var devices = await Windows.Devices.Enumeration.DeviceInformation.FindAllAsync(
                     Windows.Devices.Enumeration.DeviceClass.VideoCapture);
-                var targetPanel = _modernCameraFront
+                var current = devices.FirstOrDefault(x => x.Id == _modernCameraDeviceId);
+                var targetPanel = current?.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front
                     ? Windows.Devices.Enumeration.Panel.Back
                     : Windows.Devices.Enumeration.Panel.Front;
-                var target = devices.FirstOrDefault(x => x.EnclosureLocation?.Panel == targetPanel)
-                    ?? devices.FirstOrDefault(x => x.EnclosureLocation?.Panel != (_modernCameraFront
-                        ? Windows.Devices.Enumeration.Panel.Front
-                        : Windows.Devices.Enumeration.Panel.Back));
+                var target = devices.FirstOrDefault(x =>
+                        x.Id != _modernCameraDeviceId &&
+                        x.EnclosureLocation?.Panel == targetPanel)
+                    ?? devices.FirstOrDefault(x => x.Id != _modernCameraDeviceId);
                 if (target == null)
                 {
                     Logs.PushDiagnostics.Write("voip.video", "result=camera_switch;state=no_alternate_camera");
                     return;
                 }
 
-                ModernVideoDeviceRequested?.Invoke(target.Id);
-                _modernCameraFront = target.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front;
-                Logs.PushDiagnostics.Write("voip.video", $"result=camera_switch;front={(_modernCameraFront ? 1 : 0)}");
+                if (ModernVideoDeviceRequested == null || !ModernVideoDeviceRequested(target.Id))
+                {
+                    Logs.PushDiagnostics.Write("voip.video", "result=camera_switch;state=not_ready");
+                    return;
+                }
+
+                _modernCameraDeviceId = target.Id;
+                var targetIsFront = target.EnclosureLocation?.Panel == Windows.Devices.Enumeration.Panel.Front;
+                Logs.PushDiagnostics.Write("voip.video", $"result=camera_switch;front={(targetIsFront ? 1 : 0)}");
             }
             catch (Exception error)
             {
@@ -962,7 +974,7 @@ namespace Unigram.Views
         /// </summary>
         public Func<bool, bool> ModernAudioOutputEndpointRequested { get; set; }
 
-        public Action<string> ModernVideoDeviceRequested { get; set; }
+        public Func<string, bool> ModernVideoDeviceRequested { get; set; }
 #endif
 
         private async void AudioEndpointChanged(AudioRoutingManager sender, object args)

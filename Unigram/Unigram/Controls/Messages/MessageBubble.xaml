@@ -97,6 +97,7 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <Grid x:Name="Header" Grid.Column="1">
                 <Grid.RowDefinitions>
@@ -171,6 +172,15 @@
                 Grid.Column="1"
                 Grid.Row="4"/>
 
+            <controls:WrapPanel
+                x:Name="Reactions"
+                Margin="0,4,0,0"
+                HorizontalAlignment="Left"
+                Orientation="Horizontal"
+                Visibility="Collapsed"
+                Grid.Column="1"
+                Grid.Row="5"/>
+
             <HyperlinkButton
                 x:Name="Thread"
                 x:Load="False"
@@ -181,7 +191,7 @@
                 Margin="-10,4,-10,-6"
                 Padding="0"
                 Grid.Column="1"
-                Grid.Row="5">
+                Grid.Row="6">
                 <Grid
                     BorderBrush="{ThemeResource TelegramSeparatorMediumBrush}"
                     BorderThickness="0,1,0,0"

@@ -16,6 +16,7 @@ using MessageForwardOriginMessageImport = Telegram.Td.Api.MessageOriginHiddenUse
 #endif
 using Unigram.Controls.Messages.Content;
 using Unigram.Converters;
+using Unigram.Logs;
 using Unigram.Services;
 using Unigram.ViewModels;
 using Windows.Foundation;
@@ -92,6 +93,8 @@ namespace Unigram.Controls.Messages
             {
                 Span.Inlines.Clear();
                 Media.Child = null;
+                Reactions.Children.Clear();
+                Reactions.Visibility = Visibility.Collapsed;
             }
 
             if (_highlight != null)
@@ -708,7 +711,80 @@ namespace Unigram.Controls.Messages
                 Thread.Visibility = Visibility.Visible;
             }
 
+            UpdateMessageReactions(message);
             Footer.UpdateMessageInteractionInfo(message);
+        }
+
+        private void UpdateMessageReactions(MessageViewModel message)
+        {
+            Reactions.Children.Clear();
+
+            var reactions = message.InteractionInfo?.Reactions?.Reactions;
+            if (reactions == null)
+            {
+                Reactions.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            foreach (var reaction in reactions)
+            {
+                if (!(reaction.Type is ReactionTypeEmoji emoji) || reaction.TotalCount <= 0)
+                {
+                    continue;
+                }
+
+                var button = new Button
+                {
+                    Content = $"{emoji.Emoji} {reaction.TotalCount}",
+                    Tag = reaction,
+                    Padding = new Thickness(6, 1, 6, 1),
+                    Margin = new Thickness(0, 0, 4, 4),
+                    MinHeight = 28,
+                    FontFamily = new FontFamily("Segoe UI Emoji"),
+                    FontWeight = reaction.IsChosen ? FontWeights.SemiBold : FontWeights.Normal
+                };
+                button.Click += Reaction_Click;
+
+                Reactions.Children.Add(button);
+            }
+
+            Reactions.HorizontalAlignment = message.IsOutgoing
+                ? HorizontalAlignment.Right
+                : HorizontalAlignment.Left;
+            Reactions.Visibility = Reactions.Children.Count > 0
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+
+        private void Reaction_Click(object sender, RoutedEventArgs e)
+        {
+            var message = _message;
+            if (message == null || message.Id == 0 || !(sender is Button button) ||
+                !(button.Tag is MessageReaction reaction) || !(reaction.Type is ReactionTypeEmoji emoji))
+            {
+                return;
+            }
+
+            var operation = reaction.IsChosen ? "remove" : "add";
+            Function function;
+            if (reaction.IsChosen)
+            {
+                function = new RemoveMessageReaction(message.ChatId, message.Id, emoji);
+            }
+            else
+            {
+                function = new AddMessageReaction(message.ChatId, message.Id, emoji, false, false);
+            }
+
+            message.ProtoService.Send(function, result =>
+            {
+                if (result is Error error)
+                {
+                    PushDiagnostics.Write(
+                        "message.reaction",
+                        $"result=failed;operation={operation};code={error.Code};message={PushDiagnostics.SanitizeErrorMessage(error.Message)}");
+                }
+            });
         }
 
         public void UpdateMessageContentOpened(MessageViewModel message)

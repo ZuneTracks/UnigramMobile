@@ -11,6 +11,7 @@ using System.Windows.Input;
 using Telegram.Td;
 using Telegram.Td.Api;
 using Unigram.Common;
+using Unigram.Logs;
 using Unigram.Services;
 
 #if MODERN_TDLIB
@@ -2178,6 +2179,7 @@ namespace Unigram.Views
                 flyout.CreateFlyoutItem(MessageReschedule_Loaded, ViewModel.MessageRescheduleCommand, message, Strings.Resources.MessageScheduleEditTime, new FontIcon { Glyph = Icons.Schedule });
 
                 // Generic
+                AddReactionPicker(flyout, message, chat);
                 flyout.CreateFlyoutItem(MessageReply_Loaded, ViewModel.MessageReplyCommand, message, Strings.Resources.Reply, new FontIcon { Glyph = Icons.Reply });
                 flyout.CreateFlyoutItem(MessageEdit_Loaded, ViewModel.MessageEditCommand, message, Strings.Resources.Edit, new FontIcon { Glyph = Icons.Edit });
                 flyout.CreateFlyoutItem(MessageThread_Loaded, ViewModel.MessageThreadCommand, message, message.InteractionInfo?.ReplyInfo?.ReplyCount > 0 ? Locale.Declension("ViewReplies", message.InteractionInfo.ReplyInfo.ReplyCount) : Strings.Resources.ViewThread, new FontIcon { Glyph = Icons.Thread, FontFamily = new FontFamily("ms-appx:///Assets/Fonts/Telegram.ttf#Telegram") });
@@ -2252,6 +2254,103 @@ namespace Unigram.Views
             }
 
             args.ShowAt(flyout, sender as FrameworkElement);
+        }
+
+        private static readonly string[] StandardReactionEmojis =
+        {
+            "\U0001F44D",
+            "\u2764\uFE0F",
+            "\U0001F602",
+            "\U0001F62E",
+            "\U0001F622",
+            "\U0001F64F"
+        };
+
+        private void AddReactionPicker(MenuFlyout flyout, MessageViewModel message, Chat chat)
+        {
+            if (message.IsService())
+            {
+                return;
+            }
+
+            IEnumerable<string> emojis;
+            if (chat.AvailableReactions is ChatAvailableReactionsSome some)
+            {
+                emojis = some.Reactions
+                    .OfType<ReactionTypeEmoji>()
+                    .Select(x => x.Emoji)
+                    .Take(StandardReactionEmojis.Length);
+            }
+            else if (chat.AvailableReactions is ChatAvailableReactionsAll)
+            {
+                emojis = StandardReactionEmojis;
+            }
+            else
+            {
+                return;
+            }
+
+            var picker = new MenuFlyoutSubItem
+            {
+                Text = Strings.Resources.Emoji1
+            };
+
+            foreach (var emoji in emojis.Distinct())
+            {
+                var item = new MenuFlyoutItem
+                {
+                    Text = emoji,
+                    Tag = new ReactionPickerItem(message, emoji),
+                    FontFamily = new FontFamily("Segoe UI Emoji")
+                };
+                item.Click += ReactionPickerItem_Click;
+
+                picker.Items.Add(item);
+            }
+
+            if (picker.Items.Count > 0)
+            {
+                flyout.Items.Add(picker);
+            }
+        }
+
+        private void ReactionPickerItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (!(sender is MenuFlyoutItem item) || !(item.Tag is ReactionPickerItem selection) ||
+                selection.Message.Id == 0)
+            {
+                return;
+            }
+
+            selection.Message.ProtoService.Send(
+                new AddMessageReaction(
+                    selection.Message.ChatId,
+                    selection.Message.Id,
+                    new ReactionTypeEmoji(selection.Emoji),
+                    false,
+                    true),
+                result =>
+                {
+                    if (result is Error error)
+                    {
+                        PushDiagnostics.Write(
+                            "message.reaction",
+                            $"result=failed;operation=add;code={error.Code};message={PushDiagnostics.SanitizeErrorMessage(error.Message)}");
+                    }
+                });
+        }
+
+        private sealed class ReactionPickerItem
+        {
+            public ReactionPickerItem(MessageViewModel message, string emoji)
+            {
+                Message = message;
+                Emoji = emoji;
+            }
+
+            public MessageViewModel Message { get; }
+
+            public string Emoji { get; }
         }
 
         private bool MessageSendNow_Loaded(MessageViewModel message)
