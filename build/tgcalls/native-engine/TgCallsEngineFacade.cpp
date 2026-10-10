@@ -70,6 +70,8 @@ namespace {
 extern "C" {
 PVOID WINAPI AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler);
 HMODULE WINAPI GetModuleHandleW(LPCWSTR lpModuleName);
+extern volatile LONG g_unigram_webrtc_capture_init_stage;
+extern volatile LONG g_unigram_webrtc_capture_init_hresult;
 }
 
 // Supplied by the linker at the base of the module this code is linked into, which lets
@@ -1256,6 +1258,14 @@ public:
 
         const auto result = Guarded("init_recording", &webrtc::AudioDeviceModule::InitRecording);
         if (result != 0) {
+            const auto platformStage =
+                InterlockedCompareExchange(&g_unigram_webrtc_capture_init_stage, 0, 0);
+            const auto platformHresult =
+                InterlockedCompareExchange(&g_unigram_webrtc_capture_init_hresult, 0, 0);
+            Report(
+                "step=init_recording;phase=platform_failure;stage=" +
+                std::to_string(platformStage) +
+                ";hresult=" + std::to_string(platformHresult));
             _recordingInitializationFailed = true;
         }
         return result;

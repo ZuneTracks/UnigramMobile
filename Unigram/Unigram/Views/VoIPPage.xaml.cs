@@ -357,6 +357,12 @@ namespace Unigram.Views
                 return null;
             }
 
+            if (_call?.IsVideo != true)
+            {
+                Logs.PushDiagnostics.Write("voip.video", "result=preview_skipped;reason=audio_call");
+                return null;
+            }
+
             ClearModernVideoOutputVisual(local);
             var visual = _compositor.CreateSpriteVisual();
             visual.RelativeSizeAdjustment = new Vector2(1.0f, 1.0f);
@@ -520,6 +526,11 @@ namespace Unigram.Views
             // before the modern native session exists. Visibility therefore belongs to the
             // call model, not to the later session-start callback.
             Camera.Visibility = call.IsVideo ? Visibility.Visible : Visibility.Collapsed;
+            if (!call.IsVideo)
+            {
+                ClearModernVideoOutputVisualCore(true);
+                ClearModernVideoOutputVisualCore(false);
+            }
 #endif
 
             //if (_state != call.State)

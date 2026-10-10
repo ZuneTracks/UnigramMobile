@@ -1506,6 +1506,12 @@ namespace Unigram.Services
                 return;
             }
 
+            if (_call?.Id != callId || !_call.IsVideo)
+            {
+                WriteModernMediaDiagnostic("result=video_output;state=disabled;reason=audio_call");
+                return;
+            }
+
             if (!ModernVideoLocalPreviewEnabled && !ModernVideoRemotePreviewEnabled)
             {
                 WriteModernMediaDiagnostic("result=video_output;state=disabled;reason=preview_isolation");

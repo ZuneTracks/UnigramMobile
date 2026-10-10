@@ -22,6 +22,7 @@ $patches = @{
     AudioOnlyLibvpx = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-audio-only-libvpx.patch'
     RenderCategory = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-render-communications-category.patch'
     BoundedMediaCapture = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-bounded-media-capture.patch'
+    CaptureInitDiagnostics = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-capture-init-diagnostics.patch'
 }
 
 if (-not (Test-Path -LiteralPath $buildScript)) {
@@ -88,6 +89,7 @@ Use-Patch $Src '__AUDIO_ONLY_LIBAOM_PATCH__'
 Use-Patch $Src '__AUDIO_ONLY_LIBVPX_PATCH__'
 Use-Patch $Src '__RENDER_CATEGORY_PATCH__'
 Use-Patch $Src '__BOUNDED_MEDIA_CAPTURE_PATCH__'
+Use-Patch $Src '__CAPTURE_INIT_DIAGNOSTICS_PATCH__'
 '@
 
 $patchInjection = $patchInjection.Replace('__RUST_PATCH__', $patches.Rust)
@@ -101,6 +103,7 @@ $patchInjection = $patchInjection.Replace('__AUDIO_ONLY_LIBAOM_PATCH__', $patche
 $patchInjection = $patchInjection.Replace('__AUDIO_ONLY_LIBVPX_PATCH__', $patches.AudioOnlyLibvpx)
 $patchInjection = $patchInjection.Replace('__RENDER_CATEGORY_PATCH__', $patches.RenderCategory)
 $patchInjection = $patchInjection.Replace('__BOUNDED_MEDIA_CAPTURE_PATCH__', $patches.BoundedMediaCapture)
+$patchInjection = $patchInjection.Replace('__CAPTURE_INIT_DIAGNOSTICS_PATCH__', $patches.CaptureInitDiagnostics)
 
 $scriptText = $scriptText.Replace(
     '$vs = Get-VisualStudio',
@@ -118,7 +121,8 @@ if (-not $scriptText.Contains('enable_rust=false arm_version=6 arm_use_neon=fals
     -not $scriptText.Contains($patches.AudioOnlyLibaom) -or
     -not $scriptText.Contains($patches.AudioOnlyLibvpx) -or
     -not $scriptText.Contains($patches.RenderCategory) -or
-    -not $scriptText.Contains($patches.BoundedMediaCapture)) {
+    -not $scriptText.Contains($patches.BoundedMediaCapture) -or
+    -not $scriptText.Contains($patches.CaptureInitDiagnostics)) {
     throw 'Unable to apply the ARM UWP compatibility configuration to the temporary build script.'
 }
 

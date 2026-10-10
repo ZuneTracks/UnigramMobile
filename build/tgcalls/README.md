@@ -2760,3 +2760,101 @@ with zero errors; Authenticode status is valid; manifest identity remains
 including TDLib, the V2 bridge WinMD/DLL, `z.dll`, and `zlib1.dll`, with no
 source-secret, PFX, or PDB payload. The sideload ZIP has exactly 23 entries and contains
 only installer resources, the APPX/certificate, and four ARM dependency APPXs.
+
+## 26.9.6228.0 — UWP capture-initialization diagnostics
+
+The Alcatel Idol 4S `6227` trace proved that microphone consent and managed
+pre-acquisition succeed, but native `InitRecording()` returns `-1` before capture
+starts. This build does not change capture behavior or remove the per-call circuit
+breaker. It adds numeric, privacy-safe failure telemetry to distinguish the failing
+UWP audio-client operation.
+
+`webrtc-m123-winuwp-arm-capture-init-diagnostics.patch` initializes the capture
+diagnostic state to stage `1` with `E_FAIL`, then records these stages:
+
+| Stage | Native operation |
+| ---: | --- |
+| 6 | `IAudioClient::GetMixFormat` |
+| 7 | PCM format selection |
+| 8 | `IAudioClient::Initialize` |
+| 9 | `IAudioClient::SetEventHandle` |
+| 10 | `IAudioClient::GetService(IAudioCaptureClient)` |
+| 0 | Capture initialization succeeded |
+
+On failure the bridge writes
+`step=init_recording;phase=platform_failure;stage=<n>;hresult=<signed-number>`.
+The trace contains only a numeric stage and HRESULT; it contains no endpoint name,
+device ID, path, token, account data, or captured audio. The reproducible ARM WebRTC
+build script applies the patch after the existing communications-category and bounded
+media-capture patches.
+
+### Device test
+
+Install the experimental ARM package and its four ARM dependencies, make one short
+audio call from the Idol to iOS, and export Push diagnostics. The requested evidence is
+the `platform_failure` line above (if capture still fails) and whether the iOS caller
+can hear the Idol. Use the reported stage/HRESULT to choose a compatible capture-format
+or UWP-audio fix; do not add a speculative fallback.
+
+### Artifacts
+
+The signed APPX is at
+`Unigram\Unigram\AppPackages\Unigram_26.9.6228.0_ARM_Test\`. The minimal sideload ZIP
+is under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\` and contains exactly the
+APPX, certificate, and four ARM dependency APPXs.
+
+| File | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `Unigram_26.9.6228.0_ARM_CaptureInitDiagnostics_Sideload.zip` | `64AB71A20B9E688052EC6A4E0D49917BB2DEF7B9E6A09F423E93EFFCF39F4B08` | 65,096,435 |
+| `Unigram_26.9.6228.0_ARM.appx` | `9EE700B63A98CCF70C9132138432EA2BB28AB68DC56E2ECA5C1B8B88075208F4` | 58,551,116 |
+| `Unigram_26.9.6228.0_ARM.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+
+Verification: the ARM WebRTC rebuild, native bridge proof, and Release|ARM APPX
+rebuild completed with zero errors. The APPX signature is valid for
+`CN=DC409D7A-979D-42E5-AAA5-E9A0F674260F`; its manifest retains identity
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6228.0`, ARM
+architecture, `Unigram.App` entry point, TDLib WinMD/DLL, and
+`ModernCallsBridge.dll`. The package has no source-secret or PFX payload, and the
+sideload ZIP has no PFX, PDB, APPXSYM, or source-secret content.
+
+## 26.9.6229.0 — audio calls no longer show video preview
+
+The supplied `6228` audio-call diagnostic showed `video=false`, followed by repeated
+attempts to attach local and remote video outputs. The local composition host is the
+lower-right preview panel, so those attempts made an empty preview visible during an
+audio-only call. They also failed with `0x80070057`.
+
+`VoIPService` now attaches modern video outputs only when the active call is a video
+call. `VoIPPage` separately refuses audio-call composition visuals and clears either
+video host when it receives an audio-call update. These three guards preserve local and
+remote preview behavior for actual video calls while preventing stale or accidental
+video preview UI on audio calls.
+
+This package also contains the capture-initialization diagnostic bridge. Unlike `6228`,
+the packaged `ModernCallsBridge.dll` was verified to contain both
+`phase=platform_failure` and `stage=`. If microphone initialization again returns
+`-1`, its Push diagnostics must include the numeric platform stage and HRESULT needed
+for the next native fix.
+
+### Device test
+
+Install the experimental `6229` package, place an audio call to iOS, and verify that
+there is no lower-right video-preview panel. Export Push diagnostics and provide the
+single `step=init_recording;phase=platform_failure;stage=<n>;hresult=<n>` line if the
+iOS peer still cannot hear the Idol. A video call should still show the local preview.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `Unigram_26.9.6229.0_ARM_AudioPreviewAndCaptureDiagnostics_Sideload.zip` | `EC1681461B10C639903F1F0C5B61113FC721040DF5E3EC9BE9A6DCA6CFF83175` | 65,097,804 |
+| `Unigram_26.9.6229.0_ARM.appx` | `A1F2A35AB0202FA2CBB23DC64877C0EDC9D68AE4B85729E22FC65C2E07EB43A6` | 58,550,207 |
+| `Unigram_26.9.6229.0_ARM.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+
+Verification: the Release|ARM build completed with zero errors; the APPX signature is
+valid; its experimental identity is
+`49197Wirdschon.UnigramMobileTdlibExperimental`; its version is `26.9.6229.0`; and
+its architecture is ARM. The six-file sideload ZIP contains the APPX, certificate, and
+four ARM dependencies only, with no PFX, PDB, APPXSYM, or source-secret payload.
