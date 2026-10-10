@@ -23,6 +23,7 @@ $patches = @{
     RenderCategory = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-render-communications-category.patch'
     BoundedMediaCapture = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-bounded-media-capture.patch'
     CaptureInitDiagnostics = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-capture-init-diagnostics.patch'
+    CapturePcmMixFallback = Join-Path $PSScriptRoot 'patches\webrtc-m123-winuwp-arm-capture-pcm-mix-fallback.patch'
 }
 
 if (-not (Test-Path -LiteralPath $buildScript)) {
@@ -90,6 +91,7 @@ Use-Patch $Src '__AUDIO_ONLY_LIBVPX_PATCH__'
 Use-Patch $Src '__RENDER_CATEGORY_PATCH__'
 Use-Patch $Src '__BOUNDED_MEDIA_CAPTURE_PATCH__'
 Use-Patch $Src '__CAPTURE_INIT_DIAGNOSTICS_PATCH__'
+Use-Patch $Src '__CAPTURE_PCM_MIX_FALLBACK_PATCH__'
 '@
 
 $patchInjection = $patchInjection.Replace('__RUST_PATCH__', $patches.Rust)
@@ -104,6 +106,7 @@ $patchInjection = $patchInjection.Replace('__AUDIO_ONLY_LIBVPX_PATCH__', $patche
 $patchInjection = $patchInjection.Replace('__RENDER_CATEGORY_PATCH__', $patches.RenderCategory)
 $patchInjection = $patchInjection.Replace('__BOUNDED_MEDIA_CAPTURE_PATCH__', $patches.BoundedMediaCapture)
 $patchInjection = $patchInjection.Replace('__CAPTURE_INIT_DIAGNOSTICS_PATCH__', $patches.CaptureInitDiagnostics)
+$patchInjection = $patchInjection.Replace('__CAPTURE_PCM_MIX_FALLBACK_PATCH__', $patches.CapturePcmMixFallback)
 
 $scriptText = $scriptText.Replace(
     '$vs = Get-VisualStudio',
@@ -122,7 +125,8 @@ if (-not $scriptText.Contains('enable_rust=false arm_version=6 arm_use_neon=fals
     -not $scriptText.Contains($patches.AudioOnlyLibvpx) -or
     -not $scriptText.Contains($patches.RenderCategory) -or
     -not $scriptText.Contains($patches.BoundedMediaCapture) -or
-    -not $scriptText.Contains($patches.CaptureInitDiagnostics)) {
+    -not $scriptText.Contains($patches.CaptureInitDiagnostics) -or
+    -not $scriptText.Contains($patches.CapturePcmMixFallback)) {
     throw 'Unable to apply the ARM UWP compatibility configuration to the temporary build script.'
 }
 

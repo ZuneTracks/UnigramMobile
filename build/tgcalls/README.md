@@ -2900,3 +2900,44 @@ manifest retains experimental identity
 architecture. The signed payload includes the `phase=platform_failure` and `0x%08lX`
 diagnostic strings; the sideload ZIP has exactly six allowed files and no PFX, PDB,
 APPXSYM, or source-secret content.
+
+## 26.9.6231.0 — safe PCM capture-format fallback
+
+The `6230` affected-device trace reports
+`stage=8;hresult=0x88890008`, `AUDCLNT_E_UNSUPPORTED_FORMAT`, from
+`IAudioClient::Initialize`. The endpoint is therefore found and activated correctly;
+the unsupported format originates from the old backend's fixed 16-bit PCM candidate
+list. The Lumia 950 XL succeeds with that list, while the Alcatel Idol 4S and Lumia
+1520 do not.
+
+`webrtc-m123-winuwp-arm-capture-pcm-mix-fallback.patch` preserves the preferred fixed
+PCM candidates. Only when none is accepted does it reuse the endpoint's exact mix
+format—and only after proving that it is 16-bit PCM with a valid frame layout and, for
+an extensible format, a 16-bit PCM subformat. This is safe for the backend's raw
+16-bit capture buffer. Float, non-PCM, malformed, oversized, and unsupported mix
+formats remain rejected explicitly; the change does not reinterpret or silently
+convert captured samples.
+
+### Device test
+
+Install `6231` on the Idol 4S or Lumia 1520 and make a short audio call. A successful
+call must show `recording=1` and a non-pending `capture_peak_permille` in Push
+diagnostics, while the remote party hears the device. The Lumia 950 XL remains the
+regression device: it must continue to capture successfully.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `Unigram_26.9.6231.0_ARM_PcmCaptureFallback_Sideload.zip` | `466F014C502ACCC712CE707D0A8487057667F1886387E5BE4B6234658FF6BF9F` | 65,093,602 |
+| `Unigram_26.9.6231.0_ARM.appx` | `E26668B4B1B04EDD45EA1F0724997F1D1CCC02B446DAAF76851F3B372F830C8C` | 58,546,006 |
+| `Unigram_26.9.6231.0_ARM.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+
+Verification: the patched ARM WebRTC build, native bridge proof, and Release|ARM
+package completed with zero errors. The APPX signature is valid; its manifest retains
+experimental identity `49197Wirdschon.UnigramMobileTdlibExperimental`, version
+`26.9.6231.0`, ARM architecture, and the push-notification background entry point.
+The payload includes TDLib and the PCM fallback bridge, with no source-secret or PFX
+content. The ZIP has exactly the APPX, certificate, and four ARM dependencies.

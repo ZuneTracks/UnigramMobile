@@ -1,0 +1,41 @@
+diff --git a/modules/audio_device/win/audio_device_core_win.cc b/modules/audio_device/win/audio_device_core_win.cc
+index 101ccf6c8..27e5864c7 100644
+--- a/modules/audio_device/win/audio_device_core_win.cc
++++ b/modules/audio_device/win/audio_device_core_win.cc
+@@ -1292,6 +1292,36 @@ struct CaptureDeviceInternal
+         break;
+     }
+ 
++    // Some Windows Mobile endpoints accept their 16-bit PCM mix format but
++    // reject every fixed-rate candidate above. Reusing that exact mix format
++    // needs no sample conversion and preserves the capture buffer contract.
++    if (hr != S_OK && pWfxIn != nullptr) {
++      const size_t mix_format_size = sizeof(WAVEFORMATEX) + pWfxIn->cbSize;
++      const bool is_pcm16 =
++          pWfxIn->wBitsPerSample == 16 && pWfxIn->nChannels > 0 &&
++          pWfxIn->nBlockAlign == pWfxIn->nChannels * sizeof(int16_t) &&
++          (pWfxIn->wFormatTag == WAVE_FORMAT_PCM ||
++           (pWfxIn->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
++            pWfxIn->cbSize >=
++                sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX) &&
++            reinterpret_cast<WAVEFORMATEXTENSIBLE*>(pWfxIn)
++                    ->Samples.wValidBitsPerSample == 16 &&
++            IsEqualGUID(reinterpret_cast<WAVEFORMATEXTENSIBLE*>(pWfxIn)
++                            ->SubFormat,
++                        KSDATAFORMAT_SUBTYPE_PCM)));
++      if (is_pcm16 && mix_format_size <= sizeof(Wfx)) {
++        ZeroMemory(&Wfx, sizeof(Wfx));
++        CopyMemory(&Wfx, pWfxIn, mix_format_size);
++        hr = S_OK;
++        RTC_LOG(LS_INFO) << "Using the endpoint's 16-bit PCM mix format for capture";
++      }
++    }
++
++    if (hr != S_OK) {
++      hr = AUDCLNT_E_UNSUPPORTED_FORMAT;
++      EXIT_ON_ERROR(hr);
++    }
++
+     if (hr == S_OK) {
+       _audioFrameSize = Wfx.Format.nBlockAlign;
+       _sampleRate = Wfx.Format.nSamplesPerSec;
