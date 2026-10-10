@@ -5,11 +5,13 @@ using Telegram.Td.Api;
 using Unigram.Collections;
 using Unigram.Common;
 using Unigram.Controls;
+using Unigram.Entities;
 using Unigram.Logs;
 using Unigram.Services;
 using Unigram.Views.Popups;
-using Windows.Storage;
-using Windows.UI.Xaml.Media.Imaging;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.UI.Xaml.Media;
+using static Unigram.Services.GenerationService;
 
 namespace Unigram.ViewModels.BasicGroups
 {
@@ -22,7 +24,7 @@ namespace Unigram.ViewModels.BasicGroups
 
             AddCommand = new RelayCommand(AddExecute);
             SendCommand = new RelayCommand(SendExecute, CanSend);
-            EditPhotoCommand = new RelayCommand<StorageFile>(EditPhotoExecute);
+            EditPhotoCommand = new RelayCommand<StorageMedia>(EditPhotoExecute);
         }
 
         private bool _isCreating;
@@ -41,8 +43,8 @@ namespace Unigram.ViewModels.BasicGroups
             }
         }
 
-        private BitmapImage _preview;
-        public BitmapImage Preview
+        private ImageSource _preview;
+        public ImageSource Preview
         {
             get
             {
@@ -53,6 +55,8 @@ namespace Unigram.ViewModels.BasicGroups
                 Set(ref _preview, value);
             }
         }
+
+        private StoragePhoto _photo;
 
         public MvxObservableCollection<Chat> Items { get; private set; }
 
@@ -98,6 +102,7 @@ namespace Unigram.ViewModels.BasicGroups
                         var chat = await ProtoService.SendAsync(new GetChat(created.ChatId)) as Chat;
                         if (chat != null)
                         {
+                            await OfferInviteLinkAsync(chat, created.FailedToAddMembers);
                             await CompleteCreationAsync(chat);
                         }
                         else
@@ -136,6 +141,8 @@ namespace Unigram.ViewModels.BasicGroups
 
         private async Task CompleteCreationAsync(Chat chat)
         {
+            await UploadPhotoAsync(chat);
+
             await MessagePopup.ShowAsync(
                 Strings.Resources.ActionYouCreateGroup,
                 chat.Title,
@@ -145,10 +152,83 @@ namespace Unigram.ViewModels.BasicGroups
             NavigationService.GoBackAt(0, false);
         }
 
-        public RelayCommand<StorageFile> EditPhotoCommand { get; }
-        private async void EditPhotoExecute(StorageFile file)
+        private async Task UploadPhotoAsync(Chat chat)
         {
-            await Task.CompletedTask;
+            if (_photo == null)
+            {
+                return;
+            }
+
+            var generated = await _photo.File.ToGeneratedAsync(
+                ConversionType.Compress,
+                Newtonsoft.Json.JsonConvert.SerializeObject(_photo.EditState));
+            var response = await ProtoService.SendAsync(new SetChatPhoto(chat.Id, new InputChatPhotoStatic(generated)));
+            if (response is Error error)
+            {
+                PushDiagnostics.Write("group.create", $"result=photo_failed;code={error.Code}");
+                await MessagePopup.ShowAsync(Strings.Resources.ErrorOccurred, Strings.Resources.AppName, Strings.Resources.OK);
+            }
+        }
+
+#if MODERN_TDLIB
+        private async Task OfferInviteLinkAsync(Chat chat, FailedToAddMembers failedToAddMembers)
+        {
+            if (failedToAddMembers?.FailedToAddMembersValue == null ||
+                failedToAddMembers.FailedToAddMembersValue.Count == 0)
+            {
+                return;
+            }
+
+            PushDiagnostics.Write(
+                "group.create",
+                $"result=members_not_added;count={failedToAddMembers.FailedToAddMembersValue.Count}");
+
+            var confirmation = await MessagePopup.ShowAsync(
+                Strings.Resources.InviteToGroupError,
+                Strings.Resources.InviteToGroupByLink,
+                Strings.Resources.CopyLink,
+                Strings.Resources.Close);
+            if (confirmation != Windows.UI.Xaml.Controls.ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            var response = await ProtoService.SendAsync(
+                new CreateChatInviteLink(chat.Id, string.Empty, 0, 0, false));
+            if (response is ChatInviteLink inviteLink)
+            {
+                var dataPackage = new DataPackage();
+                dataPackage.SetText(inviteLink.InviteLink);
+                ClipboardEx.TrySetContent(dataPackage);
+
+                await MessagePopup.ShowAsync(
+                    Strings.Resources.LinkCopied,
+                    Strings.Resources.AppName,
+                    Strings.Resources.OK);
+            }
+            else if (response is Error error)
+            {
+                PushDiagnostics.Write("group.create", $"result=invite_link_failed;code={error.Code}");
+                await MessagePopup.ShowAsync(Strings.Resources.ErrorOccurred, Strings.Resources.AppName, Strings.Resources.OK);
+            }
+            else
+            {
+                PushDiagnostics.Write(
+                    "group.create",
+                    $"result=invite_link_unexpected;type={response?.GetType().Name ?? "null"}");
+                await MessagePopup.ShowAsync(Strings.Resources.ErrorOccurred, Strings.Resources.AppName, Strings.Resources.OK);
+            }
+        }
+#endif
+
+        public RelayCommand<StorageMedia> EditPhotoCommand { get; }
+        private async void EditPhotoExecute(StorageMedia media)
+        {
+            if (media is StoragePhoto photo)
+            {
+                _photo = photo;
+                Preview = await ImageHelper.CropAndPreviewAsync(photo.File, photo.EditState);
+            }
         }
 
         private void ContinueUploadingPhoto()
