@@ -2940,3 +2940,39 @@ experimental identity `49197Wirdschon.UnigramMobileTdlibExperimental`, version
 `26.9.6232.0`, ARM architecture, and the push-notification background entry point.
 The payload includes TDLib and the PCM conversion bridge, with no source-secret or PFX
 content. The ZIP contains exactly the APPX, certificate, and four ARM dependencies.
+
+## 26.9.6233.0 — initial call-route and echo-control alignment
+
+Comparison against upstream Unigram at `b6eeb455251aa34cda8ba2256679cecf1fec4a03`
+shows both call paths enable AEC, noise suppression, and automatic gain control.
+Upstream leaves the legacy `enableVolumeControl` flag disabled; the experimental
+facade now does the same. The pinned modern TgCalls implementation has no consumer of
+that flag, so the behavior-changing correction is route lifecycle handling.
+
+The previous mobile page sent its initial private-output request before the native
+TgCalls session existed, logged `reason=session_missing`, and discarded it. The
+platform could consequently retain a loudspeaker at full hardware gain. The updated
+route path records that request, applies it as soon as the audio device module has
+enumerated its earpiece and loudspeaker endpoints, and applies the existing 50% gain
+cap when speakerphone is requested. It also routes a matching platform request through
+TgCalls, rather than assuming the platform routing state changed the already-created
+native audio device.
+
+### Device test
+
+Make a speakerphone call to iOS and confirm the first `audio_output` diagnostic has
+`queued=1`, followed by an active-session route report whose native value includes
+`gain=50`. Verify that the iOS participant no longer hears sustained echo or feedback,
+then switch back to earpiece and confirm the route report includes `gain=restore`.
+The APM fields in a successful call should report enabled AEC, noise suppression, and
+gain control rather than `apm=pending`.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `Unigram_26.9.6233.0_ARM_InitialRouteEchoControl_Sideload.zip` | `7C96D95E802AE8F00904FBFF58DDA949169F655FE9FC9BECDDEE2775638F8CA1` | 65,102,511 |
+| `Unigram_26.9.6233.0_ARM.appx` | `AACFBD7239D5456870B68303066BE0DEC1CB6FD042CFDEF727A17C8FA35DE5EA` | 58,554,201 |
+| `Unigram_26.9.6233.0_ARM.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |

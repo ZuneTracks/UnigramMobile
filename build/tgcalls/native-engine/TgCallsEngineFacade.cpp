@@ -1694,7 +1694,7 @@ public:
                 .enableAEC = true,
                 .enableNS = true,
                 .enableAGC = true,
-                .enableVolumeControl = true,
+                .enableVolumeControl = false,
                 .maxApiLayer = _configuration.maxApiLayer,
             },
             .endpoints = std::move(endpoints),

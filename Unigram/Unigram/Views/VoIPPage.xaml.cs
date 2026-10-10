@@ -947,8 +947,7 @@ namespace Unigram.Views
 
 #if MODERN_TGCALLS
             var nativeQueued = false;
-            if (actual != requested &&
-                (requested == AudioRoutingEndpoint.Earpiece || requested == AudioRoutingEndpoint.Speakerphone))
+            if (requested == AudioRoutingEndpoint.Earpiece || requested == AudioRoutingEndpoint.Speakerphone)
             {
                 nativeQueued = ModernAudioOutputEndpointRequested?.Invoke(
                     requested == AudioRoutingEndpoint.Speakerphone) == true;

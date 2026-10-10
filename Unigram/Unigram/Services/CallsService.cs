@@ -110,6 +110,7 @@ namespace Unigram.Services
         private ModernCalls.RemoteAudioState? _modernRemoteAudioState;
         private ModernCalls.CallState? _modernTransportState;
         private bool _modernMuted;
+        private int _modernRequestedSpeakerphone = -1;
         private bool _modernVideoOutputsEnabled;
         private sealed class VideoCapturePreflight
         {
@@ -1120,6 +1121,14 @@ namespace Unigram.Services
                 }
                 _modernCallStarting = true;
                 session.Start();
+                var requestedSpeakerphone = System.Threading.Interlocked.CompareExchange(
+                    ref _modernRequestedSpeakerphone,
+                    -1,
+                    -1);
+                if (requestedSpeakerphone >= 0)
+                {
+                    SetModernAudioOutputEndpoint(requestedSpeakerphone != 0);
+                }
                 if (call.IsVideo)
                 {
                     EnableModernVideoControls(call.Id);
@@ -1293,14 +1302,17 @@ namespace Unigram.Services
         /// </summary>
         private bool SetModernAudioOutputEndpoint(bool speakerphone)
         {
+            System.Threading.Interlocked.Exchange(
+                ref _modernRequestedSpeakerphone,
+                speakerphone ? 1 : 0);
             var session = _modernController;
             var requested = speakerphone ? "speakerphone" : "earpiece";
             if (session == null)
             {
                 WriteAudioCallDiagnostic(
                     "voip.media",
-                    $"result=audio_output;transport=modern_tgcalls;requested={requested};queued=0;reason=session_missing");
-                return false;
+                    $"result=audio_output;transport=modern_tgcalls;requested={requested};queued=1;reason=session_pending");
+                return true;
             }
 
             try
@@ -1623,6 +1635,7 @@ namespace Unigram.Services
             _modernVideoCaptureDeviceId = null;
             _modernPendingVideoCaptureDeviceId = null;
             _modernPendingVideoCaptureIsFront = 0;
+            System.Threading.Interlocked.Exchange(ref _modernRequestedSpeakerphone, -1);
             _modernCallStarting = false;
 
             try
