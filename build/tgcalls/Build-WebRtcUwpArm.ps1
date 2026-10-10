@@ -90,7 +90,15 @@ Use-Patch $Src '__AUDIO_ONLY_LIBAOM_PATCH__'
 Use-Patch $Src '__AUDIO_ONLY_LIBVPX_PATCH__'
 Use-Patch $Src '__RENDER_CATEGORY_PATCH__'
 Use-Patch $Src '__BOUNDED_MEDIA_CAPTURE_PATCH__'
-Use-Patch $Src '__CAPTURE_INIT_DIAGNOSTICS_PATCH__'
+
+$captureDiagnosticsSource = Join-Path $Src 'modules\audio_device\win\audio_device_core_win.cc'
+$captureDiagnosticsText = Get-Content -LiteralPath $captureDiagnosticsSource -Raw
+if ($captureDiagnosticsText.Contains('g_unigram_webrtc_capture_init_stage')) {
+    Write-Host '  already applied: webrtc-m123-winuwp-arm-capture-init-diagnostics.patch'
+} else {
+    Use-Patch $Src '__CAPTURE_INIT_DIAGNOSTICS_PATCH__'
+}
+
 Use-Patch $Src '__CAPTURE_PCM_MIX_FALLBACK_PATCH__'
 '@
 
