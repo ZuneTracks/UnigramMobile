@@ -20,6 +20,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -1262,10 +1263,15 @@ public:
                 InterlockedCompareExchange(&g_unigram_webrtc_capture_init_stage, 0, 0);
             const auto platformHresult =
                 InterlockedCompareExchange(&g_unigram_webrtc_capture_init_hresult, 0, 0);
+            char hresult[11] = {};
+            sprintf_s(
+                hresult,
+                "0x%08lX",
+                static_cast<unsigned long>(platformHresult));
             Report(
                 "step=init_recording;phase=platform_failure;stage=" +
                 std::to_string(platformStage) +
-                ";hresult=" + std::to_string(platformHresult));
+                ";hresult=" + hresult);
             _recordingInitializationFailed = true;
         }
         return result;

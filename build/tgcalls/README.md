@@ -2858,3 +2858,45 @@ valid; its experimental identity is
 `49197Wirdschon.UnigramMobileTdlibExperimental`; its version is `26.9.6229.0`; and
 its architecture is ARM. The six-file sideload ZIP contains the APPX, certificate, and
 four ARM dependencies only, with no PFX, PDB, APPXSYM, or source-secret payload.
+
+## 26.9.6230.0 — capture HRESULT preserved in diagnostics
+
+The `6229` device test confirmed that audio-only calls no longer show a video preview
+and that the local preview remains available for video calls. Its new capture telemetry
+also located the microphone failure at stage `8`, `IAudioClient::Initialize`, on both
+the Alcatel Idol 4S and Lumia 1520; the Lumia 950 XL captures successfully. This
+identifies endpoint stream compatibility rather than a manufacturer-wide device-ID
+mapping problem.
+
+The stage `8` HRESULT was originally written as a signed decimal value. The diagnostics
+sanitizer correctly redacts long decimal sequences, so `6230` changes only its textual
+representation to the existing privacy-safe hexadecimal convention:
+`hresult=0xXXXXXXXX`. The value remains the same HRESULT, now preserved in exported
+diagnostics without endpoint names, IDs, paths, credentials, tokens, or audio data.
+No capture behavior changes in this build.
+
+### Device test
+
+Install the experimental `6230` package and make one short audio call from an affected
+device. Export Push diagnostics and provide the single line:
+`step=init_recording;phase=platform_failure;stage=8;hresult=0xXXXXXXXX`.
+That exact HRESULT determines whether the next change is a supported PCM-format
+fallback or a stream-flag compatibility adjustment.
+
+### Artifacts
+
+Under `%LOCALAPPDATA%\UnigramTdlibExperiment\artifacts\`:
+
+| File | SHA-256 | Bytes |
+| --- | --- | ---: |
+| `Unigram_26.9.6230.0_ARM_CaptureHresultDiagnostics_Sideload.zip` | `D0D347540285E36D42D664BCA11330387F4628556BBB2D5268EFED370B6088C6` | 65,096,943 |
+| `Unigram_26.9.6230.0_ARM.appx` | `0E1CE73BA53F21D30BA5FB5049D43BAC8B22658507A02EDA551DE99FB205D461` | 58,549,556 |
+| `Unigram_26.9.6230.0_ARM.cer` | `5D891C3D3F5DF85A556C01BD5BA58C6837A736776E4D781CDEE9790060A72B85` | 832 |
+
+Verification: the native bridge proof and Release|ARM package completed with zero
+errors. The signature is valid for `CN=DC409D7A-979D-42E5-AAA5-E9A0F674260F`; the
+manifest retains experimental identity
+`49197Wirdschon.UnigramMobileTdlibExperimental`, version `26.9.6230.0`, and ARM
+architecture. The signed payload includes the `phase=platform_failure` and `0x%08lX`
+diagnostic strings; the sideload ZIP has exactly six allowed files and no PFX, PDB,
+APPXSYM, or source-secret content.
