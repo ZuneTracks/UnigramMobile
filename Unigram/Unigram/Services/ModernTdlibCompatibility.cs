@@ -699,10 +699,10 @@ namespace Unigram.Services
 #endif
         }
 
-        public static Function CreateNewBasicGroupChat(IList<long> userIds, string title)
+        public static Function CreateNewBasicGroupChat(IList<long> userIds, string title, int messageAutoDeleteTime = 0)
         {
 #if MODERN_TDLIB
-            return new Telegram.Td.Api.CreateNewBasicGroupChat(userIds, title, 0);
+            return new Telegram.Td.Api.CreateNewBasicGroupChat(userIds, title, messageAutoDeleteTime);
 #else
             return new Telegram.Td.Api.CreateNewBasicGroupChat(userIds, title);
 #endif

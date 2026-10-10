@@ -25,6 +25,7 @@ namespace Unigram.ViewModels.BasicGroups
             AddCommand = new RelayCommand(AddExecute);
             SendCommand = new RelayCommand(SendExecute, CanSend);
             EditPhotoCommand = new RelayCommand<StorageMedia>(EditPhotoExecute);
+            ConfigureMessageAutoDeleteTimeCommand = new RelayCommand(ConfigureMessageAutoDeleteTimeExecute);
         }
 
         private bool _isCreating;
@@ -57,6 +58,27 @@ namespace Unigram.ViewModels.BasicGroups
         }
 
         private StoragePhoto _photo;
+
+        private int _messageAutoDeleteTime;
+        public int MessageAutoDeleteTime
+        {
+            get
+            {
+                return _messageAutoDeleteTime;
+            }
+            set
+            {
+                if (Set(ref _messageAutoDeleteTime, value))
+                {
+                    RaisePropertyChanged(nameof(MessageAutoDeleteTimeText));
+                }
+            }
+        }
+
+        public string MessageAutoDeleteTimeText =>
+            MessageAutoDeleteTime == 0
+                ? Strings.Resources.ShortMessageLifetimeForever
+                : Locale.FormatTtl(MessageAutoDeleteTime);
 
         public MvxObservableCollection<Chat> Items { get; private set; }
 
@@ -95,7 +117,8 @@ namespace Unigram.ViewModels.BasicGroups
                 var peers = Items.Select(x => x.Type).OfType<ChatTypePrivate>().Select(x => x.UserId).ToArray();
                 if (peers.Length <= maxSize)
                 {
-                    var response = await ProtoService.SendAsync(ModernTdlibCompatibility.CreateNewBasicGroupChat(peers, _title));
+                    var response = await ProtoService.SendAsync(
+                        ModernTdlibCompatibility.CreateNewBasicGroupChat(peers, _title, MessageAutoDeleteTime));
 #if MODERN_TDLIB
                     if (response is CreatedBasicGroupChat created)
                     {
@@ -228,6 +251,21 @@ namespace Unigram.ViewModels.BasicGroups
             {
                 _photo = photo;
                 Preview = await ImageHelper.CropAndPreviewAsync(photo.File, photo.EditState);
+            }
+        }
+
+        public RelayCommand ConfigureMessageAutoDeleteTimeCommand { get; }
+        private async void ConfigureMessageAutoDeleteTimeExecute()
+        {
+            var dialog = new ChatTtlPopup(false)
+            {
+                Value = MessageAutoDeleteTime
+            };
+
+            var result = await dialog.ShowQueuedAsync();
+            if (result == Windows.UI.Xaml.Controls.ContentDialogResult.Primary)
+            {
+                MessageAutoDeleteTime = dialog.Value;
             }
         }
 

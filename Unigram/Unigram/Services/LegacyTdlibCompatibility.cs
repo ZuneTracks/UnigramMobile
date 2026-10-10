@@ -480,7 +480,7 @@ namespace Unigram.Services
             return new ViewMessages(chatId, threadId, messageIds, forceRead);
         }
 
-        public static Function CreateNewBasicGroupChat(IList<long> userIds, string title)
+        public static Function CreateNewBasicGroupChat(IList<long> userIds, string title, int messageAutoDeleteTime = 0)
         {
             return new CreateNewBasicGroupChat(userIds, title);
         }
